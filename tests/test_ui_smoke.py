@@ -248,16 +248,19 @@ def test_additive_regions_do_not_wipe(app):
     assert len(win._regions) == 2, "second draw must not wipe the first"
 
 
-def test_roi_clamped_within_single_cell(app):
+def test_roi_size_capped_but_position_free(app):
     from pear.ui.main_window import MainWindow
 
     win = MainWindow()
     win.set_image(make_field(), "f.png")
     iv = win.image_view
-    # A box at x=50, w=30 with px=64 would straddle the cell boundary.
+    # A box at x=50, w=30 straddles the cell boundary — that is now allowed
+    # (position is free); only the size is capped to one cell.
     x, y, w, h = iv._clamp_roi((50, 10, 30, 20))
-    assert (x % CELL_W) + w <= CELL_W
-    assert (y % CELL_H) + h <= CELL_H
+    assert (x, y, w, h) == (50, 10, 30, 20)
+    # Oversized boxes are capped to a single cell footprint.
+    _, _, w2, h2 = iv._clamp_roi((10, 10, 999, 999))
+    assert w2 <= CELL_W and h2 <= CELL_H
 
 
 def test_draw_rubberband_does_not_crash(app):

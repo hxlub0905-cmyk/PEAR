@@ -376,8 +376,7 @@ class SettingsPanel(QWidget):
         # --- Regions card ----------------------------------------------- #
         regions = _card("Regions", number="02")
         rlay = regions.layout()
-        hint = QLabel("Click + Add region, then drag on the image to set its "
-                      "ROI. Each region expands to every cell.")
+        hint = QLabel("Add a region, then drag on the image to set its ROI.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         rlay.addWidget(hint)
@@ -502,16 +501,10 @@ class AnalysisPanel(QWidget):
     mode_changed = Signal(str)          # "unsupervised" | "labelled"
     tag_mode_toggled = Signal(bool)
 
-    _CAP_UNSUP = ("Measured separations on the selected region, ranked. "
-                  "The numbers are for you to judge — PEAR does not pick an "
-                  "attribute for you.")
-    _CAP_LABEL = ("Tag the target cells; the rest become reference. Attributes "
-                  "are ranked by how well they separate target from reference. "
-                  "The threshold is a suggestion — the call is yours.")
-    _EMPTY_UNSUP = ("Add a region to see which attribute makes its outlier "
-                    "cells stand out.")
-    _EMPTY_LABEL = ("Turn on “Tag target cells”, then click the suspect cells "
-                    "on the image. The rest become reference.")
+    _CAP_UNSUP = ""
+    _CAP_LABEL = "Tag target cells; the rest are reference."
+    _EMPTY_UNSUP = "Add a region to rank attributes."
+    _EMPTY_LABEL = "Tag target cells on the image."
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -539,6 +532,7 @@ class AnalysisPanel(QWidget):
         self.caption = QLabel(self._CAP_UNSUP)
         self.caption.setObjectName("Caption")
         self.caption.setWordWrap(True)
+        self.caption.setVisible(bool(self._CAP_UNSUP))
         clay.addWidget(self.caption)
 
         # tag toggle (labelled mode only)
@@ -588,7 +582,9 @@ class AnalysisPanel(QWidget):
         self.unsup_btn.setChecked(mode == "unsupervised")
         self.label_btn.setChecked(mode == "labelled")
         labelled = mode == "labelled"
-        self.caption.setText(self._CAP_LABEL if labelled else self._CAP_UNSUP)
+        cap = self._CAP_LABEL if labelled else self._CAP_UNSUP
+        self.caption.setText(cap)
+        self.caption.setVisible(bool(cap))
         self.tag_btn.setVisible(labelled)
         if not labelled and self.tag_btn.isChecked():
             self.tag_btn.setChecked(False)
@@ -671,9 +667,8 @@ class AnalysisPanel(QWidget):
             score = next((s for s in region.ranking if s.attr == attr), None)
             if score is not None:
                 self.measured.setText(
-                    f"Measured (for reference): max|z| {score.max_abs_z:.1f}σ · "
-                    f"{score.n_outliers} cell(s) beyond 3.5σ on this attribute. "
-                    f"Whether to use it, and at what threshold, is your call.")
+                    f"max|z| {score.max_abs_z:.1f}σ  ·  "
+                    f"{score.n_outliers} cell(s) > 3.5σ")
 
     def _update_labelled_attr(self, region: Region, attr: str) -> None:
         score = next((s for s in region.sep_ranking if s.attr == attr), None)
@@ -691,8 +686,6 @@ class AnalysisPanel(QWidget):
             catch = score.catch_rate * 100.0
             fa = score.false_alarm * 100.0
             self.measured.setText(
-                f"Measured (for reference): separation {score.separation_score:.0f}/100 "
-                f"· AUC {score.auc:.3f}. Suggested threshold {score.threshold:.4g} "
-                f"({score.direction}) → catches {catch:.0f}% of "
-                f"{score.n_target} target(s), {fa:.0f}% reference false alarms. "
-                f"The threshold is yours to set.")
+                f"sep {score.separation_score:.0f}/100  ·  AUC {score.auc:.3f}  ·  "
+                f"thr {score.threshold:.4g} ({score.direction})  ·  "
+                f"catch {catch:.0f}%  ·  FA {fa:.0f}%")

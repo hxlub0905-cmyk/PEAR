@@ -601,7 +601,13 @@ class ImageView(QWidget):
         return self._clamp_roi((x, y, w, h))
 
     def _clamp_roi(self, roi: Rect) -> Rect:
-        """Clamp so the ROI stays within one cell footprint and the image."""
+        """Clamp the ROI size to one cell footprint and keep it in the image.
+
+        The position is left free: the ROI may straddle a cell boundary
+        (every instance then samples the same relative sub-region; only the
+        C2C attributes drop out gracefully). Only the size is capped to the
+        cell so replicated instances never overlap their neighbours.
+        """
         x, y, w, h = roi
         if self._image is None:
             return roi
@@ -611,25 +617,7 @@ class ImageView(QWidget):
         h = max(_MIN_ROI, min(h, cpy, ih))
         x = max(0, min(x, iw - w))
         y = max(0, min(y, ih - h))
-        # Keep the ROI inside a single cell: it must not straddle a cell
-        # boundary, or every instance would sample neighbouring-cell content
-        # and the golden sub-cell (and C2C attributes) would drop out.
-        if self._period is not None:
-            ox, oy = self._period.origin
-            x = self._contain_in_cell(x, w, cpx, ox, iw)
-            y = self._contain_in_cell(y, h, cpy, oy, ih)
         return (x, y, w, h)
-
-    @staticmethod
-    def _contain_in_cell(pos: int, size: int, period: int,
-                         origin: int, limit: int) -> int:
-        """Shift ``pos`` so a ``size``-wide ROI fits within its cell."""
-        if size >= period:
-            return pos
-        local = (pos - origin) % period
-        if local + size > period:
-            pos -= (local + size - period)   # slide left to the cell edge
-        return max(0, min(pos, limit - size))
 
     @staticmethod
     def _norm_rect(r: QRectF) -> QRectF:
