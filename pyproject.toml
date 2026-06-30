@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pear"
+version = "0.1.0"
+description = "PEAR — Pre-EBI Attribute Ranker: a pre-inspection attribute-discovery tool for EBI of repeating-cell structures."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "HX-FAD" }]
+dependencies = [
+    "PySide6>=6.5",
+    "opencv-python>=4.7",
+    "numpy>=1.23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+pear = "pear.__main__:main"
+
+[tool.setuptools]
+packages = ["pear", "pear.core", "pear.ui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
