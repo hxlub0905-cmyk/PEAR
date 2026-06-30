@@ -104,13 +104,27 @@ class Histogram(QWidget):
         self._values: np.ndarray = np.array([])
         self._target: Optional[np.ndarray] = None
         self._threshold: Optional[float] = None
+        self._median: Optional[float] = None
+        self._band: Optional[tuple] = None   # (lo, hi) outlier cutoffs
         self._title = ""
 
-    def set_values(self, values, title: str = "") -> None:
-        self._values = np.asarray(values, dtype=np.float64)
+    def set_values(self, values, title: str = "",
+                   k_sigma: float = 3.5) -> None:
+        """Single population, with median and ±k·σ outlier-cutoff guides."""
+        vals = np.asarray(values, dtype=np.float64)
+        self._values = vals
         self._target = None
         self._threshold = None
         self._title = title
+        self._median = None
+        self._band = None
+        if vals.size:
+            med = float(np.median(vals))
+            mad = float(np.median(np.abs(vals - med)))
+            self._median = med
+            if mad > 1e-12:
+                delta = k_sigma * mad / 0.6745
+                self._band = (med - delta, med + delta)
         self.update()
 
     def set_compare(self, ref_values, target_values, title: str = "",
@@ -119,6 +133,8 @@ class Histogram(QWidget):
         self._values = np.asarray(ref_values, dtype=np.float64)
         self._target = np.asarray(target_values, dtype=np.float64)
         self._threshold = threshold
+        self._median = None
+        self._band = None
         self._title = title
         self.update()
 
@@ -126,6 +142,8 @@ class Histogram(QWidget):
         self._values = np.array([])
         self._target = None
         self._threshold = None
+        self._median = None
+        self._band = None
         self._title = ""
         self.update()
 
@@ -184,6 +202,21 @@ class Histogram(QWidget):
                 tpen.setStyle(Qt.DashLine)
                 p.setPen(tpen)
                 p.drawLine(tx, plot.top(), tx, plot.bottom())
+
+            def _vline(value, col, style):
+                if not (vmin <= value <= vmax):
+                    return
+                vx = plot.left() + (value - vmin) / (vmax - vmin) * plot.width()
+                pen = QPen(col, 1.3)
+                pen.setStyle(style)
+                p.setPen(pen)
+                p.drawLine(vx, plot.top(), vx, plot.bottom())
+
+            if self._median is not None and vmax > vmin:
+                _vline(self._median, QColor(theme.MUTED), Qt.SolidLine)
+            if self._band is not None and vmax > vmin:
+                _vline(self._band[0], QColor(theme.FLAG), Qt.DashLine)
+                _vline(self._band[1], QColor(theme.FLAG), Qt.DashLine)
 
         # baseline + min/max labels (mono)
         p.setPen(QPen(QColor(theme.LINE), 1))
