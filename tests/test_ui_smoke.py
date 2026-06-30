@@ -75,6 +75,49 @@ def test_full_ui_path(app, tmp_path):
     assert "attribute" in content
 
 
+def test_labelled_compare_mode_flow(app, tmp_path):
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "sample_field.png")
+    win.create_region((16, 13, 30, 26))
+    region = win._active_region()
+
+    # Switch to labelled compare mode.
+    win.on_mode_changed("labelled")
+    assert win._mode == "labelled"
+    assert win.image_view._labelled is True
+
+    # Tag the injected outlier cells as targets (as if clicked).
+    for i, rec in enumerate(region.records):
+        if (rec["col"], rec["row"]) in set(OUTLIERS):
+            win.on_cell_tag_toggled(i)
+    assert len(region.target_idx) == len(OUTLIERS)
+    assert region.sep_ranking, "separability ranking must populate"
+    assert region.sep_sel_attr is not None
+    assert win.analysis.ranking.count() > 0
+
+    # The histogram now shows two populations.
+    assert win.analysis.hist._target is not None
+
+    # Selecting another attribute updates sep selection, not sel_attr.
+    second = region.sep_ranking[min(1, len(region.sep_ranking) - 1)].attr
+    win.on_attr_selected(second)
+    assert region.sep_sel_attr == second
+
+    # Export carries the labelled ranking + is_target column.
+    out = tmp_path / "labelled.csv"
+    assert win.export_csv(str(out)) == str(out)
+    text = out.read_text(encoding="utf-8-sig")
+    assert "mode: labelled" in text
+    assert "separation_score" in text
+    assert "is_target" in text
+
+    # Re-editing the ROI clears target tags.
+    win.modify_region(region.rid, (18, 14, 28, 24))
+    assert region.target_idx == set()
+
+
 def test_additive_regions_do_not_wipe(app):
     from pear.ui.main_window import MainWindow
 

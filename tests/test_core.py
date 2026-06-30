@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.make_sample import (CELL_H, CELL_W, N_COLS, N_ROWS, OUTLIERS,
                                   make_field)
 from pear.core.analysis import (PeriodInfo, Region, build_golden_cell,
-                                expand_reference_roi, run_region_analysis)
+                                expand_reference_roi, run_region_analysis,
+                                run_region_separability, toggle_target)
 from pear.core.attributes import ATTR_LABELS, SIZE_ATTRS, compute_attributes
 from pear.core.period_core import estimate_period
 from pear.core import separability
@@ -81,6 +82,41 @@ def test_ranking_flags_injected_outliers():
                for i in top.outlier_indices}
     for cell in OUTLIERS:
         assert cell in flagged, f"injected outlier {cell} not flagged by {top.attr}"
+
+
+def test_labelled_separability_ranks_injected_targets():
+    img = make_field()
+    period = _period(img)
+    roi = (16, 13, 30, 26)
+    region = Region(rid=1, name="region 1", color="#2DD4BF", roi=roi)
+    run_region_analysis(img, region, period)
+
+    # Tag the injected outlier cells as targets.
+    for i, rec in enumerate(region.records):
+        if (rec["col"], rec["row"]) in set(OUTLIERS):
+            toggle_target(region, i)
+    assert len(region.target_idx) == len(OUTLIERS)
+
+    run_region_separability(region)
+    assert region.sep_ranking, "separability ranking must populate"
+    assert region.sep_sel_attr is not None
+    top = region.sep_ranking[0]
+    # The best attribute should separate targets from reference well and
+    # the suggested threshold should catch most targets with few false alarms.
+    assert top.separation_score > 80.0
+    assert top.auc > 0.9
+    assert top.catch_rate >= 0.75
+    assert top.false_alarm <= 0.25
+    assert top.n_target == len(OUTLIERS)
+
+
+def test_separability_empty_without_targets():
+    img = make_field()
+    period = _period(img)
+    region = Region(rid=1, name="r", color="#2DD4BF", roi=(16, 13, 30, 26))
+    run_region_analysis(img, region, period)
+    run_region_separability(region)   # no targets tagged
+    assert region.sep_ranking == []
 
 
 def test_modified_zscore_constant_is_zero():

@@ -30,6 +30,7 @@ class ImageView(QWidget):
     region_created = Signal(object)            # roi Rect
     region_modified = Signal(int, object)      # rid, roi Rect
     region_selected = Signal(int)              # rid
+    cell_tag_toggled = Signal(int)             # active-region instance index
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -46,6 +47,8 @@ class ImageView(QWidget):
         self._period: Optional[PeriodInfo] = None
         self._regions: List[Region] = []
         self._active_rid: Optional[int] = None
+        self._labelled = False     # display mode: labelled compare vs unsup.
+        self._tag_mode = False     # clicking a cell toggles its target tag
 
         # interaction state
         self._mode: Optional[str] = None   # "draw" | "move" | "resize" | "pan"
@@ -74,6 +77,16 @@ class ImageView(QWidget):
     def set_regions(self, regions: List[Region], active_rid: Optional[int]) -> None:
         self._regions = regions
         self._active_rid = active_rid
+        self.update()
+
+    def set_display_mode(self, labelled: bool) -> None:
+        self._labelled = labelled
+        if not labelled:
+            self._tag_mode = False
+        self.update()
+
+    def set_tag_mode(self, on: bool) -> None:
+        self._tag_mode = bool(on)
         self.update()
 
     def has_image(self) -> bool:
@@ -205,9 +218,13 @@ class ImageView(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRect(ref_rect)
 
-            if active:
-                self._paint_handles(p, ref_rect, QColor(base))
+            if self._labelled:
+                self._paint_targets(p, region, active)
+            elif active:
                 self._paint_markers(p, region)
+
+            if active and not self._tag_mode:
+                self._paint_handles(p, ref_rect, QColor(base))
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
         p.setPen(QPen(QColor(theme.PANEL), 1.5))
@@ -238,6 +255,24 @@ class ImageView(QWidget):
             p.setBrush(fill)
             p.drawRect(r)
             self._paint_corner_ticks(p, r, bright)
+
+    def _paint_targets(self, p: QPainter, region: Region, active: bool) -> None:
+        # Labelled compare: tagged target cells get a bold filled overlay;
+        # the rest of the region's instances read as reference (the outline
+        # already drawn). Target uses the region colour, brightened.
+        target = QColor("#FF3B30") if active else QColor("#FF7A70")
+        fill = QColor(target)
+        fill.setAlpha(70)
+        pen = QPen(target, 2.6 if active else 1.6)
+        pen.setCosmetic(True)
+        for i in sorted(region.target_idx):
+            if 0 <= i < len(region.instances):
+                r = self._rect_to_widget(region.instances[i])
+                p.setPen(pen)
+                p.setBrush(fill)
+                p.drawRect(r)
+                if active:
+                    self._paint_corner_ticks(p, r, target)
 
     @staticmethod
     def _paint_corner_ticks(p: QPainter, r: QRectF, color: QColor) -> None:
@@ -297,6 +332,16 @@ class ImageView(QWidget):
                 return r.rid
         return None
 
+    def _instance_at(self, pos: QPointF) -> Optional[int]:
+        """Index of the active region's instance under ``pos`` (or None)."""
+        region = self._active_region()
+        if region is None:
+            return None
+        for i, inst in enumerate(region.instances):
+            if self._rect_to_widget(inst).contains(pos):
+                return i
+        return None
+
     # ------------------------------------------------------------------ #
     # mouse / wheel
     # ------------------------------------------------------------------ #
@@ -309,6 +354,13 @@ class ImageView(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
             return
         if e.button() != Qt.LeftButton or self._image is None:
+            return
+
+        # Tag mode: a click on an active-region cell toggles its target tag.
+        if self._tag_mode:
+            idx = self._instance_at(pos)
+            if idx is not None:
+                self.cell_tag_toggled.emit(idx)
             return
 
         handle = self._handle_at(pos)
@@ -479,6 +531,11 @@ class ImageView(QWidget):
     def _update_cursor(self, pos: QPointF) -> None:
         if self._image is None:
             self.unsetCursor()
+            return
+        if self._tag_mode:
+            self.setCursor(Qt.PointingHandCursor
+                           if self._instance_at(pos) is not None
+                           else Qt.ArrowCursor)
             return
         if self._handle_at(pos) is not None:
             self.setCursor(Qt.SizeFDiagCursor)

@@ -95,7 +95,68 @@ def rank_outlier_attributes(table: Dict[str, np.ndarray],
 
 
 # --------------------------------------------------------------------------- #
-# Phase 2 — labelled separability metrics (dormant; not wired to any UI)
+# Labelled compare — rank attributes by how well they separate target cells
+# from reference cells (uses the metrics below).
+# --------------------------------------------------------------------------- #
+@dataclass
+class AttrSeparabilityScore:
+    """How well one attribute separates tagged target cells from reference."""
+
+    attr: str
+    separation_score: float     # friendly 0..100 (from AUC)
+    auc: float
+    cnr: float
+    cohens_d: float
+    threshold: float
+    direction: str              # "greater" / "less" (target side of threshold)
+    catch_rate: float           # fraction of targets caught
+    false_alarm: float          # fraction of references flagged
+    n_target: int
+    n_reference: int
+
+
+def rank_separability_attributes(table: Dict[str, np.ndarray],
+                                 target_mask: np.ndarray,
+                                 skip: set | None = None
+                                 ) -> List[AttrSeparabilityScore]:
+    """Rank attributes by target-vs-reference separation (descending).
+
+    ``target_mask`` is a boolean array over the instances; True = target,
+    False = reference. Attributes in ``skip`` are excluded. Returns an
+    empty list if either group is empty.
+    """
+    skip = skip or set()
+    mask = np.asarray(target_mask, dtype=bool)
+    if mask.sum() == 0 or (~mask).sum() == 0:
+        return []
+    scores: List[AttrSeparabilityScore] = []
+    for attr, values in table.items():
+        if attr in skip:
+            continue
+        vals = np.nan_to_num(np.asarray(values, dtype=np.float64),
+                             nan=0.0, posinf=0.0, neginf=0.0)
+        t = vals[mask]
+        r = vals[~mask]
+        sugg = suggest_threshold(r, t)
+        scores.append(AttrSeparabilityScore(
+            attr=attr,
+            separation_score=separation_score(r, t),
+            auc=auc(r, t),
+            cnr=cnr(r, t),
+            cohens_d=cohens_d(r, t),
+            threshold=sugg.threshold,
+            direction=sugg.direction,
+            catch_rate=sugg.catch_rate,
+            false_alarm=sugg.false_alarm,
+            n_target=int(t.size),
+            n_reference=int(r.size),
+        ))
+    scores.sort(key=lambda s: (s.separation_score, s.auc), reverse=True)
+    return scores
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 — labelled separability metrics
 # --------------------------------------------------------------------------- #
 @dataclass
 class ThresholdSuggestion:
@@ -127,7 +188,9 @@ def cohens_d(reference: np.ndarray, target: np.ndarray) -> float:
     nr, nt = r.size, t.size
     if nr + nt - 2 <= 0:
         return 0.0
-    pooled_var = ((nr - 1) * r.var(ddof=1) + (nt - 1) * t.var(ddof=1)) / (nr + nt - 2)
+    vr = r.var(ddof=1) if nr > 1 else 0.0
+    vt = t.var(ddof=1) if nt > 1 else 0.0
+    pooled_var = ((nr - 1) * vr + (nt - 1) * vt) / (nr + nt - 2)
     return _safe_div(t.mean() - r.mean(), np.sqrt(pooled_var))
 
 

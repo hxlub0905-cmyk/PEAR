@@ -102,15 +102,30 @@ class Histogram(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(140)
         self._values: np.ndarray = np.array([])
+        self._target: Optional[np.ndarray] = None
+        self._threshold: Optional[float] = None
         self._title = ""
 
     def set_values(self, values, title: str = "") -> None:
         self._values = np.asarray(values, dtype=np.float64)
+        self._target = None
+        self._threshold = None
+        self._title = title
+        self.update()
+
+    def set_compare(self, ref_values, target_values, title: str = "",
+                    threshold: Optional[float] = None) -> None:
+        """Two overlaid populations: reference (black) and target (red)."""
+        self._values = np.asarray(ref_values, dtype=np.float64)
+        self._target = np.asarray(target_values, dtype=np.float64)
+        self._threshold = threshold
         self._title = title
         self.update()
 
     def clear(self) -> None:
         self._values = np.array([])
+        self._target = None
+        self._threshold = None
         self._title = ""
         self.update()
 
@@ -131,28 +146,44 @@ class Histogram(QWidget):
                       self.width() - margin_l - margin_r,
                       self.height() - margin_t - margin_b)
 
-        vmin, vmax = float(vals.min()), float(vals.max())
+        has_target = self._target is not None and self._target.size > 0
+        allv = np.concatenate([vals, self._target]) if has_target else vals
+        vmin, vmax = float(allv.min()), float(allv.max())
         if self._title:
             p.setPen(QColor(theme.MUTED))
             p.setFont(theme.mono_font(9))
             p.drawText(int(margin_l), 14, self._title)
 
         if vmax - vmin < 1e-12:
-            # Single-valued: one centered bar.
             p.fillRect(QRectF(plot.center().x() - 12, plot.top(),
                               24, plot.height()), QColor(theme.INK))
         else:
-            nbins = min(24, max(6, int(np.sqrt(vals.size)) + 4))
-            counts, edges = np.histogram(vals, bins=nbins, range=(vmin, vmax))
-            cmax = counts.max() if counts.max() > 0 else 1
+            nbins = min(24, max(6, int(np.sqrt(allv.size)) + 4))
+            ref_counts, _ = np.histogram(vals, bins=nbins, range=(vmin, vmax))
+            series = [(ref_counts, QColor(theme.INK))]
+            if has_target:
+                tgt_counts, _ = np.histogram(self._target, bins=nbins,
+                                             range=(vmin, vmax))
+                series.append((tgt_counts, QColor(theme.ACCENT)))
+            cmax = max(int(c.max()) for c, _ in series) or 1
             bw = plot.width() / nbins
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(theme.INK))
-            for i, c in enumerate(counts):
-                bh = (c / cmax) * plot.height()
-                p.drawRect(QRectF(plot.left() + i * bw + 1,
-                                  plot.bottom() - bh,
-                                  max(1.0, bw - 2), bh))
+            for counts, col in series:
+                p.setBrush(col)
+                for i, c in enumerate(counts):
+                    if c == 0:
+                        continue
+                    bh = (c / cmax) * plot.height()
+                    p.drawRect(QRectF(plot.left() + i * bw + 1,
+                                      plot.bottom() - bh,
+                                      max(1.0, bw - 2), bh))
+            if self._threshold is not None and vmax > vmin:
+                tx = plot.left() + (self._threshold - vmin) / (vmax - vmin) * plot.width()
+                tx = float(np.clip(tx, plot.left(), plot.right()))
+                tpen = QPen(QColor(theme.ACCENT), 1.5)
+                tpen.setStyle(Qt.DashLine)
+                p.setPen(tpen)
+                p.drawLine(tx, plot.top(), tx, plot.bottom())
 
         # baseline + min/max labels (mono)
         p.setPen(QPen(QColor(theme.LINE), 1))
@@ -179,7 +210,7 @@ def _fmt(v: float) -> str:
 class _RankRow(QFrame):
     clicked = Signal(str)
 
-    def __init__(self, attr: str, label: str, max_abs_z: float,
+    def __init__(self, attr: str, label: str, value_text: str,
                  frac: float, parent=None):
         super().__init__(parent)
         self.attr = attr
@@ -192,7 +223,7 @@ class _RankRow(QFrame):
         self._name = QLabel(label)
         self._name.setMinimumWidth(120)
         self._name.setFont(theme.display_font(10, weight=700))
-        self._val = _mono(f"{max_abs_z:.2f}σ")
+        self._val = _mono(value_text)
         self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         lay.addWidget(self._name, 1)
         lay.addWidget(self._val, 0)
@@ -241,21 +272,26 @@ class RankingList(QScrollArea):
         self._rows: List[_RankRow] = []
         self._selected: Optional[str] = None
 
-    def set_ranking(self, ranking, selected: Optional[str]) -> None:
+    def set_ranking(self, ranking, selected: Optional[str],
+                    value_fn=None, fmt=None, tooltip_fn=None) -> None:
+        """Populate rows. ``value_fn(score)`` gives the numeric magnitude
+        (drives the meter); ``fmt(value)`` renders the right-hand text;
+        ``tooltip_fn(score)`` an optional hover string."""
+        value_fn = value_fn or (lambda s: s.max_abs_z)
+        fmt = fmt or (lambda v: f"{v:.2f}σ")
         for row in self._rows:
             row.setParent(None)
             row.deleteLater()
         self._rows = []
         self._selected = selected
-        max_z = max((s.max_abs_z for s in ranking), default=1.0) or 1.0
+        maxv = max((value_fn(s) for s in ranking), default=1.0) or 1.0
         for score in ranking:
             label = ATTR_LABELS.get(score.attr, score.attr)
-            row = _RankRow(score.attr, label, score.max_abs_z,
-                           score.max_abs_z / max_z)
-            row.setToolTip(
-                f"{label}\nformula:  {ATTR_FORMULAS.get(score.attr, '—')}\n"
-                f"max|z| = 0.6745·(x − median)/MAD  (robust modified "
-                f"z-score)\n{score.n_outliers} cell(s) beyond 3.5σ")
+            v = value_fn(score)
+            row = _RankRow(score.attr, label, fmt(v),
+                           (v / maxv) if maxv > 0 else 0.0)
+            if tooltip_fn is not None:
+                row.setToolTip(tooltip_fn(score))
             row.clicked.connect(self.attr_selected)
             row.set_selected(score.attr == selected)
             self._lay.insertWidget(self._lay.count() - 1, row)
@@ -457,27 +493,57 @@ class SettingsPanel(QWidget):
 class AnalysisPanel(QWidget):
     attr_selected = Signal(str)
     export_requested = Signal()
+    mode_changed = Signal(str)          # "unsupervised" | "labelled"
+    tag_mode_toggled = Signal(bool)
 
-    _CAPTION = ("Measured separations on the selected region, ranked. "
-                "The numbers are for you to judge — PEAR does not pick an "
-                "attribute for you.")
-    _EMPTY = ("Add a region to see which attribute makes its outlier "
-              "cells stand out.")
+    _CAP_UNSUP = ("Measured separations on the selected region, ranked. "
+                  "The numbers are for you to judge — PEAR does not pick an "
+                  "attribute for you.")
+    _CAP_LABEL = ("Tag the target cells; the rest become reference. Attributes "
+                  "are ranked by how well they separate target from reference. "
+                  "The threshold is a suggestion — the call is yours.")
+    _EMPTY_UNSUP = ("Add a region to see which attribute makes its outlier "
+                    "cells stand out.")
+    _EMPTY_LABEL = ("Turn on “Tag target cells”, then click the suspect cells "
+                    "on the image. The rest become reference.")
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._mode = "unsupervised"
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(16)
 
         card = _card("Analysis", number="03")
         clay = card.layout()
-        self.caption = QLabel(self._CAPTION)
+
+        # mode selector
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(0)
+        self.unsup_btn = QPushButton("Unsupervised")
+        self.label_btn = QPushButton("Labelled compare")
+        for b, m in ((self.unsup_btn, "unsupervised"), (self.label_btn, "labelled")):
+            b.setCheckable(True)
+            b.setMinimumHeight(32)
+            b.clicked.connect(lambda _=False, mm=m: self._select_mode(mm))
+            mode_row.addWidget(b, 1)
+        self.unsup_btn.setChecked(True)
+        clay.addLayout(mode_row)
+
+        self.caption = QLabel(self._CAP_UNSUP)
         self.caption.setObjectName("Caption")
         self.caption.setWordWrap(True)
         clay.addWidget(self.caption)
 
-        self.empty_lbl = QLabel(self._EMPTY)
+        # tag toggle (labelled mode only)
+        self.tag_btn = QPushButton("Tag target cells")
+        self.tag_btn.setCheckable(True)
+        self.tag_btn.setMinimumHeight(32)
+        self.tag_btn.toggled.connect(self.tag_mode_toggled)
+        self.tag_btn.setVisible(False)
+        clay.addWidget(self.tag_btn)
+
+        self.empty_lbl = QLabel(self._EMPTY_UNSUP)
         self.empty_lbl.setObjectName("Hint")
         self.empty_lbl.setWordWrap(True)
         clay.addWidget(self.empty_lbl)
@@ -506,13 +572,45 @@ class AnalysisPanel(QWidget):
         clay.addWidget(self.export_btn)
 
         root.addWidget(card)
+        self._region: Optional[Region] = None
         self._set_results_visible(False)
+
+    # mode -------------------------------------------------------------- #
+    def set_mode(self, mode: str) -> None:
+        """Set the display mode and sync the controls (no signal emitted)."""
+        self._mode = mode
+        self.unsup_btn.setChecked(mode == "unsupervised")
+        self.label_btn.setChecked(mode == "labelled")
+        labelled = mode == "labelled"
+        self.caption.setText(self._CAP_LABEL if labelled else self._CAP_UNSUP)
+        self.tag_btn.setVisible(labelled)
+        if not labelled and self.tag_btn.isChecked():
+            self.tag_btn.setChecked(False)
+
+    def _select_mode(self, mode: str) -> None:
+        self.set_mode(mode)
+        self.mode_changed.emit(mode)
+
+    def mode(self) -> str:
+        return self._mode
+
+    def set_tag_active(self, on: bool) -> None:
+        self.tag_btn.setChecked(on)
 
     def _set_results_visible(self, on: bool) -> None:
         self.empty_lbl.setVisible(not on)
         self.export_btn.setEnabled(on)
 
+    # rendering --------------------------------------------------------- #
     def show_region(self, region: Optional[Region]) -> None:
+        self._region = region
+        if self._mode == "labelled":
+            self._show_labelled(region)
+        else:
+            self._show_unsupervised(region)
+
+    def _show_unsupervised(self, region: Optional[Region]) -> None:
+        self.empty_lbl.setText(self._EMPTY_UNSUP)
         if region is None or not region.ranking:
             self.ranking.set_ranking([], None)
             self.hist.clear()
@@ -520,18 +618,75 @@ class AnalysisPanel(QWidget):
             self._set_results_visible(False)
             return
         self._set_results_visible(True)
-        self.ranking.set_ranking(region.ranking, region.sel_attr)
+        self.ranking.set_ranking(
+            region.ranking, region.sel_attr,
+            value_fn=lambda s: s.max_abs_z,
+            fmt=lambda v: f"{v:.2f}σ",
+            tooltip_fn=lambda s: (
+                f"{ATTR_LABELS.get(s.attr, s.attr)}\n"
+                f"formula:  {ATTR_FORMULAS.get(s.attr, '—')}\n"
+                f"max|z| = 0.6745·(x − median)/MAD\n"
+                f"{s.n_outliers} cell(s) beyond 3.5σ"))
         self.update_attr(region, region.sel_attr)
+
+    def _show_labelled(self, region: Optional[Region]) -> None:
+        self.empty_lbl.setText(self._EMPTY_LABEL)
+        if region is None or not region.sep_ranking:
+            self.ranking.set_ranking([], None)
+            self.hist.clear()
+            if region is not None and region.target_idx:
+                self.measured.setText("Tag at least one reference and one "
+                                      "target cell to compare.")
+            else:
+                self.measured.setText("")
+            self._set_results_visible(False)
+            return
+        self._set_results_visible(True)
+        self.ranking.set_ranking(
+            region.sep_ranking, region.sep_sel_attr,
+            value_fn=lambda s: s.separation_score,
+            fmt=lambda v: f"{v:.0f}/100",
+            tooltip_fn=lambda s: (
+                f"{ATTR_LABELS.get(s.attr, s.attr)}\n"
+                f"formula:  {ATTR_FORMULAS.get(s.attr, '—')}\n"
+                f"separation = clip((AUC−0.5)·200, 0, 100)\n"
+                f"AUC {s.auc:.3f} · CNR {s.cnr:.2f} · d {s.cohens_d:.2f}"))
+        self.update_attr(region, region.sep_sel_attr)
 
     def update_attr(self, region: Region, attr: Optional[str]) -> None:
         if region is None or attr is None:
             return
         self.ranking.set_selected(attr)
-        values = [rec.get(attr, 0.0) for rec in region.records]
-        self.hist.set_values(values, ATTR_LABELS.get(attr, attr))
-        score = next((s for s in region.ranking if s.attr == attr), None)
+        if self._mode == "labelled":
+            self._update_labelled_attr(region, attr)
+        else:
+            values = [rec.get(attr, 0.0) for rec in region.records]
+            self.hist.set_values(values, ATTR_LABELS.get(attr, attr))
+            score = next((s for s in region.ranking if s.attr == attr), None)
+            if score is not None:
+                self.measured.setText(
+                    f"Measured (for reference): max|z| {score.max_abs_z:.1f}σ · "
+                    f"{score.n_outliers} cell(s) beyond 3.5σ on this attribute. "
+                    f"Whether to use it, and at what threshold, is your call.")
+
+    def _update_labelled_attr(self, region: Region, attr: str) -> None:
+        score = next((s for s in region.sep_ranking if s.attr == attr), None)
+        vals = np.array([rec.get(attr, 0.0) for rec in region.records],
+                        dtype=np.float64)
+        mask = np.zeros(len(region.records), dtype=bool)
+        for i in region.target_idx:
+            if 0 <= i < mask.size:
+                mask[i] = True
+        ref = vals[~mask]
+        tgt = vals[mask]
+        thr = score.threshold if score is not None else None
+        self.hist.set_compare(ref, tgt, ATTR_LABELS.get(attr, attr), thr)
         if score is not None:
+            catch = score.catch_rate * 100.0
+            fa = score.false_alarm * 100.0
             self.measured.setText(
-                f"Measured (for reference): max|z| {score.max_abs_z:.1f}σ · "
-                f"{score.n_outliers} cell(s) beyond 3.5σ on this attribute. "
-                f"Whether to use it, and at what threshold, is your call.")
+                f"Measured (for reference): separation {score.separation_score:.0f}/100 "
+                f"· AUC {score.auc:.3f}. Suggested threshold {score.threshold:.4g} "
+                f"({score.direction}) → catches {catch:.0f}% of "
+                f"{score.n_target} target(s), {fa:.0f}% reference false alarms. "
+                f"The threshold is yours to set.")

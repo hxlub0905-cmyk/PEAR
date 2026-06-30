@@ -35,9 +35,15 @@ labelled "best", and no threshold is auto-applied.
   and preview a **Golden Cell** (median-stacked reference).
 - Draw additive, editable rectangular **regions** inside a cell; each expands to every
   complete cell (phase-invariant).
-- Compute a **26+ attribute bank** per cell instance and produce an unsupervised
-  **outlier-attribute ranking**.
-- Distribution view, outlier-cell markers on the image, and **CSV export**.
+- Compute a **29-attribute bank** per cell instance with two analysis modes:
+  - **Unsupervised** — ranks attributes by how far the outlier cells separate
+    (robust modified z-score), with amber outlier markers on the image.
+  - **Labelled compare** — tag the suspect cells as *target*; the rest become
+    *reference*. Attributes are ranked by how well they separate target from
+    reference (separation score / AUC), with a suggested threshold reporting
+    catch% and false-alarm%. Hover any attribute for its formula.
+- Distribution view (single population, or reference-vs-target overlay with the
+  threshold line) and **CSV export** (carries the active mode's ranking).
 - Optional **pixel size (nm/px)** adds physical-area attributes.
 
 ## Install & run
@@ -112,6 +118,8 @@ In scope: single repeating-cell image, period detection + golden cell, additive/
 regions, unsupervised outlier-attribute ranking, distribution, outlier markers, CSV export,
 optional nm/px.
 
-Out of scope (V1): defect detection/decision, classification, ML; non-repeating modes;
-batch processing; labelled "normal vs target" separation (the engine is built in
-`separability.py` but no UI reaches it — Phase 2); recipe/JSON export.
+Both the unsupervised outlier ranking and the labelled reference-vs-target compare
+mode are available and switchable in the UI.
+
+Out of scope: defect detection/decision, classification, ML; non-repeating modes;
+batch processing; recipe/JSON export.

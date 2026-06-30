@@ -19,7 +19,8 @@ from pear import __version__
 from pear.core import stacking
 from pear.core.analysis import (REGION_PALETTE, PeriodInfo, Region,
                                 attribute_table, build_golden_cell,
-                                load_image, run_region_analysis)
+                                load_image, run_region_analysis,
+                                run_region_separability, toggle_target)
 from pear.core.attributes import ATTR_LABELS
 from pear.core.period_core import estimate_period
 from pear.ui import theme
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
         self._active_rid: Optional[int] = None
         self._next_rid = 1
         self._nm_per_px: float = 0.0
+        self._mode = "unsupervised"   # "unsupervised" | "labelled"
 
         self._build_topbar()
         self._build_docks()
@@ -115,7 +117,10 @@ class MainWindow(QMainWindow):
         self.image_view.region_created.connect(self.create_region)
         self.image_view.region_modified.connect(self.modify_region)
         self.image_view.region_selected.connect(self.select_region)
+        self.image_view.cell_tag_toggled.connect(self.on_cell_tag_toggled)
         self.analysis.attr_selected.connect(self.on_attr_selected)
+        self.analysis.mode_changed.connect(self.on_mode_changed)
+        self.analysis.tag_mode_toggled.connect(self.image_view.set_tag_mode)
         self.analysis.export_requested.connect(self.export_csv)
 
     # ------------------------------------------------------------------ #
@@ -231,9 +236,26 @@ class MainWindow(QMainWindow):
         region = self._active_region()
         if region is None:
             return
-        region.sel_attr = attr
+        if self._mode == "labelled":
+            region.sep_sel_attr = attr
+        else:
+            region.sel_attr = attr
         self.analysis.update_attr(region, attr)
         self.image_view.set_regions(self._regions, self._active_rid)
+
+    def on_mode_changed(self, mode: str) -> None:
+        self._mode = mode
+        self.analysis.set_mode(mode)
+        self.image_view.set_display_mode(mode == "labelled")
+        self._refresh_views()
+
+    def on_cell_tag_toggled(self, idx: int) -> None:
+        region = self._active_region()
+        if region is None:
+            return
+        toggle_target(region, idx)
+        run_region_separability(region)
+        self._refresh_views()
 
     # ------------------------------------------------------------------ #
     # analysis
@@ -283,19 +305,35 @@ class MainWindow(QMainWindow):
         with open(path, "w", newline="", encoding="utf-8-sig") as fh:
             w = csv.writer(fh)
             w.writerow([f"region: {region.name}"])
+            w.writerow([f"mode: {self._mode}"])
             w.writerow([])
-            w.writerow(["attribute", "max_abs_z", "n_outliers"])
-            for s in region.ranking:
-                w.writerow([ATTR_LABELS.get(s.attr, s.attr),
-                            f"{s.max_abs_z:.6g}", s.n_outliers])
+
+            if self._mode == "labelled" and region.sep_ranking:
+                w.writerow(["attribute", "separation_score", "auc", "cnr",
+                            "cohens_d", "threshold", "direction",
+                            "catch_rate", "false_alarm"])
+                for s in region.sep_ranking:
+                    w.writerow([ATTR_LABELS.get(s.attr, s.attr),
+                                f"{s.separation_score:.6g}", f"{s.auc:.6g}",
+                                f"{s.cnr:.6g}", f"{s.cohens_d:.6g}",
+                                f"{s.threshold:.6g}", s.direction,
+                                f"{s.catch_rate:.6g}", f"{s.false_alarm:.6g}"])
+            else:
+                w.writerow(["attribute", "max_abs_z", "n_outliers"])
+                for s in region.ranking:
+                    w.writerow([ATTR_LABELS.get(s.attr, s.attr),
+                                f"{s.max_abs_z:.6g}", s.n_outliers])
             w.writerow([])
+
             attr_ids = [k for k in ATTR_LABELS
                         if region.records and k in region.records[0]]
-            header = ["row", "col", "x", "y", "w", "h"] + attr_ids
+            target = set(region.target_idx)
+            header = (["row", "col", "x", "y", "w", "h", "is_target"]
+                      + attr_ids)
             w.writerow(header)
-            for rec in region.records:
+            for i, rec in enumerate(region.records):
                 row = [rec["row"], rec["col"], rec["x"], rec["y"],
-                       rec["w"], rec["h"]]
+                       rec["w"], rec["h"], int(i in target)]
                 row += [f"{rec.get(k, ''):.6g}" if isinstance(rec.get(k), float)
                         else rec.get(k, "") for k in attr_ids]
                 w.writerow(row)

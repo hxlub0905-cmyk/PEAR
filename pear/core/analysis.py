@@ -15,7 +15,9 @@ import numpy as np
 
 from pear.core import stacking
 from pear.core.attributes import (ATTR_LABELS, SIZE_ATTRS, compute_attributes)
-from pear.core.separability import AttrOutlierScore, rank_outlier_attributes
+from pear.core.separability import (AttrOutlierScore, AttrSeparabilityScore,
+                                    rank_outlier_attributes,
+                                    rank_separability_attributes)
 
 Rect = Tuple[int, int, int, int]  # (x, y, w, h) in image pixels
 
@@ -38,8 +40,14 @@ class Region:
     roi: Rect
     instances: List[Rect] = field(default_factory=list)
     records: List[dict] = field(default_factory=list)
+    # Unsupervised outlier ranking.
     ranking: List[AttrOutlierScore] = field(default_factory=list)
     sel_attr: Optional[str] = None
+    # Labelled compare: instance indices tagged as "target" (the rest are
+    # reference), and the resulting separability ranking.
+    target_idx: set = field(default_factory=set)
+    sep_ranking: List[AttrSeparabilityScore] = field(default_factory=list)
+    sep_sel_attr: Optional[str] = None
 
 
 @dataclass
@@ -130,11 +138,16 @@ def run_region_analysis(image: np.ndarray, region: Region, period: PeriodInfo,
                         k_sigma: float = 3.5) -> Region:
     """Compute attributes for every instance of a region and rank them.
 
-    Mutates and returns ``region`` (records, ranking, sel_attr).
+    Mutates and returns ``region`` (records, ranking, sel_attr). Re-expanding
+    invalidates any target tags (instance indices change), so they are
+    cleared.
     """
     px, py = period.px, period.py
     region.instances = expand_reference_roi(
         region.roi, px, py, image.shape, period.origin)
+    region.target_idx = set()
+    region.sep_ranking = []
+    region.sep_sel_attr = None
 
     g_sub = golden_subcell(period.golden_cell, region.roi, px, py)
 
@@ -157,6 +170,41 @@ def run_region_analysis(image: np.ndarray, region: Region, period: PeriodInfo,
     else:
         region.sel_attr = None
     return region
+
+
+def run_region_separability(region: Region) -> Region:
+    """Rank attributes by how well they separate tagged target cells from
+    the reference cells. Mutates and returns ``region`` (sep_ranking,
+    sep_sel_attr). Needs at least one target and one reference instance.
+    """
+    n = len(region.instances)
+    mask = np.zeros(n, dtype=bool)
+    for i in region.target_idx:
+        if 0 <= i < n:
+            mask[i] = True
+    table = attribute_table(region.records)
+    region.sep_ranking = rank_separability_attributes(
+        table, mask, skip=SIZE_ATTRS)
+    region.sep_sel_attr = region.sep_ranking[0].attr if region.sep_ranking else None
+    return region
+
+
+def toggle_target(region: Region, idx: int) -> None:
+    """Toggle whether instance ``idx`` is tagged as a target cell."""
+    if idx in region.target_idx:
+        region.target_idx.discard(idx)
+    else:
+        region.target_idx.add(idx)
+
+
+def target_mask(region: Region) -> np.ndarray:
+    """Boolean array over instances: True where tagged as target."""
+    n = len(region.instances)
+    mask = np.zeros(n, dtype=bool)
+    for i in region.target_idx:
+        if 0 <= i < n:
+            mask[i] = True
+    return mask
 
 
 def attribute_table(records: List[dict]) -> Dict[str, np.ndarray]:
