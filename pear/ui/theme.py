@@ -88,6 +88,11 @@ _QSS = f"""
 QMainWindow, QWidget {{
     background: {CHROME};
 }}
+/* Labels must be transparent — otherwise the QWidget rule above paints a
+   grey band behind every label and hides painted row backgrounds. */
+QLabel {{
+    background: transparent;
+}}
 
 /* ---- topbar ---- */
 #TopBar {{

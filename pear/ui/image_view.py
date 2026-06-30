@@ -172,45 +172,85 @@ class ImageView(QWidget):
         for region in self._regions:
             active = region.rid == self._active_rid
             base = QColor(region.color)
-            if not active:
-                base.setAlpha(120)
-            inst_pen = QPen(base, 2 if active else 1)
-            inst_pen.setCosmetic(True)
-            p.setPen(inst_pen)
-            p.setBrush(Qt.NoBrush)
-            for inst in region.instances:
-                p.drawRect(self._rect_to_widget(inst))
 
-            # The reference ROI itself, slightly emphasized.
-            ref_pen = QPen(base, 2)
-            ref_pen.setCosmetic(True)
-            ref_pen.setStyle(Qt.DashLine if not active else Qt.SolidLine)
-            p.setPen(ref_pen)
+            # Instances: a soft glow underlay + a crisp stroke, with a
+            # faint tint fill so the cells read clearly on the dark stage.
+            glow = QColor(base)
+            glow.setAlpha(70 if active else 30)
+            stroke = QColor(base)
+            stroke.setAlpha(255 if active else 120)
+            fill = QColor(base)
+            fill.setAlpha(40 if active else 16)
+
+            glow_pen = QPen(glow, 5 if active else 3)
+            glow_pen.setCosmetic(True)
+            crisp_pen = QPen(stroke, 2 if active else 1)
+            crisp_pen.setCosmetic(True)
+
+            for inst in region.instances:
+                r = self._rect_to_widget(inst)
+                p.setPen(glow_pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(r)
+                p.setPen(crisp_pen)
+                p.setBrush(fill)
+                p.drawRect(r)
+
+            # The reference ROI itself, emphasized with a bright dashed edge.
             ref_rect = self._rect_to_widget(region.roi)
+            ref_pen = QPen(QColor(base), 2.4)
+            ref_pen.setCosmetic(True)
+            ref_pen.setStyle(Qt.SolidLine if active else Qt.DashLine)
+            p.setPen(ref_pen)
+            p.setBrush(Qt.NoBrush)
             p.drawRect(ref_rect)
 
             if active:
-                self._paint_handles(p, ref_rect, base)
+                self._paint_handles(p, ref_rect, QColor(base))
                 self._paint_markers(p, region)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
-        p.setPen(QPen(color, 1))
-        p.setBrush(QColor(theme.PANEL))
+        p.setPen(QPen(QColor(theme.PANEL), 1.5))
+        p.setBrush(color)
         for c in self._handle_centers(rect):
             p.drawRect(QRectF(c.x() - _HANDLE / 2, c.y() - _HANDLE / 2,
                               _HANDLE, _HANDLE))
 
     def _paint_markers(self, p: QPainter, region: Region) -> None:
         # Amber outlier markers for the active region + selected attribute.
-        flag = QColor(theme.FLAG)
+        # A glow + bright stroke + corner ticks make them read as "look
+        # here" without implying a verdict.
+        bright = QColor("#FFC44D")
+        glow = QColor(theme.FLAG)
+        glow.setAlpha(90)
         fill = QColor(theme.FLAG)
-        fill.setAlpha(40)
-        pen = QPen(flag, 2)
+        fill.setAlpha(55)
+        for inst in outlier_instances(region):
+            r = self._rect_to_widget(inst)
+            gpen = QPen(glow, 6)
+            gpen.setCosmetic(True)
+            p.setPen(gpen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(r)
+            spen = QPen(bright, 2.4)
+            spen.setCosmetic(True)
+            p.setPen(spen)
+            p.setBrush(fill)
+            p.drawRect(r)
+            self._paint_corner_ticks(p, r, bright)
+
+    @staticmethod
+    def _paint_corner_ticks(p: QPainter, r: QRectF, color: QColor) -> None:
+        t = max(4.0, min(10.0, r.width() * 0.22))
+        pen = QPen(color, 2.6)
         pen.setCosmetic(True)
         p.setPen(pen)
-        p.setBrush(fill)
-        for inst in outlier_instances(region):
-            p.drawRect(self._rect_to_widget(inst))
+        for cx, cy, sx, sy in (
+            (r.left(), r.top(), 1, 1), (r.right(), r.top(), -1, 1),
+            (r.left(), r.bottom(), 1, -1), (r.right(), r.bottom(), -1, -1),
+        ):
+            p.drawLine(cx, cy, cx + sx * t, cy)
+            p.drawLine(cx, cy, cx, cy + sy * t)
 
     def _paint_draw_rubberband(self, p: QPainter) -> None:
         if self._draw_rect is None:

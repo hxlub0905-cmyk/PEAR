@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFrame, QHBoxLayout,
                                QVBoxLayout, QWidget)
 
 from pear.core.analysis import PeriodInfo, Region
-from pear.core.attributes import ATTR_LABELS
+from pear.core.attributes import ATTR_FORMULAS, ATTR_LABELS
 from pear.ui import theme
 
 
@@ -252,6 +252,10 @@ class RankingList(QScrollArea):
             label = ATTR_LABELS.get(score.attr, score.attr)
             row = _RankRow(score.attr, label, score.max_abs_z,
                            score.max_abs_z / max_z)
+            row.setToolTip(
+                f"{label}\nformula:  {ATTR_FORMULAS.get(score.attr, '—')}\n"
+                f"max|z| = 0.6745·(x − median)/MAD  (robust modified "
+                f"z-score)\n{score.n_outliers} cell(s) beyond 3.5σ")
             row.clicked.connect(self.attr_selected)
             row.set_selected(score.attr == selected)
             self._lay.insertWidget(self._lay.count() - 1, row)

@@ -48,6 +48,40 @@ ATTR_LABELS: Dict[str, str] = {
     "c2c_maxabs": "C2C residual max|Δ|",
 }
 
+# Short human-readable definitions (shown as tooltips so the engineer can
+# see exactly how each number is computed).
+ATTR_FORMULAS: Dict[str, str] = {
+    "glv_mean": "mean(gray)",
+    "glv_std": "std(gray)",
+    "glv_min": "min(gray)",
+    "glv_max": "max(gray)",
+    "glv_median": "median(gray)",
+    "glv_p5": "5th percentile of gray",
+    "glv_p95": "95th percentile of gray",
+    "glv_iqr": "P75 − P25",
+    "glv_mad": "median(|x − median|)",
+    "glv_range": "max − min",
+    "glv_skew": "m3 / m2^1.5 (central moments)",
+    "glv_kurtosis": "m4 / m2² − 3 (excess)",
+    "snr": "mean / std",
+    "michelson": "(max − min) / (max + min)",
+    "rms_contrast": "std / mean",
+    "grad_mean": "mean √(Sobelx² + Sobely²)",
+    "lap_var": "variance of Laplacian",
+    "edge_density": "fraction of px with |grad| > 25",
+    "entropy": "Shannon entropy of 256-bin histogram",
+    "fft_hf_ratio": "energy beyond 0.25·Nyquist / total energy",
+    "glcm_contrast": "Σ P·(i−j)²  (8-level horizontal GLCM)",
+    "glcm_homogeneity": "Σ P / (1 + (i−j)²)",
+    "glcm_energy": "Σ P²",
+    "glcm_correlation": "normalized i,j correlation of P",
+    "area_px": "w · h",
+    "area_nm2": "w · h · (nm_per_px)²",
+    "c2c_rms": "√mean((patch − golden)²)",
+    "c2c_mae": "mean(|patch − golden|)",
+    "c2c_maxabs": "max(|patch − golden|)",
+}
+
 # Attributes that describe the box, not the structure. Shown in the
 # per-instance data but excluded from outlier ranking by default.
 SIZE_ATTRS = {"area_px", "area_nm2"}

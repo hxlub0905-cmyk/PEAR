@@ -19,10 +19,12 @@ from pear.core.separability import AttrOutlierScore, rank_outlier_attributes
 
 Rect = Tuple[int, int, int, int]  # (x, y, w, h) in image pixels
 
-# A fixed palette for regions; cycles when exhausted.
+# A fixed palette for regions; cycles when exhausted. Bright, saturated
+# hues that pop on the dark stage. Amber and red are reserved (markers /
+# Swiss accent), so they are excluded here.
 REGION_PALETTE: List[str] = [
-    "#0E8C8C", "#E0A52E", "#2E9E7B", "#6C7BD6",
-    "#C85C8E", "#5BA3D0", "#B07A3C", "#7E9B3A",
+    "#2DD4BF", "#60A5FA", "#C084FC", "#F472B6",
+    "#34D399", "#38BDF8", "#A3E635", "#818CF8",
 ]
 
 
