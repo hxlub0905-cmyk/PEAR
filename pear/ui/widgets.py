@@ -22,22 +22,26 @@ from pear.ui import theme
 # --------------------------------------------------------------------------- #
 # small helpers
 # --------------------------------------------------------------------------- #
-def _card(title: Optional[str] = None) -> QFrame:
+def _card(title: Optional[str] = None, number: Optional[str] = None) -> QFrame:
     frame = QFrame()
     frame.setObjectName("Card")
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(12, 12, 12, 12)
-    lay.setSpacing(8)
+    lay.setContentsMargins(16, 16, 16, 16)
+    lay.setSpacing(12)
     if title:
-        lbl = QLabel(title)
-        lbl.setObjectName("SectionTitle")
-        lay.addWidget(lbl)
+        if number:
+            lay.addWidget(_eyebrow(f"{number} — {title}"))
+        head = QLabel(title.upper())
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(15))
+        lay.addWidget(head)
     return frame
 
 
 def _eyebrow(text: str) -> QLabel:
-    lbl = QLabel(text.upper())
+    lbl = QLabel(text)
     lbl.setObjectName("Eyebrow")
+    lbl.setFont(theme.eyebrow_font(9))
     return lbl
 
 
@@ -136,14 +140,14 @@ class Histogram(QWidget):
         if vmax - vmin < 1e-12:
             # Single-valued: one centered bar.
             p.fillRect(QRectF(plot.center().x() - 12, plot.top(),
-                              24, plot.height()), QColor(theme.ACCENT))
+                              24, plot.height()), QColor(theme.INK))
         else:
             nbins = min(24, max(6, int(np.sqrt(vals.size)) + 4))
             counts, edges = np.histogram(vals, bins=nbins, range=(vmin, vmax))
             cmax = counts.max() if counts.max() > 0 else 1
             bw = plot.width() / nbins
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(theme.ACCENT))
+            p.setBrush(QColor(theme.INK))
             for i, c in enumerate(counts):
                 bh = (c / cmax) * plot.height()
                 p.drawRect(QRectF(plot.left() + i * bw + 1,
@@ -181,19 +185,23 @@ class _RankRow(QFrame):
         self.attr = attr
         self._frac = max(0.0, min(1.0, frac))
         self._selected = False
-        self.setFixedHeight(34)
+        self.setFixedHeight(40)
         self.setCursor(Qt.PointingHandCursor)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 2, 8, 2)
-        name = QLabel(label)
-        name.setMinimumWidth(120)
-        val = _mono(f"{max_abs_z:.2f}σ")
-        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lay.addWidget(name, 1)
-        lay.addWidget(val, 0)
+        lay.setContentsMargins(10, 4, 10, 8)
+        self._name = QLabel(label)
+        self._name.setMinimumWidth(120)
+        self._name.setFont(theme.display_font(10, weight=700))
+        self._val = _mono(f"{max_abs_z:.2f}σ")
+        self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(self._name, 1)
+        lay.addWidget(self._val, 0)
 
     def set_selected(self, sel: bool) -> None:
         self._selected = sel
+        fg = theme.PANEL if sel else theme.INK
+        self._name.setStyleSheet(f"color: {fg};")
+        self._val.setStyleSheet(f"color: {fg};")
         self.update()
 
     def mousePressEvent(self, _e) -> None:
@@ -201,16 +209,17 @@ class _RankRow(QFrame):
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        # bar proportional to max|z|, behind the labels
-        bar = QColor(theme.ACCENT)
-        bar.setAlpha(45 if not self._selected else 80)
-        w = self.width() * self._frac
-        p.fillRect(QRectF(0, 0, w, self.height()), bar)
+        # Selected row inverts to black; others stay white with a hairline.
         if self._selected:
-            pen = QPen(QColor(theme.ACCENT), 1.5)
-            p.setPen(pen)
-            p.drawRect(self.rect().adjusted(1, 1, -1, -1))
+            p.fillRect(self.rect(), QColor(theme.INK))
+        else:
+            p.fillRect(self.rect(), QColor(theme.PANEL))
+            p.setPen(QPen(QColor(theme.CHROME), 1))
+            p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+        # Red magnitude meter along the bottom edge (functional signal).
+        meter_w = self.width() * self._frac
+        p.fillRect(QRectF(0, self.height() - 4, meter_w, 4),
+                   QColor(theme.ACCENT))
         p.end()
 
 
@@ -270,11 +279,11 @@ class SettingsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
 
         # --- Lattice card ------------------------------------------------ #
-        lattice = _card("Lattice")
+        lattice = _card("Lattice", number="01")
         llay = lattice.layout()
         self.period_lbl = _mono("period: —")
         self.axis_lbl = _mono("axis: —")
@@ -286,14 +295,16 @@ class SettingsPanel(QWidget):
         llay.addWidget(self.align_pill)
 
         btns = QHBoxLayout()
+        btns.setSpacing(10)
         self.detect_btn = QPushButton("Detect")
         self.detect_btn.setObjectName("Primary")
         self.refine_btn = QPushButton("Refine")
+        for b in (self.detect_btn, self.refine_btn):
+            b.setMinimumHeight(34)
         self.detect_btn.clicked.connect(self.detect_requested)
         self.refine_btn.clicked.connect(self.refine_requested)
-        btns.addWidget(self.detect_btn)
-        btns.addWidget(self.refine_btn)
-        btns.addStretch(1)
+        btns.addWidget(self.detect_btn, 1)
+        btns.addWidget(self.refine_btn, 1)
         llay.addLayout(btns)
 
         llay.addWidget(_eyebrow("Golden cell"))
@@ -305,14 +316,15 @@ class SettingsPanel(QWidget):
         llay.addWidget(self.manual_toggle)
         self.manual_box = QWidget()
         mlay = QVBoxLayout(self.manual_box)
-        mlay.setContentsMargins(0, 0, 0, 0)
-        mlay.setSpacing(6)
+        mlay.setContentsMargins(0, 6, 0, 0)
+        mlay.setSpacing(8)
         self.px_spin = self._spin("px", 2, 100000)
         self.py_spin = self._spin("py", 2, 100000)
         self.nm_spin = self._dspin("nm/px", 0.0, 100000.0)
         for w in (self.px_spin[0], self.py_spin[0], self.nm_spin[0]):
             mlay.addWidget(w)
         apply_btn = QPushButton("Apply")
+        apply_btn.setMinimumHeight(32)
         apply_btn.clicked.connect(self._emit_manual)
         mlay.addWidget(apply_btn)
         self.manual_box.setVisible(False)
@@ -321,7 +333,7 @@ class SettingsPanel(QWidget):
         root.addWidget(lattice)
 
         # --- Regions card ----------------------------------------------- #
-        regions = _card("Regions")
+        regions = _card("Regions", number="02")
         rlay = regions.layout()
         hint = QLabel("Drag on the image to add a region. "
                       "Each region expands to every cell.")
@@ -329,9 +341,11 @@ class SettingsPanel(QWidget):
         hint.setWordWrap(True)
         rlay.addWidget(hint)
         self.region_list = QListWidget()
+        self.region_list.setMinimumHeight(120)
         self.region_list.itemClicked.connect(self._on_region_clicked)
         rlay.addWidget(self.region_list)
         self.delete_btn = QPushButton("Delete selected region")
+        self.delete_btn.setMinimumHeight(32)
         self.delete_btn.clicked.connect(self._on_delete)
         rlay.addWidget(self.delete_btn)
         root.addWidget(regions)
@@ -342,10 +356,13 @@ class SettingsPanel(QWidget):
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
         lbl = QLabel(label)
-        lbl.setMinimumWidth(48)
+        lbl.setFont(theme.eyebrow_font(9))
+        lbl.setMinimumWidth(56)
         sp = QSpinBox()
         sp.setRange(lo, hi)
+        sp.setMinimumHeight(30)
         h.addWidget(lbl)
         h.addWidget(sp, 1)
         return row, sp
@@ -354,11 +371,14 @@ class SettingsPanel(QWidget):
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(10)
         lbl = QLabel(label)
-        lbl.setMinimumWidth(48)
+        lbl.setFont(theme.eyebrow_font(9))
+        lbl.setMinimumWidth(56)
         sp = QDoubleSpinBox()
         sp.setRange(lo, hi)
         sp.setDecimals(3)
+        sp.setMinimumHeight(30)
         h.addWidget(lbl)
         h.addWidget(sp, 1)
         return row, sp
@@ -389,9 +409,9 @@ class SettingsPanel(QWidget):
         elif lap_var > 25:
             text, col = "marginal", theme.FLAG
         else:
-            text, col = "check alignment", theme.MUTED
+            text, col = "check alignment", theme.ACCENT
         self.align_pill.setText(f"alignment: {text}")
-        self.align_pill.setStyleSheet(f"color: {col};")
+        self.align_pill.setStyleSheet(f"color: {col}; font-weight: 700;")
 
     def set_regions(self, regions: List[Region], active_rid: Optional[int]) -> None:
         self.region_list.blockSignals(True)
@@ -443,10 +463,10 @@ class AnalysisPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
 
-        card = _card("Analysis")
+        card = _card("Analysis", number="03")
         clay = card.layout()
         self.caption = QLabel(self._CAPTION)
         self.caption.setObjectName("Caption")
@@ -478,6 +498,7 @@ class AnalysisPanel(QWidget):
         self.export_btn.setObjectName("Primary")
         self.export_btn.clicked.connect(self.export_requested)
         self.export_btn.setEnabled(False)
+        self.export_btn.setMinimumHeight(36)
         clay.addWidget(self.export_btn)
 
         root.addWidget(card)

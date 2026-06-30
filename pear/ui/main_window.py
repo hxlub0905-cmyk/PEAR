@@ -12,7 +12,8 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMessageBox, QPushButton, QWidget)
+                               QMainWindow, QMessageBox, QPushButton,
+                               QScrollArea, QTabWidget, QWidget)
 
 from pear import __version__
 from pear.core import stacking
@@ -54,50 +55,55 @@ class MainWindow(QMainWindow):
         bar = QWidget()
         bar.setObjectName("TopBar")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setContentsMargins(18, 10, 18, 10)
+        lay.setSpacing(10)
         title = QLabel("PEAR")
         title.setObjectName("BrandTitle")
-        sub = QLabel("· pre-EBI attribute ranker")
+        sub = QLabel("PRE-EBI ATTRIBUTE RANKER")
         sub.setObjectName("BrandSub")
-        self.dataset_lbl = QLabel("no image")
-        self.dataset_lbl.setObjectName("BrandSub")
+        self.dataset_lbl = QLabel("NO IMAGE")
+        self.dataset_lbl.setObjectName("DatasetTag")
         self.load_btn = QPushButton("Load…")
         self.load_btn.setObjectName("Primary")
+        self.load_btn.setMinimumHeight(34)
         lay.addWidget(title)
+        lay.addSpacing(6)
         lay.addWidget(sub)
         lay.addStretch(1)
         lay.addWidget(self.dataset_lbl)
+        lay.addSpacing(8)
         lay.addWidget(self.load_btn)
         self.setMenuWidget(bar)
 
     def _build_docks(self) -> None:
-        # A zero-size central widget lets the three docks fill the window.
-        spacer = QWidget()
-        spacer.setFixedSize(0, 0)
-        self.setCentralWidget(spacer)
-        self.setDockNestingEnabled(True)
-
+        # Image is the central canvas; the workspace (tabbed) is a right dock
+        # the user can float/redock/resize.
         self.image_view = ImageView()
         self.settings = SettingsPanel()
         self.analysis = AnalysisPanel()
+        self.setCentralWidget(self.image_view)
 
-        self.image_dock = self._dock("Image", self.image_view)
-        self.settings_dock = self._dock("Settings", self.settings)
-        self.analysis_dock = self._dock("Analysis", self.analysis)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(self._scroll(self.settings), "Settings")
+        self.tabs.addTab(self._scroll(self.analysis), "Analysis")
 
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.image_dock)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.settings_dock)
-        self.splitDockWidget(self.settings_dock, self.analysis_dock, Qt.Vertical)
-        self.resizeDocks([self.image_dock, self.settings_dock],
-                         [720, 400], Qt.Horizontal)
+        self.workspace_dock = QDockWidget("Workspace", self)
+        self.workspace_dock.setObjectName("dock_workspace")
+        self.workspace_dock.setWidget(self.tabs)
+        self.workspace_dock.setFeatures(QDockWidget.DockWidgetMovable |
+                                        QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.workspace_dock)
+        self.resizeDocks([self.workspace_dock], [440], Qt.Horizontal)
 
-    def _dock(self, title: str, widget: QWidget) -> QDockWidget:
-        dock = QDockWidget(title, self)
-        dock.setObjectName(f"dock_{title.lower()}")
-        dock.setWidget(widget)
-        dock.setFeatures(QDockWidget.DockWidgetMovable |
-                         QDockWidget.DockWidgetFloatable)
-        return dock
+    @staticmethod
+    def _scroll(widget: QWidget) -> QScrollArea:
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        area.setWidget(widget)
+        return area
 
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load_clicked)
