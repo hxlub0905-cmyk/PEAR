@@ -225,6 +225,56 @@ def test_cell_hover_and_focus(app):
     assert len(win._regions) == 1
 
 
+def test_attribute_search_and_family_filter(app):
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.create_region((16, 13, 30, 26))
+    rk = win.analysis.ranking
+    total = sum(1 for r in rk._rows)
+    assert total > 0
+
+    # Search narrows the shown rows (use isHidden — window isn't shown).
+    win.analysis.search.setText("glcm")
+    shown = [r for r in rk._rows if not r.isHidden()]
+    assert shown and all(r.attr.startswith("glcm") for r in shown)
+
+    win.analysis.search.setText("")
+    # Unchecking a family hides its rows.
+    win.analysis.family_btns["C2C"].setChecked(False)
+    assert all(not r.attr.startswith("c2c") for r in rk._rows
+               if not r.isHidden())
+
+
+def test_region_rename(app):
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_region()
+    rid = win._active_rid
+    win.rename_region(rid, "my cells")
+    assert win._region(rid).name == "my cells"
+
+
+def test_zoom_controls_change_scale(app):
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    iv = win.image_view
+    iv.resize(500, 400)
+    iv.fit()
+    base = iv._scale
+    iv.zoom_in()
+    assert iv._scale > base
+    iv.zoom_out()
+    iv.zoom_out()
+    assert iv._scale < base
+    assert iv.zoom_percent() > 0
+
+
 def test_theme_toggle_switches_palette(app):
     from pear.ui import theme
     from pear.ui.main_window import MainWindow

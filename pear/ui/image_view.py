@@ -35,6 +35,8 @@ class ImageView(QWidget):
     cell_tag_toggled = Signal(int)             # active-region instance index
     draw_without_region = Signal()             # dragged with no active region
     cell_focused = Signal(int)                 # clicked active-region cell
+    zoom_changed = Signal(float)               # new scale factor
+    cursor_info = Signal(str)                   # status-bar cursor readout
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -112,6 +114,29 @@ class ImageView(QWidget):
         self._offset = QPointF((vw - iw * self._scale) / 2.0,
                                (vh - ih * self._scale) / 2.0)
         self.update()
+        self.zoom_changed.emit(self._scale)
+
+    def zoom_by(self, factor: float, anchor: Optional[QPointF] = None) -> None:
+        """Scale by ``factor`` keeping the point under ``anchor`` fixed."""
+        if self._image is None:
+            return
+        if anchor is None:
+            anchor = QPointF(self.width() / 2.0, self.height() / 2.0)
+        img_anchor = self._to_image(anchor)
+        self._scale = float(np.clip(self._scale * factor, 0.05, 40.0))
+        self._offset = QPointF(anchor.x() - img_anchor.x() * self._scale,
+                               anchor.y() - img_anchor.y() * self._scale)
+        self.update()
+        self.zoom_changed.emit(self._scale)
+
+    def zoom_in(self) -> None:
+        self.zoom_by(1.25)
+
+    def zoom_out(self) -> None:
+        self.zoom_by(0.8)
+
+    def zoom_percent(self) -> int:
+        return int(round(self._scale * 100))
 
     # ------------------------------------------------------------------ #
     # coordinate transforms
@@ -484,6 +509,7 @@ class ImageView(QWidget):
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         pos = QPointF(e.position())
         self._mouse_pos = pos
+        self._emit_cursor(pos)
         if self._mode == "pan":
             delta = pos - self._drag_start
             self._offset = self._pan_at_press + delta
@@ -508,7 +534,23 @@ class ImageView(QWidget):
 
     def leaveEvent(self, _e) -> None:
         self._hover_idx = None
+        self.cursor_info.emit("")
         self.update()
+
+    def _emit_cursor(self, pos: QPointF) -> None:
+        if self._image is None:
+            self.cursor_info.emit("")
+            return
+        ip = self._to_image(pos)
+        x, y = int(np.floor(ip.x())), int(np.floor(ip.y()))
+        h, w = self._image.shape[:2]
+        if 0 <= x < w and 0 <= y < h:
+            s = f"x {x}  y {y}  ·  gray {int(self._image[y, x])}"
+            if self._period is not None:
+                s += f"  ·  cell ({y // self._period.py}, {x // self._period.px})"
+            self.cursor_info.emit(s)
+        else:
+            self.cursor_info.emit("")
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         if self._mode == "pan":
@@ -540,14 +582,8 @@ class ImageView(QWidget):
     def wheelEvent(self, e: QWheelEvent) -> None:
         if self._image is None:
             return
-        anchor = QPointF(e.position())
-        img_anchor = self._to_image(anchor)
         factor = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
-        self._scale = float(np.clip(self._scale * factor, 0.05, 40.0))
-        # Keep the point under the cursor stationary.
-        self._offset = QPointF(anchor.x() - img_anchor.x() * self._scale,
-                               anchor.y() - img_anchor.y() * self._scale)
-        self.update()
+        self.zoom_by(factor, QPointF(e.position()))
 
     # ------------------------------------------------------------------ #
     # interaction helpers

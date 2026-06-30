@@ -47,6 +47,9 @@ labelled "best", and no threshold is auto-applied.
   threshold line) and **CSV export** (carries the active mode's ranking).
 - **Hover** a cell on the image for its value, z-score, and outlier/target status;
   **click** a cell to inspect it (full readout in the status bar).
+- **Zoom controls** (Fit / − / +) and a live cursor readout (x, y, gray, cell) in the
+  status bar; **search** the ranking and filter it by attribute **family**.
+- Regions show a colour swatch and can be **renamed inline** in the list.
 - Switchable **theme** (calm dark instrument by default, or Swiss) via the topbar.
 - Optional **pixel size (nm/px)** adds physical-area attributes.
 

@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
 
         self._build_topbar()
         self._build_docks()
+        self._build_statusbar()
         self._wire()
 
     # ------------------------------------------------------------------ #
@@ -117,6 +118,37 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.workspace_dock)
         self.resizeDocks([self.workspace_dock], [440], Qt.Horizontal)
 
+    def _build_statusbar(self) -> None:
+        bar = self.statusBar()
+        # Cursor readout (left of the zoom controls).
+        self.cursor_lbl = QLabel("")
+        self.cursor_lbl.setObjectName("Mono")
+        self.cursor_lbl.setFont(theme.mono_font(9))
+        bar.addPermanentWidget(self.cursor_lbl)
+
+        zoom = QWidget()
+        zl = QHBoxLayout(zoom)
+        zl.setContentsMargins(0, 0, 0, 0)
+        zl.setSpacing(4)
+        fit = QPushButton("Fit")
+        minus = QPushButton("−")
+        plus = QPushButton("+")
+        for b in (fit, minus, plus):
+            b.setFixedHeight(22)
+        minus.setFixedWidth(28)
+        plus.setFixedWidth(28)
+        self.zoom_lbl = QLabel("100%")
+        self.zoom_lbl.setObjectName("Mono")
+        self.zoom_lbl.setFont(theme.mono_font(9))
+        self.zoom_lbl.setFixedWidth(48)
+        self.zoom_lbl.setAlignment(Qt.AlignCenter)
+        fit.clicked.connect(self.image_view.fit)
+        minus.clicked.connect(self.image_view.zoom_out)
+        plus.clicked.connect(self.image_view.zoom_in)
+        for wdg in (fit, minus, self.zoom_lbl, plus):
+            zl.addWidget(wdg)
+        bar.addPermanentWidget(zoom)
+
     @staticmethod
     def _scroll(widget: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -134,12 +166,16 @@ class MainWindow(QMainWindow):
         self.settings.region_add_requested.connect(self.add_region)
         self.settings.region_selected.connect(self.select_region)
         self.settings.region_deleted.connect(self.delete_region)
+        self.settings.region_renamed.connect(self.rename_region)
         self.image_view.region_created.connect(self.create_region)
         self.image_view.region_modified.connect(self.modify_region)
         self.image_view.region_selected.connect(self.select_region)
         self.image_view.draw_without_region.connect(self.on_draw_without_region)
         self.image_view.cell_tag_toggled.connect(self.on_cell_tag_toggled)
         self.image_view.cell_focused.connect(self.on_cell_focused)
+        self.image_view.zoom_changed.connect(
+            lambda s: self.zoom_lbl.setText(f"{int(round(s * 100))}%"))
+        self.image_view.cursor_info.connect(self.cursor_lbl.setText)
         self.analysis.attr_selected.connect(self.on_attr_selected)
         self.analysis.mode_changed.connect(self.on_mode_changed)
         self.analysis.tag_mode_toggled.connect(self.image_view.set_tag_mode)
@@ -275,6 +311,11 @@ class MainWindow(QMainWindow):
         if self._active_rid == rid:
             self._active_rid = self._regions[-1].rid if self._regions else None
         self._refresh_views()
+
+    def rename_region(self, rid: int, name: str) -> None:
+        region = self._region(rid)
+        if region is not None:
+            region.name = name   # list already shows it; no repopulate needed
 
     def on_attr_selected(self, attr: str) -> None:
         region = self._active_region()

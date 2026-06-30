@@ -8,14 +8,15 @@ from typing import List, Optional
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFrame, QHBoxLayout,
-                               QLabel, QListWidget, QListWidgetItem,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QPushButton, QScrollArea, QSizePolicy, QSpinBox,
                                QVBoxLayout, QWidget)
 
 from pear.core.analysis import PeriodInfo, Region
-from pear.core.attributes import ATTR_FORMULAS, ATTR_LABELS
+from pear.core.attributes import (ATTR_FAMILY, ATTR_FORMULAS, ATTR_LABELS,
+                                  FAMILIES)
 from pear.ui import theme
 
 
@@ -43,6 +44,13 @@ def _eyebrow(text: str) -> QLabel:
     lbl.setObjectName("Eyebrow")
     lbl.setFont(theme.eyebrow_font(9))
     return lbl
+
+
+def _swatch(hex_color: str, size: int = 12) -> QIcon:
+    """A small filled square icon in the region's colour."""
+    pm = QPixmap(size, size)
+    pm.fill(QColor(hex_color))
+    return QIcon(pm)
 
 
 def _mono(text: str = "") -> QLabel:
@@ -304,6 +312,8 @@ class RankingList(QScrollArea):
         self.setWidget(self._host)
         self._rows: List[_RankRow] = []
         self._selected: Optional[str] = None
+        self._filter_text = ""
+        self._allowed: Optional[set] = None   # None = all families
 
     def set_ranking(self, ranking, selected: Optional[str],
                     value_fn=None, fmt=None, tooltip_fn=None) -> None:
@@ -329,6 +339,21 @@ class RankingList(QScrollArea):
             row.set_selected(score.attr == selected)
             self._lay.insertWidget(self._lay.count() - 1, row)
             self._rows.append(row)
+        self._apply_current_filter()
+
+    def apply_filter(self, text: str, allowed: Optional[set]) -> None:
+        self._filter_text = (text or "").strip().lower()
+        self._allowed = allowed
+        self._apply_current_filter()
+
+    def _apply_current_filter(self) -> None:
+        for row in self._rows:
+            label = ATTR_LABELS.get(row.attr, row.attr)
+            fam = ATTR_FAMILY.get(row.attr, "")
+            ok = (not self._filter_text or self._filter_text in label.lower())
+            if self._allowed is not None and fam not in self._allowed:
+                ok = False
+            row.setVisible(ok)
 
     def set_selected(self, attr: Optional[str]) -> None:
         self._selected = attr
@@ -349,6 +374,7 @@ class SettingsPanel(QWidget):
     region_add_requested = Signal()
     region_selected = Signal(int)
     region_deleted = Signal(int)
+    region_renamed = Signal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -421,6 +447,7 @@ class SettingsPanel(QWidget):
         self.region_list = QListWidget()
         self.region_list.setMinimumHeight(120)
         self.region_list.itemClicked.connect(self._on_region_clicked)
+        self.region_list.itemChanged.connect(self._on_item_changed)
         rlay.addWidget(self.region_list)
         self.delete_btn = QPushButton("Delete selected region")
         self.delete_btn.setMinimumHeight(32)
@@ -495,9 +522,11 @@ class SettingsPanel(QWidget):
         self.region_list.blockSignals(True)
         self.region_list.clear()
         for r in regions:
-            item = QListWidgetItem(f"  {r.name} · {len(r.instances)} cells")
+            item = QListWidgetItem(r.name)              # editable = name only
             item.setData(Qt.UserRole, r.rid)
-            item.setForeground(QColor(r.color))
+            item.setIcon(_swatch(r.color))             # colour badge
+            item.setToolTip(f"{len(r.instances)} cells")
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
             self.region_list.addItem(item)
             if r.rid == active_rid:
                 self.region_list.setCurrentItem(item)
@@ -516,6 +545,12 @@ class SettingsPanel(QWidget):
         rid = item.data(Qt.UserRole)
         if rid is not None:
             self.region_selected.emit(int(rid))
+
+    def _on_item_changed(self, item: QListWidgetItem) -> None:
+        rid = item.data(Qt.UserRole)
+        name = item.text().strip()
+        if rid is not None and name:
+            self.region_renamed.emit(int(rid), name)
 
     def _on_delete(self) -> None:
         item = self.region_list.currentItem()
@@ -582,6 +617,28 @@ class AnalysisPanel(QWidget):
         clay.addWidget(self.empty_lbl)
 
         clay.addWidget(_eyebrow("Ranking"))
+
+        # filter bar: search + per-family chips
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("search attribute…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._apply_filter)
+        clay.addWidget(self.search)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(4)
+        self.family_btns = {}
+        for fam in FAMILIES:
+            b = QPushButton(fam)
+            b.setCheckable(True)
+            b.setChecked(True)
+            b.setFixedHeight(24)
+            b.toggled.connect(self._apply_filter)
+            self.family_btns[fam] = b
+            chips.addWidget(b)
+        chips.addStretch(1)
+        clay.addLayout(chips)
+
         self.ranking = RankingList()
         self.ranking.setMinimumHeight(180)
         self.ranking.attr_selected.connect(self.attr_selected)
@@ -635,6 +692,10 @@ class AnalysisPanel(QWidget):
     def _set_results_visible(self, on: bool) -> None:
         self.empty_lbl.setVisible(not on)
         self.export_btn.setEnabled(on)
+
+    def _apply_filter(self, *_args) -> None:
+        allowed = {f for f, b in self.family_btns.items() if b.isChecked()}
+        self.ranking.apply_filter(self.search.text(), allowed)
 
     # rendering --------------------------------------------------------- #
     def show_region(self, region: Optional[Region]) -> None:

@@ -82,6 +82,23 @@ ATTR_FORMULAS: Dict[str, str] = {
     "c2c_maxabs": "max(|patch − golden|)",
 }
 
+# Attribute families, for grouping / filtering in the UI.
+ATTR_FAMILY = {
+    "glv_mean": "GLV", "glv_std": "GLV", "glv_min": "GLV", "glv_max": "GLV",
+    "glv_median": "GLV", "glv_p5": "GLV", "glv_p95": "GLV", "glv_iqr": "GLV",
+    "glv_mad": "GLV", "glv_range": "GLV", "glv_skew": "GLV",
+    "glv_kurtosis": "GLV",
+    "snr": "Contrast", "michelson": "Contrast", "rms_contrast": "Contrast",
+    "grad_mean": "Texture", "lap_var": "Texture", "edge_density": "Texture",
+    "entropy": "Texture", "fft_hf_ratio": "Texture",
+    "glcm_contrast": "GLCM", "glcm_homogeneity": "GLCM",
+    "glcm_energy": "GLCM", "glcm_correlation": "GLCM",
+    "area_px": "Size", "area_nm2": "Size",
+    "c2c_rms": "C2C", "c2c_mae": "C2C", "c2c_maxabs": "C2C",
+}
+# Display order of families that appear in the ranking (Size is excluded).
+FAMILIES = ["GLV", "Contrast", "Texture", "GLCM", "C2C"]
+
 # Attributes that describe the box, not the structure. Shown in the
 # per-instance data but excluded from outlier ranking by default.
 SIZE_ATTRS = {"area_px", "area_nm2"}
