@@ -15,7 +15,8 @@ from typing import Dict, List
 import numpy as np
 
 _EPS = 1e-12
-_MAD_TO_SIGMA = 0.6745  # 0.75 quantile of the standard normal.
+_MAD_TO_SIGMA = 0.6745       # 0.75 quantile of the standard normal.
+_MEANAD_TO_SIGMA = 1.253314  # sqrt(pi/2): mean-AD -> sigma for a normal.
 
 
 # --------------------------------------------------------------------------- #
@@ -34,17 +35,25 @@ class AttrOutlierScore:
 def modified_zscores(values: np.ndarray) -> np.ndarray:
     """Robust modified z-scores: 0.6745 * (x - median) / MAD.
 
-    MAD = median(|x - median(x)|). When MAD is ~0 (a near-constant
-    attribute) the scores are all 0 — nothing separates.
+    MAD = median(|x - median(x)|). When a majority of cells share the same
+    value the MAD collapses to 0 even though a minority of cells differ —
+    which would mask exactly the outliers we are looking for. In that case
+    we fall back to the mean absolute deviation (the Iglewicz-Hoaglin
+    mean-AD variant), which stays finite as long as *any* value differs
+    from the median. Only a truly constant attribute yields all zeros.
     """
     x = np.asarray(values, dtype=np.float64)
     if x.size == 0:
         return x
     med = float(np.median(x))
-    mad = float(np.median(np.abs(x - med)))
-    if mad < _EPS:
-        return np.zeros_like(x)
-    return _MAD_TO_SIGMA * (x - med) / mad
+    abs_dev = np.abs(x - med)
+    mad = float(np.median(abs_dev))
+    if mad >= _EPS:
+        return _MAD_TO_SIGMA * (x - med) / mad
+    mean_ad = float(abs_dev.mean())
+    if mean_ad >= _EPS:
+        return (x - med) / (_MEANAD_TO_SIGMA * mean_ad)
+    return np.zeros_like(x)
 
 
 def rank_outlier_attributes(table: Dict[str, np.ndarray],

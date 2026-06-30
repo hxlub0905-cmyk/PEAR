@@ -108,6 +108,12 @@ class ImageView(QWidget):
         tl = self._to_widget(x, y)
         return QRectF(tl.x(), tl.y(), w * self._scale, h * self._scale)
 
+    def _qrectf_to_widget(self, qr: QRectF) -> QRectF:
+        """Map a QRectF given in image coordinates to widget coordinates."""
+        tl = self._to_widget(qr.left(), qr.top())
+        return QRectF(tl.x(), tl.y(),
+                      qr.width() * self._scale, qr.height() * self._scale)
+
     # ------------------------------------------------------------------ #
     # painting
     # ------------------------------------------------------------------ #
@@ -214,7 +220,7 @@ class ImageView(QWidget):
         pen.setStyle(Qt.DashLine)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawRect(self._rect_to_widget(self._norm_rect(self._draw_rect)))
+        p.drawRect(self._qrectf_to_widget(self._norm_rect(self._draw_rect)))
 
     # ------------------------------------------------------------------ #
     # hit testing
@@ -406,7 +412,25 @@ class ImageView(QWidget):
         h = max(_MIN_ROI, min(h, cpy, ih))
         x = max(0, min(x, iw - w))
         y = max(0, min(y, ih - h))
+        # Keep the ROI inside a single cell: it must not straddle a cell
+        # boundary, or every instance would sample neighbouring-cell content
+        # and the golden sub-cell (and C2C attributes) would drop out.
+        if self._period is not None:
+            ox, oy = self._period.origin
+            x = self._contain_in_cell(x, w, cpx, ox, iw)
+            y = self._contain_in_cell(y, h, cpy, oy, ih)
         return (x, y, w, h)
+
+    @staticmethod
+    def _contain_in_cell(pos: int, size: int, period: int,
+                         origin: int, limit: int) -> int:
+        """Shift ``pos`` so a ``size``-wide ROI fits within its cell."""
+        if size >= period:
+            return pos
+        local = (pos - origin) % period
+        if local + size > period:
+            pos -= (local + size - period)   # slide left to the cell edge
+        return max(0, min(pos, limit - size))
 
     @staticmethod
     def _norm_rect(r: QRectF) -> QRectF:

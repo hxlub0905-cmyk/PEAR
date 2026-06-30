@@ -85,6 +85,40 @@ def test_additive_regions_do_not_wipe(app):
     assert len(win._regions) == 2, "second draw must not wipe the first"
 
 
+def test_roi_clamped_within_single_cell(app):
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    iv = win.image_view
+    # A box at x=50, w=30 with px=64 would straddle the cell boundary.
+    x, y, w, h = iv._clamp_roi((50, 10, 30, 20))
+    assert (x % CELL_W) + w <= CELL_W
+    assert (y % CELL_H) + h <= CELL_H
+
+
+def test_draw_rubberband_does_not_crash(app):
+    from PySide6.QtCore import QPointF, QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    iv = win.image_view
+    iv.resize(400, 300)
+
+    def evt(kind, pos):
+        return QMouseEvent(kind, QPointF(pos), Qt.LeftButton,
+                           Qt.LeftButton, Qt.NoModifier)
+
+    iv.mousePressEvent(evt(QMouseEvent.Type.MouseButtonPress, QPoint(60, 60)))
+    iv.mouseMoveEvent(evt(QMouseEvent.Type.MouseMove, QPoint(110, 100)))
+    # A paint while the rubber-band is active must not raise.
+    iv.repaint()
+    iv.mouseReleaseEvent(evt(QMouseEvent.Type.MouseButtonRelease,
+                             QPoint(110, 100)))
+
+
 def test_grid_persists_when_regions_change(app):
     from pear.ui.main_window import MainWindow
 

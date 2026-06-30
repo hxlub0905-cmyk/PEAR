@@ -88,6 +88,18 @@ def test_modified_zscore_constant_is_zero():
     assert np.allclose(z, 0.0)
 
 
+def test_zero_mad_does_not_mask_minority_outlier():
+    # A majority of identical values collapses the MAD to 0; the mean-AD
+    # fallback must still surface the lone deviating cell.
+    vals = np.array([5.0] * 9 + [100.0])
+    z = separability.modified_zscores(vals)
+    assert abs(z[-1]) > 3.5
+    assert np.allclose(z[:9], 0.0)
+    scores = separability.rank_outlier_attributes({"a": vals})
+    assert scores[0].n_outliers == 1
+    assert scores[0].outlier_indices == [9]
+
+
 def test_phase2_metrics_directionagnostic_auc():
     rng = np.random.default_rng(0)
     ref = rng.normal(0, 1, 200)
