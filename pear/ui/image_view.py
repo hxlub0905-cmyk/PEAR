@@ -31,6 +31,7 @@ class ImageView(QWidget):
     region_modified = Signal(int, object)      # rid, roi Rect
     region_selected = Signal(int)              # rid
     cell_tag_toggled = Signal(int)             # active-region instance index
+    draw_without_region = Signal()             # dragged with no active region
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -385,7 +386,11 @@ class ImageView(QWidget):
             self._drag_start = pos
             return
 
-        # Empty space -> draw a new region.
+        # Empty space -> draw / redraw the ACTIVE region's ROI. New regions
+        # are created with the "+ Add region" button, not by drawing.
+        if self._active_rid is None:
+            self.draw_without_region.emit()
+            return
         ip = self._to_image(pos)
         self._mode = "draw"
         self._draw_rect = QRectF(ip, ip)
@@ -418,8 +423,9 @@ class ImageView(QWidget):
             roi = self._finalize_draw()
             self._draw_rect = None
             self._mode = None
-            if roi is not None:
-                self.region_created.emit(roi)
+            if roi is not None and self._active_rid is not None:
+                # The drawn rectangle (re)defines the active region's ROI.
+                self.region_modified.emit(self._active_rid, roi)
             self.update()
             return
         if self._mode in ("move", "resize"):

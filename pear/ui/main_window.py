@@ -112,11 +112,13 @@ class MainWindow(QMainWindow):
         self.settings.detect_requested.connect(self.detect_period)
         self.settings.refine_requested.connect(self.refine_period)
         self.settings.manual_changed.connect(self.on_manual_changed)
+        self.settings.region_add_requested.connect(self.add_region)
         self.settings.region_selected.connect(self.select_region)
         self.settings.region_deleted.connect(self.delete_region)
         self.image_view.region_created.connect(self.create_region)
         self.image_view.region_modified.connect(self.modify_region)
         self.image_view.region_selected.connect(self.select_region)
+        self.image_view.draw_without_region.connect(self.on_draw_without_region)
         self.image_view.cell_tag_toggled.connect(self.on_cell_tag_toggled)
         self.analysis.attr_selected.connect(self.on_attr_selected)
         self.analysis.mode_changed.connect(self.on_mode_changed)
@@ -211,6 +213,28 @@ class MainWindow(QMainWindow):
         self._active_rid = region.rid
         self._analyze(region)
         self._refresh_views()
+
+    def add_region(self) -> None:
+        """Create a new region with a default ROI centered in the first cell;
+        the user then drags on the image to (re)define its ROI."""
+        if self._image is None or self._period is None:
+            self.statusBar().showMessage(
+                "Load an image and detect a period first.", 4000)
+            return
+        px, py = self._period.px, self._period.py
+        w = max(6, px // 2)
+        h = max(6, py // 2)
+        roi = ((px - w) // 2, (py - h) // 2, w, h)
+        self.create_region(roi)
+        region = self._active_region()
+        name = region.name if region else "region"
+        self.statusBar().showMessage(
+            f"{name} added — drag on the image to set its ROI.", 4000)
+
+    def on_draw_without_region(self) -> None:
+        self.statusBar().showMessage(
+            "Click “+ Add region” to start a region, then drag to set its ROI.",
+            4000)
 
     def modify_region(self, rid: int, roi) -> None:
         region = self._region(rid)

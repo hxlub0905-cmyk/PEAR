@@ -33,8 +33,9 @@ labelled "best", and no threshold is auto-applied.
   8-bit grayscale on load (CJK-path safe IO).
 - Detect the repeating **period** `(px, py)`, with manual override and a refine pass; build
   and preview a **Golden Cell** (median-stacked reference).
-- Draw additive, editable rectangular **regions** inside a cell; each expands to every
-  complete cell (phase-invariant).
+- Add editable rectangular **regions** with **+ Add region**, then drag on the image to
+  set the active region's ROI inside a cell; each region expands to every complete cell
+  (phase-invariant). Multiple regions are independent.
 - Compute a **29-attribute bank** per cell instance with two analysis modes:
   - **Unsupervised** — ranks attributes by how far the outlier cells separate
     (robust modified z-score), with amber outlier markers on the image.

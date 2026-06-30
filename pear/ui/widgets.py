@@ -313,6 +313,7 @@ class SettingsPanel(QWidget):
     detect_requested = Signal()
     refine_requested = Signal()
     manual_changed = Signal(int, int, float)   # px, py, nm_per_px (0 = unset)
+    region_add_requested = Signal()
     region_selected = Signal(int)
     region_deleted = Signal(int)
 
@@ -375,11 +376,16 @@ class SettingsPanel(QWidget):
         # --- Regions card ----------------------------------------------- #
         regions = _card("Regions", number="02")
         rlay = regions.layout()
-        hint = QLabel("Drag on the image to add a region. "
-                      "Each region expands to every cell.")
+        hint = QLabel("Click + Add region, then drag on the image to set its "
+                      "ROI. Each region expands to every cell.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         rlay.addWidget(hint)
+        self.add_btn = QPushButton("+ Add region")
+        self.add_btn.setObjectName("Primary")
+        self.add_btn.setMinimumHeight(34)
+        self.add_btn.clicked.connect(self.region_add_requested)
+        rlay.addWidget(self.add_btn)
         self.region_list = QListWidget()
         self.region_list.setMinimumHeight(120)
         self.region_list.itemClicked.connect(self._on_region_clicked)

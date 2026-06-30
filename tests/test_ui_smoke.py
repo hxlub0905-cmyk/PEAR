@@ -118,6 +118,74 @@ def test_labelled_compare_mode_flow(app, tmp_path):
     assert region.target_idx == set()
 
 
+def test_add_region_button_creates_active_default(app):
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_region()
+    r = win._active_region()
+    assert r is not None
+    assert len(win._regions) == 1
+    assert r.instances, "default region must expand and analyze"
+    # Default ROI fits within a single cell.
+    x, y, w, h = r.roi
+    assert (x % CELL_W) + w <= CELL_W
+    assert (y % CELL_H) + h <= CELL_H
+
+
+def test_drag_redraws_active_region_no_new_region(app):
+    from PySide6.QtCore import QPointF, QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_region()
+    iv = win.image_view
+    iv.resize(500, 400)
+    iv.set_regions(win._regions, win._active_rid)
+
+    def evt(kind, pos):
+        return QMouseEvent(kind, QPointF(pos), Qt.LeftButton,
+                           Qt.LeftButton, Qt.NoModifier)
+
+    # Draw over an empty area (a far cell, not over the default ROI).
+    start = iv._to_widget(6 * CELL_W + 8, 5 * CELL_H + 8)
+    end = iv._to_widget(6 * CELL_W + 8 + 24, 5 * CELL_H + 8 + 20)
+    iv.mousePressEvent(evt(QMouseEvent.Type.MouseButtonPress,
+                           QPoint(int(start.x()), int(start.y()))))
+    iv.mouseMoveEvent(evt(QMouseEvent.Type.MouseMove,
+                          QPoint(int(end.x()), int(end.y()))))
+    iv.mouseReleaseEvent(evt(QMouseEvent.Type.MouseButtonRelease,
+                             QPoint(int(end.x()), int(end.y()))))
+
+    # Drawing redefined the active region's ROI; it did NOT create a new one.
+    assert len(win._regions) == 1
+    assert win._active_region().roi[2] > 0
+
+
+def test_drag_without_active_region_emits_prompt(app):
+    from PySide6.QtCore import QPointF, QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")  # no region added
+    iv = win.image_view
+    iv.resize(500, 400)
+    seen = []
+    iv.draw_without_region.connect(lambda: seen.append(True))
+
+    def evt(kind, pos):
+        return QMouseEvent(kind, QPointF(pos), Qt.LeftButton,
+                           Qt.LeftButton, Qt.NoModifier)
+
+    iv.mousePressEvent(evt(QMouseEvent.Type.MouseButtonPress, QPoint(120, 120)))
+    assert seen, "dragging with no active region should prompt to add one"
+    assert len(win._regions) == 0
+
+
 def test_additive_regions_do_not_wipe(app):
     from pear.ui.main_window import MainWindow
 
