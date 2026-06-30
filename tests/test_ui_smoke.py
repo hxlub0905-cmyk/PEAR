@@ -186,6 +186,45 @@ def test_drag_without_active_region_emits_prompt(app):
     assert len(win._regions) == 0
 
 
+def test_cell_hover_and_focus(app):
+    from PySide6.QtCore import QPointF, QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+    from pear.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_region()
+    iv = win.image_view
+    iv.resize(600, 460)
+    iv.set_regions(win._regions, win._active_rid)
+    region = win._active_region()
+
+    # Pick an instance that is NOT the reference ROI (avoid the move path).
+    target_idx = max(range(len(region.instances)),
+                     key=lambda i: region.instances[i][0] + region.instances[i][1])
+    center = iv._rect_to_widget(region.instances[target_idx]).center()
+    pt = QPoint(int(center.x()), int(center.y()))
+
+    def evt(kind, pos):
+        return QMouseEvent(kind, QPointF(pos), Qt.NoButton if kind ==
+                           QMouseEvent.Type.MouseMove else Qt.LeftButton,
+                           Qt.NoButton, Qt.NoModifier)
+
+    iv.mouseMoveEvent(evt(QMouseEvent.Type.MouseMove, pt))
+    assert iv._hover_idx == target_idx
+
+    focused = []
+    iv.cell_focused.connect(focused.append)
+    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, QPointF(pt),
+                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    iv.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease, QPointF(pt),
+                                     Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert focused == [target_idx]
+    assert iv._focus_idx == target_idx
+    # No new region created by the click.
+    assert len(win._regions) == 1
+
+
 def test_theme_toggle_switches_palette(app):
     from pear.ui import theme
     from pear.ui.main_window import MainWindow

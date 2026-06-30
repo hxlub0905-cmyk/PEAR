@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self.image_view.region_selected.connect(self.select_region)
         self.image_view.draw_without_region.connect(self.on_draw_without_region)
         self.image_view.cell_tag_toggled.connect(self.on_cell_tag_toggled)
+        self.image_view.cell_focused.connect(self.on_cell_focused)
         self.analysis.attr_selected.connect(self.on_attr_selected)
         self.analysis.mode_changed.connect(self.on_mode_changed)
         self.analysis.tag_mode_toggled.connect(self.image_view.set_tag_mode)
@@ -291,6 +292,19 @@ class MainWindow(QMainWindow):
         self.analysis.set_mode(mode)
         self.image_view.set_display_mode(mode == "labelled")
         self._refresh_views()
+
+    def on_cell_focused(self, idx: int) -> None:
+        region = self._active_region()
+        if region is None or not (0 <= idx < len(region.records)):
+            return
+        rec = region.records[idx]
+        parts = [f"cell (row {rec['row']}, col {rec['col']})"]
+        ranking = (region.sep_ranking if self._mode == "labelled"
+                   else region.ranking)
+        for s in ranking[:3]:
+            if s.attr in rec:
+                parts.append(f"{ATTR_LABELS.get(s.attr, s.attr)}={rec[s.attr]:.4g}")
+        self.statusBar().showMessage("  ·  ".join(parts), 8000)
 
     def on_cell_tag_toggled(self, idx: int) -> None:
         region = self._active_region()

@@ -16,6 +16,8 @@ from PySide6.QtGui import (QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap,
 from PySide6.QtWidgets import QWidget
 
 from pear.core.analysis import PeriodInfo, Region, outlier_instances
+from pear.core.attributes import ATTR_LABELS
+from pear.core.separability import modified_zscores
 from pear.ui import theme
 
 Rect = Tuple[int, int, int, int]
@@ -32,6 +34,7 @@ class ImageView(QWidget):
     region_selected = Signal(int)              # rid
     cell_tag_toggled = Signal(int)             # active-region instance index
     draw_without_region = Signal()             # dragged with no active region
+    cell_focused = Signal(int)                 # clicked active-region cell
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,6 +53,10 @@ class ImageView(QWidget):
         self._active_rid: Optional[int] = None
         self._labelled = False     # display mode: labelled compare vs unsup.
         self._tag_mode = False     # clicking a cell toggles its target tag
+        self._hover_idx: Optional[int] = None   # cell under cursor (readout)
+        self._focus_idx: Optional[int] = None   # clicked/inspected cell
+        self._mouse_pos = QPointF()
+        self._press_idx: Optional[int] = None
 
         # interaction state
         self._mode: Optional[str] = None   # "draw" | "move" | "resize" | "pan"
@@ -148,7 +155,9 @@ class ImageView(QWidget):
 
         self._paint_grid(p)
         self._paint_regions(p)
+        self._paint_focus(p)
         self._paint_draw_rubberband(p)
+        self._paint_readout(p)
         p.end()
 
     def _paint_placeholder(self, p: QPainter) -> None:
@@ -298,6 +307,81 @@ class ImageView(QWidget):
         p.setBrush(Qt.NoBrush)
         p.drawRect(self._qrectf_to_widget(self._norm_rect(self._draw_rect)))
 
+    def _paint_focus(self, p: QPainter) -> None:
+        region = self._active_region()
+        if region is None or self._focus_idx is None:
+            return
+        if not (0 <= self._focus_idx < len(region.instances)):
+            return
+        r = self._rect_to_widget(region.instances[self._focus_idx])
+        pen = QPen(QColor(theme.ACCENT_BRIGHT), 2.5)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-2, -2, 2, 2))
+
+    def _cell_readout_lines(self, region: Region, idx: int):
+        """Text lines describing one cell for the hover readout."""
+        rec = region.records[idx]
+        attr = region.sep_sel_attr if self._labelled else region.sel_attr
+        lines = [f"cell (row {rec['row']}, col {rec['col']})"]
+        flag = None
+        if attr is not None and attr in rec:
+            label = ATTR_LABELS.get(attr, attr)
+            lines.append(f"{label}: {rec[attr]:.4g}")
+            if self._labelled:
+                if idx in region.target_idx:
+                    flag = ("TARGET", theme.FLAG)
+                else:
+                    lines.append("reference")
+            else:
+                vals = np.array([r.get(attr, 0.0) for r in region.records],
+                                dtype=np.float64)
+                z = float(modified_zscores(vals)[idx])
+                lines.append(f"z = {z:+.1f}σ")
+                if abs(z) > 3.5:
+                    flag = ("OUTLIER", theme.FLAG)
+        return lines, flag
+
+    def _paint_readout(self, p: QPainter) -> None:
+        region = self._active_region()
+        if region is None or self._hover_idx is None:
+            return
+        if not (0 <= self._hover_idx < len(region.records)):
+            return
+        lines, flag = self._cell_readout_lines(region, self._hover_idx)
+        if flag is not None:
+            lines.append(flag[0])
+
+        p.setFont(theme.mono_font(9))
+        fm = p.fontMetrics()
+        tw = max(fm.horizontalAdvance(s) for s in lines)
+        lh = fm.height()
+        pad = 8
+        w = tw + 2 * pad
+        h = len(lines) * lh + 2 * pad
+
+        x = self._mouse_pos.x() + 16
+        y = self._mouse_pos.y() + 16
+        x = min(x, self.width() - w - 4)
+        y = min(y, self.height() - h - 4)
+
+        box = QRectF(x, y, w, h)
+        p.setPen(QPen(QColor(theme.ACCENT), 1.5))
+        bg = QColor(theme.PANEL)
+        bg.setAlpha(235)
+        p.setBrush(bg)
+        p.drawRect(box)
+
+        ty = y + pad + fm.ascent()
+        for i, s in enumerate(lines):
+            if flag is not None and i == len(lines) - 1:
+                p.setPen(QColor(flag[1]))
+            else:
+                p.setPen(QColor(theme.INK))
+            p.drawText(int(x + pad), int(ty), s)
+            ty += lh
+
     # ------------------------------------------------------------------ #
     # hit testing
     # ------------------------------------------------------------------ #
@@ -387,16 +471,19 @@ class ImageView(QWidget):
             return
 
         # Empty space -> draw / redraw the ACTIVE region's ROI. New regions
-        # are created with the "+ Add region" button, not by drawing.
+        # are created with the "+ Add region" button, not by drawing. A click
+        # (no drag) on a cell instead inspects that cell.
         if self._active_rid is None:
             self.draw_without_region.emit()
             return
+        self._press_idx = self._instance_at(pos)
         ip = self._to_image(pos)
         self._mode = "draw"
         self._draw_rect = QRectF(ip, ip)
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         pos = QPointF(e.position())
+        self._mouse_pos = pos
         if self._mode == "pan":
             delta = pos - self._drag_start
             self._offset = self._pan_at_press + delta
@@ -412,7 +499,16 @@ class ImageView(QWidget):
         if self._mode == "resize":
             self._do_resize(pos)
             return
+        # Idle hover: track the cell under the cursor for the readout.
+        new_hover = self._instance_at(pos)
+        if new_hover != self._hover_idx:
+            self._hover_idx = new_hover
         self._update_cursor(pos)
+        self.update()
+
+    def leaveEvent(self, _e) -> None:
+        self._hover_idx = None
+        self.update()
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         if self._mode == "pan":
@@ -426,6 +522,11 @@ class ImageView(QWidget):
             if roi is not None and self._active_rid is not None:
                 # The drawn rectangle (re)defines the active region's ROI.
                 self.region_modified.emit(self._active_rid, roi)
+            elif self._press_idx is not None:
+                # A click (no real drag) on a cell inspects it.
+                self._focus_idx = self._press_idx
+                self.cell_focused.emit(self._press_idx)
+            self._press_idx = None
             self.update()
             return
         if self._mode in ("move", "resize"):

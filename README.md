@@ -45,6 +45,9 @@ labelled "best", and no threshold is auto-applied.
     catch% and false-alarm%. Hover any attribute for its formula.
 - Distribution view (single population, or reference-vs-target overlay with the
   threshold line) and **CSV export** (carries the active mode's ranking).
+- **Hover** a cell on the image for its value, z-score, and outlier/target status;
+  **click** a cell to inspect it (full readout in the status bar).
+- Switchable **theme** (calm dark instrument by default, or Swiss) via the topbar.
 - Optional **pixel size (nm/px)** adds physical-area attributes.
 
 ## Install & run
