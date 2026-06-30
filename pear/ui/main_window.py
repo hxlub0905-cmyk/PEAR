@@ -11,9 +11,9 @@ from typing import List, Optional
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMessageBox, QPushButton,
-                               QScrollArea, QTabWidget, QWidget)
+from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog,
+                               QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+                               QPushButton, QScrollArea, QTabWidget, QWidget)
 
 from pear import __version__
 from pear.core import stacking
@@ -65,6 +65,9 @@ class MainWindow(QMainWindow):
         sub.setObjectName("BrandSub")
         self.dataset_lbl = QLabel("NO IMAGE")
         self.dataset_lbl.setObjectName("DatasetTag")
+        self.theme_btn = QPushButton(self._theme_btn_text())
+        self.theme_btn.setMinimumHeight(34)
+        self.theme_btn.clicked.connect(self.toggle_theme)
         self.load_btn = QPushButton("Load…")
         self.load_btn.setObjectName("Primary")
         self.load_btn.setMinimumHeight(34)
@@ -74,8 +77,24 @@ class MainWindow(QMainWindow):
         lay.addStretch(1)
         lay.addWidget(self.dataset_lbl)
         lay.addSpacing(8)
+        lay.addWidget(self.theme_btn)
         lay.addWidget(self.load_btn)
         self.setMenuWidget(bar)
+
+    @staticmethod
+    def _theme_btn_text() -> str:
+        return "Theme: Dark" if theme.active_palette() == "dark" else "Theme: Swiss"
+
+    def toggle_theme(self) -> None:
+        new = "swiss" if theme.active_palette() == "dark" else "dark"
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply_theme(app, new)
+        self.theme_btn.setText(self._theme_btn_text())
+        # Repaint everything (custom widgets read theme tokens at paint time).
+        for w in self.findChildren(QWidget):
+            w.update()
+        self.update()
 
     def _build_docks(self) -> None:
         # Image is the central canvas; the workspace (tabbed) is a right dock

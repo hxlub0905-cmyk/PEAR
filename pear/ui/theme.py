@@ -1,33 +1,78 @@
-"""Design tokens and global QSS — Swiss International Typographic Style.
+"""Design tokens and global QSS, with swappable palettes.
 
-Objective, grid-driven, flat. Pure black/white with a single Swiss-red
-signal colour, 0px radii, thick black borders, heavy grotesque type, and
-uppercase tracked labels. The image stage stays dark (a SEM canvas needs
-contrast); everything else is Swiss chrome.
+Two palettes are provided:
 
-Product exception: outlier markers remain AMBER, never red — the
-"no verdict" principle forbids red ("bad") for markers (spec §10.6).
+* ``"swiss"`` — Swiss International Typographic Style: pure black/white,
+  a single Swiss-red signal colour, thick black borders, flat.
+* ``"dark"`` — calm dark instrument: dark slate panels matching the image
+  stage, one teal accent used sparingly, easy on the eyes for long
+  sessions. Recommended default for a lab tool.
+
+Product invariant across palettes: outlier markers stay AMBER, never red —
+the "no verdict" principle forbids red ("bad") for markers (spec §10.6).
 """
 
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QFont, QFontDatabase
 
-# --- colour tokens (strict Swiss palette) --------------------------------- #
-INK = "#000000"          # foreground / text — absolute black
-PANEL = "#FFFFFF"        # surfaces — pure white
-CHROME = "#F2F2F2"       # muted secondary background
-MUTED = "#5A5A5A"        # secondary text
-FAINT = "#9A9A9A"        # placeholder / tertiary text
-LINE = "#000000"         # structure is visible — black hairlines/borders
-ACCENT = "#FF3000"       # Swiss red — the ONLY signal colour (CTA/active)
-ACCENT_BRIGHT = "#FF3000"
+# --- palettes ------------------------------------------------------------- #
+_PALETTES = {
+    "swiss": {
+        "BG": "#F2F2F2", "PANEL": "#FFFFFF", "INK": "#000000",
+        "LINE": "#000000", "MUTED": "#5A5A5A", "FAINT": "#9A9A9A",
+        "ACCENT": "#FF3000", "ACCENT_BRIGHT": "#FF3000", "ON_ACCENT": "#FFFFFF",
+        "INVERT_BG": "#000000", "INVERT_FG": "#FFFFFF",
+        "STAGE": "#15191F", "FLAG": "#E0A52E", "OK": "#000000", "BW": 2,
+    },
+    "dark": {
+        "BG": "#11151B", "PANEL": "#1A2029", "INK": "#E7ECF1",
+        "LINE": "#2B333E", "MUTED": "#93A0AC", "FAINT": "#5B6571",
+        "ACCENT": "#2BB6B6", "ACCENT_BRIGHT": "#42D4D4", "ON_ACCENT": "#06222A",
+        "INVERT_BG": "#2BB6B6", "INVERT_FG": "#06222A",
+        "STAGE": "#0B0E13", "FLAG": "#E8B23E", "OK": "#37B088", "BW": 1,
+    },
+}
+DEFAULT_PALETTE = "dark"
 
-STAGE = "#15191F"        # dark image canvas
-FLAG = "#E0A52E"         # amber outlier markers — "look here", never red
-OK = "#000000"           # neutral/good state reads as black in Swiss
-
+# Module-level tokens (legacy names kept). Initialized by set_palette().
+INK = PANEL = CHROME = MUTED = FAINT = LINE = ""
+ACCENT = ACCENT_BRIGHT = ON_ACCENT = INVERT_BG = INVERT_FG = ""
+STAGE = FLAG = OK = ""
+BORDER_W = 2
 GRID_RGBA = (150, 168, 178, 56)   # cell grid on the dark stage
+_active_palette = DEFAULT_PALETTE
+
+
+def set_palette(name: str) -> None:
+    """Set the active palette and update all module-level colour tokens."""
+    global INK, PANEL, CHROME, MUTED, FAINT, LINE, ACCENT, ACCENT_BRIGHT
+    global ON_ACCENT, INVERT_BG, INVERT_FG, STAGE, FLAG, OK, BORDER_W
+    global _active_palette
+    p = _PALETTES.get(name, _PALETTES[DEFAULT_PALETTE])
+    _active_palette = name if name in _PALETTES else DEFAULT_PALETTE
+    INK = p["INK"]
+    PANEL = p["PANEL"]
+    CHROME = p["BG"]
+    MUTED = p["MUTED"]
+    FAINT = p["FAINT"]
+    LINE = p["LINE"]
+    ACCENT = p["ACCENT"]
+    ACCENT_BRIGHT = p["ACCENT_BRIGHT"]
+    ON_ACCENT = p["ON_ACCENT"]
+    INVERT_BG = p["INVERT_BG"]
+    INVERT_FG = p["INVERT_FG"]
+    STAGE = p["STAGE"]
+    FLAG = p["FLAG"]
+    OK = p["OK"]
+    BORDER_W = p["BW"]
+
+
+def active_palette() -> str:
+    return _active_palette
+
+
+set_palette(DEFAULT_PALETTE)
 
 # --- font families -------------------------------------------------------- #
 DISPLAY_FAMILY = "Inter"
@@ -79,235 +124,129 @@ def eyebrow_font(size: int = 9) -> QFont:
     return f
 
 
-_QSS = f"""
+def build_qss() -> str:
+    """Build the global stylesheet from the active palette tokens."""
+    bw = BORDER_W
+    return f"""
 * {{
     font-family: {_SANS_FALLBACK};
     color: {INK};
     outline: none;
 }}
-QMainWindow, QWidget {{
-    background: {CHROME};
-}}
-/* Labels must be transparent — otherwise the QWidget rule above paints a
-   grey band behind every label and hides painted row backgrounds. */
-QLabel {{
-    background: transparent;
-}}
+QMainWindow, QWidget {{ background: {CHROME}; }}
+QLabel {{ background: transparent; }}
 
-/* ---- topbar ---- */
-#TopBar {{
-    background: {PANEL};
-    border-bottom: 3px solid {INK};
-}}
+/* topbar */
+#TopBar {{ background: {PANEL}; border-bottom: {bw + 1}px solid {LINE}; }}
 #BrandTitle {{
-    font-family: {_SANS_FALLBACK};
-    font-size: 22px;
-    font-weight: 900;
-    letter-spacing: -0.5px;
-    color: {INK};
+    font-size: 22px; font-weight: 900; letter-spacing: -0.5px; color: {INK};
 }}
-#BrandSub {{
-    color: {MUTED};
-    font-size: 11px;
-    font-weight: 700;
-}}
+#BrandSub {{ color: {MUTED}; font-size: 11px; font-weight: 700; }}
 #DatasetTag {{
-    color: {PANEL};
-    background: {INK};
-    font-weight: 700;
-    padding: 3px 8px;
-    font-family: {_MONO_FALLBACK};
+    color: {INVERT_FG}; background: {INVERT_BG}; font-weight: 700;
+    padding: 3px 8px; font-family: {_MONO_FALLBACK};
 }}
 
-/* ---- docks ---- */
-QDockWidget {{
-    font-family: {_SANS_FALLBACK};
-    font-weight: 900;
-    color: {INK};
-}}
+/* docks */
+QDockWidget {{ font-weight: 900; color: {INK}; }}
 QDockWidget::title {{
-    background: {INK};
-    color: {PANEL};
-    padding: 7px 12px;
-    text-transform: uppercase;
+    background: {INVERT_BG}; color: {INVERT_FG}; padding: 7px 12px;
 }}
 
-/* ---- cards ---- */
+/* cards */
 QFrame#Card {{
-    background: {PANEL};
-    border: 2px solid {INK};
-    border-radius: 0px;
+    background: {PANEL}; border: {bw}px solid {LINE}; border-radius: 0px;
 }}
-QLabel#SectionTitle {{
-    font-family: {_SANS_FALLBACK};
-    font-weight: 900;
-    font-size: 15px;
-    color: {INK};
-}}
-QLabel#Eyebrow {{
-    color: {ACCENT};
-    font-weight: 700;
-}}
-QLabel#Hint {{
-    color: {MUTED};
-    font-size: 11px;
-}}
-QLabel#Caption {{
-    color: {INK};
-    font-size: 11px;
-    font-weight: 700;
-}}
+QLabel#SectionTitle {{ font-weight: 900; font-size: 15px; color: {INK}; }}
+QLabel#Eyebrow {{ color: {ACCENT}; font-weight: 700; }}
+QLabel#Hint {{ color: {MUTED}; font-size: 11px; }}
+QLabel#Caption {{ color: {INK}; font-size: 11px; font-weight: 700; }}
 QLabel#Mono, QLabel#MeasuredLine {{
-    font-family: {_MONO_FALLBACK};
-    color: {INK};
+    font-family: {_MONO_FALLBACK}; color: {INK};
 }}
 QLabel#MeasuredLine {{
-    background: {CHROME};
-    border-left: 3px solid {ACCENT};
-    padding: 6px 8px;
+    background: {CHROME}; border-left: 3px solid {ACCENT}; padding: 6px 8px;
 }}
 
-/* ---- buttons ---- */
+/* buttons */
 QPushButton {{
-    background: {PANEL};
-    border: 2px solid {INK};
-    border-radius: 0px;
-    padding: 7px 14px;
-    font-weight: 700;
-    color: {INK};
+    background: {PANEL}; border: {bw}px solid {LINE}; border-radius: 0px;
+    padding: 7px 14px; font-weight: 700; color: {INK};
 }}
 QPushButton:hover {{
-    background: {ACCENT};
-    border-color: {ACCENT};
-    color: {PANEL};
+    background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT};
 }}
 QPushButton:pressed {{
-    background: {INK};
-    border-color: {INK};
-    color: {PANEL};
+    background: {INVERT_BG}; border-color: {INVERT_BG}; color: {INVERT_FG};
 }}
 QPushButton#Primary {{
-    background: {INK};
-    border: 2px solid {INK};
-    color: {PANEL};
-    font-weight: 900;
+    background: {INVERT_BG}; border: {bw}px solid {INVERT_BG};
+    color: {INVERT_FG}; font-weight: 900;
 }}
-QPushButton#Primary:hover {{
-    background: {ACCENT};
-    border-color: {ACCENT};
+QPushButton#Primary:hover {{ background: {ACCENT}; border-color: {ACCENT};
+    color: {ON_ACCENT}; }}
+QPushButton:checked {{
+    background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT};
 }}
 QPushButton:disabled {{
-    background: {CHROME};
-    color: {FAINT};
-    border-color: {FAINT};
+    background: {CHROME}; color: {FAINT}; border-color: {FAINT};
 }}
 
-/* ---- inputs ---- */
+/* inputs */
 QLineEdit, QSpinBox, QDoubleSpinBox {{
-    background: {PANEL};
-    border: 2px solid {INK};
-    border-radius: 0px;
-    padding: 5px 8px;
-    font-family: {_MONO_FALLBACK};
-    selection-background-color: {ACCENT};
-    selection-color: {PANEL};
+    background: {PANEL}; border: {bw}px solid {LINE}; border-radius: 0px;
+    padding: 5px 8px; font-family: {_MONO_FALLBACK};
+    selection-background-color: {ACCENT}; selection-color: {ON_ACCENT};
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 2px solid {ACCENT};
+    border: {bw}px solid {ACCENT};
 }}
 QSpinBox::up-button, QSpinBox::down-button,
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-    width: 0px;
-}}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0px; }}
 
-/* ---- checkbox ---- */
-QCheckBox {{
-    font-weight: 700;
-    spacing: 8px;
-}}
+/* checkbox */
+QCheckBox {{ font-weight: 700; spacing: 8px; }}
 QCheckBox::indicator {{
-    width: 16px; height: 16px;
-    border: 2px solid {INK};
-    background: {PANEL};
+    width: 16px; height: 16px; border: {bw}px solid {LINE}; background: {PANEL};
 }}
-QCheckBox::indicator:checked {{
-    background: {ACCENT};
-    border-color: {ACCENT};
-}}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 
-/* ---- lists ---- */
+/* lists */
 QListWidget {{
-    background: {PANEL};
-    border: 2px solid {INK};
-    border-radius: 0px;
+    background: {PANEL}; border: {bw}px solid {LINE}; border-radius: 0px;
     outline: none;
 }}
-QListWidget::item {{
-    padding: 7px 8px;
-    border-bottom: 1px solid {CHROME};
-}}
-QListWidget::item:selected {{
-    background: {INK};
-    color: {PANEL};
-}}
+QListWidget::item {{ padding: 7px 8px; border-bottom: 1px solid {CHROME}; }}
+QListWidget::item:selected {{ background: {INVERT_BG}; color: {INVERT_FG}; }}
 
-/* ---- tabs ---- */
+/* tabs */
 QTabWidget::pane {{
-    border: 2px solid {INK};
-    border-radius: 0px;
-    top: -2px;
+    border: {bw}px solid {LINE}; border-radius: 0px; top: -{bw}px;
     background: {CHROME};
 }}
 QTabBar::tab {{
-    background: {PANEL};
-    border: 2px solid {INK};
-    border-right-width: 0px;
-    padding: 8px 18px;
-    font-weight: 900;
-    text-transform: uppercase;
-    color: {INK};
+    background: {PANEL}; border: {bw}px solid {LINE}; border-right-width: 0px;
+    padding: 8px 18px; font-weight: 900; color: {INK};
 }}
-QTabBar::tab:last {{
-    border-right-width: 2px;
-}}
-QTabBar::tab:selected {{
-    background: {INK};
-    color: {PANEL};
-}}
-QTabBar::tab:hover:!selected {{
-    background: {ACCENT};
-    color: {PANEL};
-}}
+QTabBar::tab:last {{ border-right-width: {bw}px; }}
+QTabBar::tab:selected {{ background: {INVERT_BG}; color: {INVERT_FG}; }}
+QTabBar::tab:hover:!selected {{ background: {ACCENT}; color: {ON_ACCENT}; }}
 
-/* ---- scroll areas ---- */
-QScrollArea {{
-    border: none;
-    background: transparent;
-}}
-QScrollBar:vertical {{
-    background: {CHROME};
-    width: 12px;
-    margin: 0px;
-}}
-QScrollBar::handle:vertical {{
-    background: {INK};
-    min-height: 24px;
-}}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-    height: 0px;
-}}
-
+/* scroll + status + tooltip */
+QScrollArea {{ border: none; background: transparent; }}
+QScrollBar:vertical {{ background: {CHROME}; width: 12px; margin: 0px; }}
+QScrollBar::handle:vertical {{ background: {LINE}; min-height: 24px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+QStatusBar {{ background: {PANEL}; color: {MUTED}; border-top: 1px solid {LINE}; }}
 QToolTip {{
-    background: {INK};
-    color: {PANEL};
-    border: none;
-    padding: 4px 6px;
+    background: {INVERT_BG}; color: {INVERT_FG}; border: none; padding: 4px 6px;
 }}
 """
 
 
-def apply_theme(app) -> None:
-    """Apply the global Swiss stylesheet to a QApplication."""
-    app.setStyleSheet(_QSS)
+def apply_theme(app, palette: str = DEFAULT_PALETTE) -> None:
+    """Apply the given palette's stylesheet to a QApplication."""
+    set_palette(palette)
+    app.setStyleSheet(build_qss())
     fam = _pick([BODY_FAMILY, "Helvetica Neue", "Arial"], "Arial")
     app.setFont(QFont(fam, 10))

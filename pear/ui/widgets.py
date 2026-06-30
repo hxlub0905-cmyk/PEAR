@@ -230,7 +230,7 @@ class _RankRow(QFrame):
 
     def set_selected(self, sel: bool) -> None:
         self._selected = sel
-        fg = theme.PANEL if sel else theme.INK
+        fg = theme.INVERT_FG if sel else theme.INK
         self._name.setStyleSheet(f"color: {fg};")
         self._val.setStyleSheet(f"color: {fg};")
         self.update()
@@ -240,14 +240,14 @@ class _RankRow(QFrame):
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
-        # Selected row inverts to black; others stay white with a hairline.
+        # Selected row inverts; others use the panel colour with a hairline.
         if self._selected:
-            p.fillRect(self.rect(), QColor(theme.INK))
+            p.fillRect(self.rect(), QColor(theme.INVERT_BG))
         else:
             p.fillRect(self.rect(), QColor(theme.PANEL))
             p.setPen(QPen(QColor(theme.CHROME), 1))
             p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
-        # Red magnitude meter along the bottom edge (functional signal).
+        # Accent magnitude meter along the bottom edge (functional signal).
         meter_w = self.width() * self._frac
         p.fillRect(QRectF(0, self.height() - 4, meter_w, 4),
                    QColor(theme.ACCENT))

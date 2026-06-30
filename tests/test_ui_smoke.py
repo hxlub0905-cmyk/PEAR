@@ -186,6 +186,19 @@ def test_drag_without_active_region_emits_prompt(app):
     assert len(win._regions) == 0
 
 
+def test_theme_toggle_switches_palette(app):
+    from pear.ui import theme
+    from pear.ui.main_window import MainWindow
+
+    theme.apply_theme(app, "dark")
+    win = MainWindow()
+    assert theme.active_palette() == "dark"
+    win.toggle_theme()
+    assert theme.active_palette() == "swiss"
+    win.toggle_theme()
+    assert theme.active_palette() == "dark"
+
+
 def test_additive_regions_do_not_wipe(app):
     from pear.ui.main_window import MainWindow
 
