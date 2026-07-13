@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self._next_rid = 1
         self._next_gid = 1        # fallback id counter beyond 26 groups
         self._metrics: List[str] = ["glv_mean", "glv_median"]
+        self._nm_per_px: float = 0.0
         self._mode = "group"
         self._split = False
         self._cmp_mode = "between"
@@ -93,6 +94,10 @@ class MainWindow(QMainWindow):
         self._build_docks()
         self._build_status()
         self._wire()
+        # Nothing is actionable until an image is loaded.
+        self.rail.set_ready(False, False)
+        self.mode_group_btn.setEnabled(False)
+        self.mode_roi_btn.setEnabled(False)
 
     # ------------------------------------------------------------------ #
     # construction
@@ -205,6 +210,7 @@ class MainWindow(QMainWindow):
         self.rail.roi_color.connect(self.set_roi_color)
         self.rail.split_toggled.connect(self.set_split)
         self.rail.metrics_changed.connect(self.set_metrics)
+        self.rail.scale_changed.connect(self.on_scale_changed)
 
         self.image_view.cell_paint.connect(self.on_cell_paint)
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -440,13 +446,23 @@ class MainWindow(QMainWindow):
         self._split = on
         self.rail.metrics.set_split(on)
         if on:
-            # auto-assign target/reference if unset
+            # Seed a background reference window (a cell corner) if there is
+            # only one ROI, so SNR works out of the box.
+            if len(self._rois) < 2 and self._period is not None:
+                px, py = self._period.px, self._period.py
+                w, h = max(5, px // 5), max(5, py // 5)
+                self._add_roi_rect((max(1, px // 12), max(1, py // 12), w, h),
+                                   "Background")
+            # Assign one target and one reference if unset.
             if analysis.find_role(self._rois, TARGET) is None and self._rois:
                 set_role(self._rois, self._rois[0], TARGET)
                 self._rois[0].color = TARGET_COLOR
-            if analysis.find_role(self._rois, REFERENCE) is None and len(self._rois) > 1:
-                set_role(self._rois, self._rois[1], REFERENCE)
-                self._rois[1].color = REFERENCE_COLOR
+            if analysis.find_role(self._rois, REFERENCE) is None:
+                for r in self._rois:
+                    if r.role != TARGET:
+                        set_role(self._rois, r, REFERENCE)
+                        r.color = REFERENCE_COLOR
+                        break
         self.image_view.set_split_tr(on)
         self._metrics = self.rail.metrics.selected()
         self._refresh()
@@ -471,16 +487,25 @@ class MainWindow(QMainWindow):
     # refresh
     # ------------------------------------------------------------------ #
     def _refresh(self) -> None:
-        self.rail.set_period(self._period)
+        has_img = self._image is not None
+        has_per = self._period is not None
+        self.rail.set_ready(has_img, has_per)
+        self.rail.set_period(self._period, self._nm_per_px)
         self.rail.set_groups(self._groups, self._active_gid, self._split)
         self.rail.set_rois(self._rois, self._active_rid, self._split)
         self.image_view.set_period(self._period)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
         self.image_view.set_split_tr(self._split)
+        self.mode_group_btn.setEnabled(has_img)
+        self.mode_roi_btn.setEnabled(has_img)
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
         self._render_analysis()
+
+    def on_scale_changed(self, nm: float) -> None:
+        self._nm_per_px = float(nm)
+        self.rail.set_period(self._period, self._nm_per_px)
 
     def _render_analysis(self) -> None:
         enabled = (self._image is not None and self._period is not None
@@ -497,11 +522,13 @@ class MainWindow(QMainWindow):
         gs, rs = snapshot(self._groups, self._rois)
         args = (self._image, self._period, gs, rs, list(self._metrics),
                 self._cmp_mode, self._between_rid, self._within_gid, self._split)
+        self.analysis.set_computing(True)
         self._pool.start(_AnalysisJob(token, args, self._sig))
 
     def _on_analysis_done(self, token: int, result) -> None:
         if token != self._analysis_token or result is None:
             return
+        self.analysis.set_computing(False)
         self.analysis.show_result(result)
 
     def render_analysis_sync(self) -> None:
@@ -516,6 +543,7 @@ class MainWindow(QMainWindow):
         self.analysis.set_controls(self._cmp_mode, self._rois, self._groups,
                                    self._between_rid, self._within_gid,
                                    self._split, enabled)
+        self.analysis.set_computing(False)
         self.analysis.show_result(result)
 
     # ------------------------------------------------------------------ #
@@ -557,6 +585,8 @@ class MainWindow(QMainWindow):
             w = csv.writer(fh)
             w.writerow(["PEAR group & ROI analysis"])
             w.writerow(["split_target_reference", str(self._split)])
+            w.writerow(["pixel_size_nm_per_px",
+                        f"{self._nm_per_px:.6g}" if self._nm_per_px > 0 else ""])
             w.writerow([])
             # per-cell rows: group, cell, roi, metrics
             header = ["group", "row", "col", "roi"] + [metric_label(m) for m in self._metrics]
@@ -600,3 +630,19 @@ class MainWindow(QMainWindow):
                         s = summarize(vals)
                         line.append(f"{s['mean']:.6g}")
                     w.writerow(line)
+
+            # ROI reference (with physical size when a pixel size is set)
+            w.writerow([])
+            w.writerow(["ROIs"])
+            nm = self._nm_per_px
+            hdr = ["roi", "role", "x", "y", "w", "h"]
+            if nm > 0:
+                hdr += ["w_nm", "h_nm", "area_nm2"]
+            w.writerow(hdr)
+            for roi in self._rois:
+                x, y, wid, hei = roi.rect
+                line = [roi.label, roi.role, x, y, wid, hei]
+                if nm > 0:
+                    line += [f"{wid * nm:.6g}", f"{hei * nm:.6g}",
+                             f"{wid * hei * nm * nm:.6g}"]
+                w.writerow(line)

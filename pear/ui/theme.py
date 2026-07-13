@@ -131,6 +131,7 @@ QPushButton:hover {{ border-color: {AMBER}; color: {AMBER_PRESS}; }}
 QPushButton:pressed {{ background: {SUBTLE}; }}
 QPushButton#Primary {{ background: {AMBER}; border: 1px solid {AMBER}; color: #FFFFFF; }}
 QPushButton#Primary:hover {{ background: {AMBER_HOVER}; border-color: {AMBER_HOVER}; color: {ON_AMBER}; }}
+QPushButton#Primary:disabled {{ background: {SUBTLE}; border-color: {LINE}; color: {INK3}; }}
 QPushButton:checked {{ background: {AMBER}; border-color: {AMBER}; color: {ON_AMBER}; }}
 QPushButton:disabled {{ background: {SUBTLE}; color: {INK3}; border-color: {LINE}; }}
 

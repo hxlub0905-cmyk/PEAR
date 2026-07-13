@@ -148,6 +148,45 @@ def test_group_gids_unique_after_delete(app):
     assert set(gids) == {"A", "B", "C"}
 
 
+def test_controls_disabled_before_image(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()                      # no image loaded
+    assert not win.rail.detect_btn.isEnabled()
+    assert not win.rail.grp_add_btn.isEnabled()
+    assert not win.rail.roi_add_btn.isEnabled()
+    assert not win.mode_group_btn.isEnabled()
+    win.set_image(make_field(), "f.png")    # now everything is actionable
+    assert win.rail.detect_btn.isEnabled()
+    assert win.rail.grp_add_btn.isEnabled()
+    assert win.mode_group_btn.isEnabled()
+
+
+def test_split_auto_adds_background_roi(app):
+    from pear.ui.main_window import MainWindow
+    from pear.core.analysis import TARGET, REFERENCE, find_role
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    assert len(win._rois) == 1              # only the seeded Center ROI
+    win.set_split(True)
+    assert len(win._rois) == 2              # a Background reference was added
+    assert find_role(win._rois, TARGET) is not None
+    assert find_role(win._rois, REFERENCE) is not None
+
+
+def test_nm_per_px_in_csv(app, tmp_path):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _paint_two_groups(win)
+    win.on_scale_changed(1.5)
+    assert win._nm_per_px == 1.5
+    out = tmp_path / "scaled.csv"
+    win.export_csv(str(out))
+    text = out.read_text(encoding="utf-8-sig")
+    assert "pixel_size_nm_per_px" in text and "1.5" in text
+    assert "area_nm2" in text               # ROI physical area column present
+
+
 def test_color_and_role_customization(app):
     from pear.ui.main_window import MainWindow
     from pear.core.analysis import TARGET

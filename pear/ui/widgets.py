@@ -13,9 +13,10 @@ from typing import Callable, List, Optional
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
+                               QWidget)
 
 from pear.core.analysis import ROI, Group, PeriodInfo, REFERENCE, TARGET
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
@@ -311,6 +312,7 @@ class RailPanel(QWidget):
     split_toggled = Signal(bool)
     metrics_changed = Signal(list)
     mode_changed = Signal(str)              # "group" | "roi"
+    scale_changed = Signal(float)           # nm per pixel (0 = unset)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -325,6 +327,11 @@ class RailPanel(QWidget):
         self.period_lbl.setObjectName("Mono")
         self.period_lbl.setFont(theme.mono_font(10))
         llay.addWidget(self.period_lbl)
+        self.phys_lbl = QLabel("")
+        self.phys_lbl.setObjectName("Hint")
+        self.phys_lbl.setFont(theme.mono_font(9))
+        self.phys_lbl.setVisible(False)
+        llay.addWidget(self.phys_lbl)
         row = QHBoxLayout()
         self.detect_btn = QPushButton("Detect")
         self.detect_btn.setObjectName("Primary")
@@ -334,6 +341,20 @@ class RailPanel(QWidget):
         row.addWidget(self.detect_btn)
         row.addWidget(self.refine_btn)
         llay.addLayout(row)
+        scale_row = QHBoxLayout()
+        scale_row.setSpacing(8)
+        sl = QLabel("nm/px")
+        sl.setObjectName("Hint")
+        sl.setFixedWidth(48)
+        self.nm_spin = QDoubleSpinBox()
+        self.nm_spin.setRange(0.0, 100000.0)
+        self.nm_spin.setDecimals(3)
+        self.nm_spin.setSingleStep(0.1)
+        self.nm_spin.setSpecialValueText("—")       # 0 → shown as "—" (unset)
+        self.nm_spin.valueChanged.connect(self.scale_changed)
+        scale_row.addWidget(sl)
+        scale_row.addWidget(self.nm_spin, 1)
+        llay.addLayout(scale_row)
         root.addWidget(lat)
 
         # Groups
@@ -386,13 +407,30 @@ class RailPanel(QWidget):
         root.addStretch(1)
 
     # -- render --------------------------------------------------------- #
-    def set_period(self, period: Optional[PeriodInfo]) -> None:
+    def set_ready(self, has_image: bool, has_period: bool) -> None:
+        """Enable controls only once their prerequisites exist."""
+        self.detect_btn.setEnabled(has_image)
+        self.refine_btn.setEnabled(has_period)
+        self.grp_add_btn.setEnabled(has_period)
+        self.roi_add_btn.setEnabled(has_period)
+        self.roi_grid_btn.setEnabled(has_period)
+        self.split_chk.setEnabled(has_period)
+        self.nm_spin.setEnabled(has_period)
+
+    def set_period(self, period: Optional[PeriodInfo], nm_per_px: float = 0.0) -> None:
         if period is None:
             self.period_lbl.setText("period —")
+            self.phys_lbl.setVisible(False)
+            return
+        self.period_lbl.setText(
+            f"period {period.px} × {period.py} px · {period.axis_mode} · "
+            f"{period.confidence:.0f}%")
+        if nm_per_px > 0:
+            self.phys_lbl.setText(
+                f"{period.px * nm_per_px:.1f} × {period.py * nm_per_px:.1f} nm")
+            self.phys_lbl.setVisible(True)
         else:
-            self.period_lbl.setText(
-                f"period {period.px} × {period.py} px · {period.axis_mode} · "
-                f"{period.confidence:.0f}%")
+            self.phys_lbl.setVisible(False)
 
     def set_groups(self, groups: List[Group], active_gid, split: bool) -> None:
         _clear(self.grp_host)
@@ -506,6 +544,9 @@ class AnalysisPanel(QWidget):
         title = QLabel("Analysis")
         title.setFont(theme.display_font(14, weight=700))
         head.addWidget(title)
+        self.busy = QLabel("")
+        self.busy.setObjectName("Hint")
+        head.addWidget(self.busy)
         self.between_btn = QPushButton("Between groups")
         self.within_btn = QPushButton("Within a group")
         for b, m in ((self.between_btn, "between"), (self.within_btn, "within")):
@@ -528,6 +569,7 @@ class AnalysisPanel(QWidget):
         self.export_btn = QPushButton("Export CSV")
         self.export_btn.setObjectName("Primary")
         self.export_btn.clicked.connect(self.export_requested)
+        self.export_btn.setEnabled(False)
         head.addWidget(self.export_btn)
         root.addLayout(head)
 
@@ -592,6 +634,10 @@ class AnalysisPanel(QWidget):
             self.selector.setCurrentIndex(_gindex_of(groups, within_gid))
         self._suppress = False
         self.export_btn.setEnabled(bool(enabled))
+
+    def set_computing(self, on: bool) -> None:
+        """Subtle indicator while a background compute is in flight."""
+        self.busy.setText("· working…" if on else "")
 
     # -- body (render a pre-computed result) --------------------------- #
     def show_result(self, result) -> None:
