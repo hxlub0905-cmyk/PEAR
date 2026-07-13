@@ -11,7 +11,7 @@ import os
 from typing import List, Optional
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMessageBox, QPushButton,
                                QScrollArea, QWidget)
@@ -20,16 +20,37 @@ from pear.core import analysis
 from pear.core.analysis import (GROUP_PALETTE, REFERENCE, REFERENCE_COLOR, ROI,
                                 TARGET, TARGET_COLOR, Group, PeriodInfo,
                                 build_golden_cell, cell_patch,
-                                group_metric_values, load_image,
-                                set_role, summarize)
+                                compute_analysis, group_metric_values,
+                                load_image, set_role, snapshot, summarize)
 from pear.core import stacking
-from pear.core.attributes import SNR_ID, metric_label
+from pear.core.attributes import SNR_ID, glv_value, metric_label
 from pear.core.period_core import estimate_period
 from pear.ui import theme
 from pear.ui.image_view import ImageView
 from pear.ui.widgets import AnalysisPanel, RailPanel
 
 _FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
+
+
+class _AnalysisSignals(QObject):
+    done = Signal(int, object)      # token, AnalysisResult | None
+
+
+class _AnalysisJob(QRunnable):
+    """Runs the (pure) analysis compute off the UI thread."""
+
+    def __init__(self, token, args, signals):
+        super().__init__()
+        self._token = token
+        self._args = args
+        self._signals = signals
+
+    def run(self):
+        try:
+            result = compute_analysis(*self._args)
+        except Exception:  # noqa: BLE001 — never let a worker crash the app
+            result = None
+        self._signals.done.emit(self._token, result)
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +72,21 @@ class MainWindow(QMainWindow):
         self._cmp_mode = "between"
         self._between_rid: Optional[int] = None
         self._within_gid: Optional[str] = None
+
+        # Analysis runs off the UI thread, coalesced by two debounce timers so
+        # a drag-paint across many cells recomputes once, not per cell.
+        self._pool = QThreadPool.globalInstance()
+        self._sig = _AnalysisSignals()
+        self._sig.done.connect(self._on_analysis_done)
+        self._analysis_token = 0
+        self._analysis_timer = QTimer(self)
+        self._analysis_timer.setSingleShot(True)
+        self._analysis_timer.setInterval(90)
+        self._analysis_timer.timeout.connect(self._run_analysis)
+        self._paint_timer = QTimer(self)
+        self._paint_timer.setSingleShot(True)
+        self._paint_timer.setInterval(70)
+        self._paint_timer.timeout.connect(self._refresh)
 
         self._build_topbar()
         self._build_docks()
@@ -306,7 +342,10 @@ class MainWindow(QMainWindow):
             for other in self._groups:
                 other.cells.discard(cell)
             g.cells.add(cell)
-        self._refresh()
+        # Live canvas feedback now; rebuild the rail + recompute analysis once
+        # the paint stroke settles (debounced).
+        self.image_view.set_groups(self._groups, self._active_gid)
+        self._paint_timer.start()
 
     # ------------------------------------------------------------------ #
     # rois
@@ -433,9 +472,40 @@ class MainWindow(QMainWindow):
         self._render_analysis()
 
     def _render_analysis(self) -> None:
-        self.analysis.render_state(
-            self._image, self._period, self._groups, self._rois, self._metrics,
+        enabled = (self._image is not None and self._period is not None
+                   and bool(self._metrics)
+                   and any(g.cells for g in self._groups))
+        self.analysis.set_controls(self._cmp_mode, self._rois, self._groups,
+                                   self._between_rid, self._within_gid,
+                                   self._split, enabled)
+        self._analysis_timer.start()
+
+    def _run_analysis(self) -> None:
+        self._analysis_token += 1
+        token = self._analysis_token
+        gs, rs = snapshot(self._groups, self._rois)
+        args = (self._image, self._period, gs, rs, list(self._metrics),
+                self._cmp_mode, self._between_rid, self._within_gid, self._split)
+        self._pool.start(_AnalysisJob(token, args, self._sig))
+
+    def _on_analysis_done(self, token: int, result) -> None:
+        if token != self._analysis_token or result is None:
+            return
+        self.analysis.show_result(result)
+
+    def render_analysis_sync(self) -> None:
+        """Compute and render the analysis inline (no worker). For tests and
+        any caller that needs the panel up to date immediately."""
+        self._analysis_timer.stop()
+        gs, rs = snapshot(self._groups, self._rois)
+        result = compute_analysis(
+            self._image, self._period, gs, rs, list(self._metrics),
             self._cmp_mode, self._between_rid, self._within_gid, self._split)
+        enabled = result.empty is None
+        self.analysis.set_controls(self._cmp_mode, self._rois, self._groups,
+                                   self._between_rid, self._within_gid,
+                                   self._split, enabled)
+        self.analysis.show_result(result)
 
     # ------------------------------------------------------------------ #
     # lookups
@@ -496,7 +566,6 @@ class MainWindow(QMainWindow):
                                     row.append("")
                             else:
                                 patch = cell_patch(self._image, roi.rect, self._period, r, c)
-                                from pear.core.attributes import glv_value
                                 row.append(f"{glv_value(patch, mid):.6g}" if patch is not None else "")
                         w.writerow(row)
             w.writerow([])

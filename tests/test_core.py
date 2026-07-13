@@ -109,3 +109,48 @@ def test_metric_labels_complete():
     for mid in GLV_STATS:
         assert metric_label(mid)
     assert metric_label(SNR_ID) == "SNR"
+
+
+def _two_groups(img, period):
+    from pear.core.analysis import all_cells
+    outset = set(OUTLIERS)
+    gA, gB = Group("A", "Group A", "#F59E0B"), Group("B", "Group B", "#2563EB")
+    for (r, c) in all_cells(img.shape, period):
+        (gB if (c, r) in outset else gA).cells.add((r, c))
+    return gA, gB
+
+
+def test_compute_analysis_between_and_delta():
+    from pear.core.analysis import compute_analysis
+    img = make_field()
+    period = _period(img)
+    roi = ROI(1, "Center", "#F59E0B", (16, 13, 30, 26))
+    gA, gB = _two_groups(img, period)
+    gA.role, gB.role = TARGET, REFERENCE
+    res = compute_analysis(img, period, [gA, gB], [roi], ["glv_mean"],
+                           "between", roi.rid, gA.gid, False)
+    assert res.empty is None
+    assert len(res.charts) == 1 and len(res.charts[0].series) == 2
+    # a Target−Reference delta row is present when groups are tagged T/R
+    assert any(r[0].startswith("Δ") for r in res.table_rows)
+
+
+def test_compute_analysis_within_snr_and_empty_paths():
+    from pear.core.analysis import compute_analysis
+    img = make_field()
+    period = _period(img)
+    tgt = ROI(1, "Center", "#DC2626", (16, 13, 30, 26), role=TARGET)
+    ref = ROI(2, "Bg", "#0891B2", (2, 2, 12, 12), role=REFERENCE)
+    gA, gB = _two_groups(img, period)
+    res = compute_analysis(img, period, [gA, gB], [tgt, ref], ["glv_mean", SNR_ID],
+                           "within", tgt.rid, gB.gid, True)
+    assert res.snr_text and "SNR" in res.snr_text
+    # empty when fewer than two non-empty groups in between mode
+    empty = compute_analysis(img, period, [gA], [tgt], ["glv_mean"],
+                             "between", tgt.rid, gA.gid, False)
+    assert empty.empty is not None
+    # snapshot isolates the worker from later mutation
+    from pear.core.analysis import snapshot
+    gs, rs = snapshot([gA, gB], [tgt, ref])
+    gA.cells.clear()
+    assert gs[0].cells      # snapshot retained the cells

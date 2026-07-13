@@ -218,6 +218,149 @@ def summarize(values: np.ndarray) -> Dict[str, float]:
 
 
 # --------------------------------------------------------------------------- #
+# Comparison — a pure, cached compute step (headless-testable, thread-safe)
+# --------------------------------------------------------------------------- #
+@dataclass
+class Series:
+    label: str
+    color: str
+    values: np.ndarray
+
+
+@dataclass
+class Chart:
+    title: str
+    series: List["Series"] = field(default_factory=list)
+
+
+@dataclass
+class AnalysisResult:
+    subtitle: str = ""
+    empty: Optional[str] = None
+    charts: List["Chart"] = field(default_factory=list)
+    table_headers: List[str] = field(default_factory=list)
+    table_rows: List[tuple] = field(default_factory=list)   # (name, color, [str])
+    snr_text: Optional[str] = None
+
+
+def snapshot(groups: List[Group], rois: List[ROI]):
+    """Deep-ish copy of the mutable model for safe use on a worker thread."""
+    gs = [Group(g.gid, g.name, g.color, set(g.cells), g.role) for g in groups]
+    rs = [ROI(r.rid, r.label, r.color, tuple(r.rect), r.role) for r in rois]
+    return gs, rs
+
+
+def _cell(mean: float, std: float) -> str:
+    return f"{mean:.3g} ±{std:.2g}"
+
+
+def compute_analysis(image, period, groups: List[Group], rois: List[ROI],
+                     metrics: List[str], mode: str, between_rid, within_gid,
+                     split: bool) -> AnalysisResult:
+    """Compute the comparison for the Analysis panel. Pure; no Qt.
+
+    ``mode`` is ``"between"`` or ``"within"``. Values are cached per
+    (group, roi, metric) so a metric is never measured twice per call.
+    """
+    from pear.core.attributes import metric_label   # local: avoid cycle churn
+
+    if image is None or period is None or not metrics:
+        return AnalysisResult(empty="Load an image, detect the lattice, then paint groups.")
+
+    tgt = find_role(rois, TARGET) if split else None
+    ref = find_role(rois, REFERENCE) if split else None
+    cache: Dict[tuple, np.ndarray] = {}
+
+    def vals(group: Group, roi: Optional[ROI], mid: str) -> np.ndarray:
+        rid = None if mid == SNR_ID else (roi.rid if roi else None)
+        key = (group.gid, rid, mid)
+        if key not in cache:
+            cache[key] = group_metric_values(
+                image, group, roi, period, mid, target_roi=tgt, reference_roi=ref)
+        return cache[key]
+
+    if mode == "between":
+        used = [g for g in groups if g.cells]
+        if len(used) < 2:
+            return AnalysisResult(empty="Assign cells to two or more groups (Paint mode).")
+        roi = _by_rid(rois, between_rid) or (rois[0] if rois else None)
+        if roi is None:
+            return AnalysisResult(empty="Add an ROI to measure.")
+        res = AnalysisResult(subtitle=f"{len(used)} groups · ROI {roi.label}")
+        for mid in metrics:
+            res.charts.append(Chart(metric_label(mid), [
+                Series(g.name, g.color, vals(g, roi, mid)) for g in used]))
+        res.table_headers = ["Group", "n"] + [metric_label(m) for m in metrics]
+        for g in used:
+            row_vals = [_summ_cell(vals(g, roi, m)) for m in metrics]
+            res.table_rows.append((g.name, g.color, [str(len(g.cells))] + row_vals))
+        # Target − Reference delta row (group-level T/R), when tagged.
+        gt = find_role(used, TARGET)
+        gr = find_role(used, REFERENCE)
+        if gt is not None and gr is not None:
+            deltas = []
+            for m in metrics:
+                dt = float(vals(gt, roi, m).mean()) if vals(gt, roi, m).size else 0.0
+                dr = float(vals(gr, roi, m).mean()) if vals(gr, roi, m).size else 0.0
+                deltas.append(f"{dt - dr:+.3g}")
+            res.table_rows.append(("Δ (T − R)", None, [""] + deltas))
+        return res
+
+    # within a group
+    g = _by_gid(groups, within_gid) or (groups[0] if groups else None)
+    if g is None or not g.cells:
+        return AnalysisResult(empty="Paint cells into a group first.")
+    if split:
+        if tgt is None or ref is None:
+            return AnalysisResult(empty="Tag one ROI as T and one as R (ROIs card).")
+        snr_v = vals(g, tgt, SNR_ID)
+        s = summarize(snr_v)
+        tm = summarize(vals(g, tgt, "glv_mean"))
+        rm = summarize(vals(g, ref, "glv_mean"))
+        res = AnalysisResult(
+            subtitle=f"{g.name} · {len(g.cells)} cells · {tgt.label} (T) vs {ref.label} (R)",
+            snr_text=(f"SNR = (μT − μR)/σR   →   μT {tm['mean']:.1f} · "
+                      f"μR {rm['mean']:.1f}   ⇒   SNR {s['mean']:.2f} ± {s['std']:.2f} "
+                      f"over {s['n']} cells"))
+        for mid in metrics:
+            if mid == SNR_ID:
+                continue
+            res.charts.append(Chart(metric_label(mid), [
+                Series(tgt.label, tgt.color, vals(g, tgt, mid)),
+                Series(ref.label, ref.color, vals(g, ref, mid))]))
+        return res
+    roi = _by_rid(rois, between_rid) or (rois[0] if rois else None)
+    if roi is None:
+        return AnalysisResult(empty="Add an ROI to measure.")
+    res = AnalysisResult(subtitle=f"{g.name} · {len(g.cells)} cells · ROI {roi.label}")
+    for mid in metrics:
+        if mid == SNR_ID:
+            continue
+        res.charts.append(Chart(metric_label(mid), [
+            Series(g.name, g.color, vals(g, roi, mid))]))
+    return res
+
+
+def _summ_cell(values: np.ndarray) -> str:
+    s = summarize(values)
+    return _cell(s["mean"], s["std"])
+
+
+def _by_rid(rois, rid):
+    for r in rois:
+        if r.rid == rid:
+            return r
+    return None
+
+
+def _by_gid(groups, gid):
+    for g in groups:
+        if g.gid == gid:
+            return g
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Role helpers (target / reference)
 # --------------------------------------------------------------------------- #
 def set_role(items: List, item, role: str) -> None:

@@ -85,8 +85,8 @@ def test_split_tr_enables_snr_and_within_mode(app):
     win.set_metrics(["glv_mean", "snr"])
     win.on_cmp_mode("within")
     win.on_within_group(gB)
+    win.render_analysis_sync()          # force synchronous compute for the assert
     # SNR line becomes visible in the analysis panel
-    assert win.analysis.snr_lbl.isVisibleTo(win.analysis) or win.analysis.snr_lbl.text()
     assert "SNR" in win.analysis.snr_lbl.text()
 
 

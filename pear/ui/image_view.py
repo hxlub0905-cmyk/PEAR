@@ -253,22 +253,24 @@ class ImageView(QWidget):
         rows, cols = grid_dims(self._image.shape, self._period)
         for roi in self._rois:
             color = self._roi_color(roi)
-            dx, dy, w, h, hc, hr = self._roi_home(roi)
-            # faint echoes in every cell
-            echo = QColor(color)
-            echo.setAlpha(46)
-            epen = QPen(echo, 1)
-            epen.setCosmetic(True)
-            p.setPen(epen)
-            p.setBrush(Qt.NoBrush)
-            for r in range(rows):
-                for c in range(cols):
-                    if r == hr and c == hc:
-                        continue
-                    p.drawRect(self._rect_to_widget(
-                        (ox + c * px + dx, oy + r * py + dy, w, h)))
-            # crisp home rect
             active = roi.rid == self._active_rid
+            # Faint echoes only for the ACTIVE ROI — keeps the stage readable
+            # and the paint cheap when there are many ROIs / cells.
+            if active and rows * cols <= 1500:
+                dx, dy, w, h, hc, hr = self._roi_home(roi)
+                echo = QColor(color)
+                echo.setAlpha(52)
+                epen = QPen(echo, 1)
+                epen.setCosmetic(True)
+                p.setPen(epen)
+                p.setBrush(Qt.NoBrush)
+                for r in range(rows):
+                    for c in range(cols):
+                        if r == hr and c == hc:
+                            continue
+                        p.drawRect(self._rect_to_widget(
+                            (ox + c * px + dx, oy + r * py + dy, w, h)))
+            # crisp home rect
             home = self._rect_to_widget(roi.rect)
             pen = QPen(color, 2.4 if active else 1.6)
             pen.setCosmetic(True)

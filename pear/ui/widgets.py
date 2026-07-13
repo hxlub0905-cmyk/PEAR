@@ -17,9 +17,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
-from pear.core import analysis
-from pear.core.analysis import (ROI, Group, PeriodInfo, REFERENCE, TARGET,
-                                group_metric_values, summarize)
+from pear.core.analysis import ROI, Group, PeriodInfo, REFERENCE, TARGET
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
                                   metric_label)
 from pear.ui import theme
@@ -566,113 +564,46 @@ class AnalysisPanel(QWidget):
         else:
             self.within_group_changed.emit(str(data))
 
-    # -- render --------------------------------------------------------- #
-    def render_state(self, image, period, groups: List[Group], rois: List[ROI],
-                     metrics: List[str], mode: str, between_rid, within_gid,
-                     split: bool) -> None:
+    # -- controls (sync, cheap) ---------------------------------------- #
+    def set_controls(self, mode, rois, groups, between_rid, within_gid,
+                     split, enabled) -> None:
         self._mode = mode
         self.between_btn.setChecked(mode == "between")
         self.within_btn.setChecked(mode == "within")
-        _clear(self.body_lay)
-        self.snr_lbl.setVisible(False)
-
         self._suppress = True
         self.selector.clear()
         if mode == "between":
             self.selector_lbl.setText("ROI")
             for r in rois:
-                tag = " (T)" if r.role == TARGET else " (R)" if (split and r.role == REFERENCE) else ""
+                tag = " (T)" if r.role == TARGET else \
+                    " (R)" if (split and r.role == REFERENCE) else ""
                 self.selector.addItem(r.label + tag, r.rid)
-            idx = _index_of(rois, between_rid)
-            self.selector.setCurrentIndex(idx)
+            self.selector.setCurrentIndex(_index_of(rois, between_rid))
         else:
             self.selector_lbl.setText("Group")
             for g in groups:
                 self.selector.addItem(g.name, g.gid)
-            idx = _gindex_of(groups, within_gid)
-            self.selector.setCurrentIndex(idx)
+            self.selector.setCurrentIndex(_gindex_of(groups, within_gid))
         self._suppress = False
+        self.export_btn.setEnabled(bool(enabled))
 
-        ok = image is not None and period is not None and metrics
-        self.export_btn.setEnabled(bool(ok and any(g.cells for g in groups)))
-        if not ok:
-            self._empty("Load an image, detect the lattice, then paint groups.")
+    # -- body (render a pre-computed result) --------------------------- #
+    def show_result(self, result) -> None:
+        _clear(self.body_lay)
+        self.snr_lbl.setVisible(bool(result.snr_text))
+        if result.snr_text:
+            self.snr_lbl.setText(result.snr_text)
+        self.sub.setText(result.subtitle)
+        if result.empty:
+            self._empty(result.empty)
             return
-        if mode == "between":
-            self._render_between(image, period, groups, rois, metrics,
-                                 between_rid, split)
-        else:
-            self._render_within(image, period, groups, rois, metrics,
-                                within_gid, split)
-
-    def _render_between(self, image, period, groups, rois, metrics,
-                        between_rid, split):
-        used = [g for g in groups if g.cells]
-        if len(used) < 2:
-            self._empty("Assign cells to two or more groups (Paint mode).")
-            return
-        roi = _find(rois, between_rid) or (rois[0] if rois else None)
-        if roi is None:
-            self._empty("Add an ROI to measure.")
-            return
-        tgt = analysis.find_role(rois, TARGET) if split else None
-        ref = analysis.find_role(rois, REFERENCE) if split else None
-        self.sub.setText(f"{len(used)} groups · ROI {roi.label}")
-
-        def vals(g, mid):
-            return group_metric_values(image, g, roi, period, mid,
-                                       target_roi=tgt, reference_roi=ref)
-        charts = [(metric_label(mid),
-                   [{"label": g.name, "color": g.color, "values": vals(g, mid)}
-                    for g in used]) for mid in metrics]
+        charts = [(c.title, [{"label": s.label, "color": s.color,
+                              "values": s.values} for s in c.series])
+                  for c in result.charts]
         self._chart_grid(charts)
-        self._table([(g.name, g.color, {mid: vals(g, mid) for mid in metrics})
-                     for g in used], metrics)
+        if result.table_rows:
+            self._table(result.table_headers, result.table_rows)
 
-    def _render_within(self, image, period, groups, rois, metrics,
-                       within_gid, split):
-        g = _gfind(groups, within_gid) or (groups[0] if groups else None)
-        if g is None or not g.cells:
-            self._empty("Paint cells into a group first.")
-            return
-        if split:
-            tgt = analysis.find_role(rois, TARGET)
-            ref = analysis.find_role(rois, REFERENCE)
-            if tgt is None or ref is None:
-                self._empty("Tag one ROI as T and one as R (ROIs card).")
-                return
-            self.sub.setText(f"{g.name} · {len(g.cells)} cells · "
-                             f"{tgt.label} (T) vs {ref.label} (R)")
-            snr_v = group_metric_values(image, g, tgt, period, SNR_ID,
-                                        target_roi=tgt, reference_roi=ref)
-            s = summarize(snr_v)
-            tmean = summarize(group_metric_values(image, g, tgt, period, "glv_mean"))
-            rmean = summarize(group_metric_values(image, g, ref, period, "glv_mean"))
-            self.snr_lbl.setText(
-                f"SNR = (μT − μR)/σR   →   μT {tmean['mean']:.1f} · "
-                f"μR {rmean['mean']:.1f}   ⇒   SNR {s['mean']:.2f} ± {s['std']:.2f} "
-                f"over {s['n']} cells")
-            self.snr_lbl.setVisible(True)
-            charts = [(metric_label(mid), [
-                {"label": tgt.label, "color": tgt.color,
-                 "values": group_metric_values(image, g, tgt, period, mid)},
-                {"label": ref.label, "color": ref.color,
-                 "values": group_metric_values(image, g, ref, period, mid)}])
-                for mid in metrics if mid != SNR_ID]
-            self._chart_grid(charts)
-        else:
-            roi = _find(rois, self._between_rid) or (rois[0] if rois else None)
-            if roi is None:
-                self._empty("Add an ROI to measure.")
-                return
-            self.sub.setText(f"{g.name} · {len(g.cells)} cells · ROI {roi.label}")
-            charts = [(metric_label(mid), [
-                {"label": g.name, "color": g.color,
-                 "values": group_metric_values(image, g, roi, period, mid)}])
-                for mid in metrics if mid != SNR_ID]
-            self._chart_grid(charts)
-
-    # -- render helpers ------------------------------------------------- #
     def _chart_grid(self, charts) -> None:
         grid_host = QWidget()
         grid = QGridLayout(grid_host)
@@ -684,35 +615,28 @@ class AnalysisPanel(QWidget):
             grid.addWidget(chart, i // 3, i % 3)
         self.body_lay.addWidget(grid_host)
 
-    def _table(self, rows, metrics) -> None:
+    def _table(self, headers, rows) -> None:
         host = QFrame()
         host.setObjectName("Card")
         lay = QGridLayout(host)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
-        headers = ["Group", "n"] + [metric_label(m) for m in metrics]
         for c, h in enumerate(headers):
             lbl = QLabel(h)
             lbl.setStyleSheet(f"color:{theme.INK3}; font-weight:600;")
             lbl.setFont(theme.mono_font(8))
             lay.addWidget(lbl, 0, c)
-        for r, (name, color, vals) in enumerate(rows, start=1):
-            nm = QLabel(f"■ {name}")
-            nm.setStyleSheet(f"color:{color}; font-weight:600;")
+        for r, (name, color, cells) in enumerate(rows, start=1):
+            nm = QLabel((("■ " + name) if color else name))
+            nm.setStyleSheet(f"color:{color or theme.INK2}; font-weight:600;")
             lay.addWidget(nm, r, 0)
-            first = next(iter(vals.values())) if vals else np.array([])
-            n = QLabel(str(int(np.isfinite(first).sum())))
-            n.setFont(theme.mono_font(9))
-            lay.addWidget(n, r, 1)
-            for c, mid in enumerate(metrics, start=2):
-                s = summarize(vals[mid])
-                cell = QLabel(f"{s['mean']:.3g} ±{s['std']:.2g}")
+            for c, val in enumerate(cells, start=1):
+                cell = QLabel(val)
                 cell.setFont(theme.mono_font(9))
                 lay.addWidget(cell, r, c)
         self.body_lay.addWidget(host)
 
     def _empty(self, text: str) -> None:
-        self.sub.setText("")
         lbl = QLabel(text)
         lbl.setObjectName("Hint")
         lbl.setAlignment(Qt.AlignCenter)
@@ -721,20 +645,6 @@ class AnalysisPanel(QWidget):
 
 
 # small lookup helpers
-def _find(rois, rid):
-    for r in rois:
-        if r.rid == rid:
-            return r
-    return None
-
-
-def _gfind(groups, gid):
-    for g in groups:
-        if g.gid == gid:
-            return g
-    return None
-
-
 def _index_of(rois, rid):
     for i, r in enumerate(rois):
         if r.rid == rid:
