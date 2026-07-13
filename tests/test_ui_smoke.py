@@ -1,9 +1,4 @@
-"""Offscreen UI smoke test.
-
-Drives the full UI path with ``QT_QPA_PLATFORM=offscreen``: build the
-window, set an image, detect the period, add a region, auto-analyze, and
-assert the ranking / distribution populate, then export CSV.
-"""
+"""Offscreen UI smoke test for the group/ROI analysis app."""
 
 from __future__ import annotations
 
@@ -11,7 +6,6 @@ import os
 import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
@@ -27,320 +21,128 @@ def app():
     yield application
 
 
-def test_full_ui_path(app, tmp_path):
+def _paint_two_groups(win):
+    """Group A = normal cells, Group B = injected outliers."""
+    from pear.core.analysis import all_cells
+    win.add_group()                       # ensures a second group (B)
+    gA, gB = win._groups[0].gid, win._groups[1].gid
+    outset = set(OUTLIERS)
+    win.select_group(gA)
+    for (r, c) in all_cells(win._image.shape, win._period):
+        if (c, r) not in outset:
+            win.on_cell_paint(r, c, True)
+    win.select_group(gB)
+    for (c, r) in outset:
+        win.on_cell_paint(r, c, True)
+    return gA, gB
+
+
+def test_boot_seeds_group_roi_and_period(app):
     from pear.ui.main_window import MainWindow
-
-    win = MainWindow()
-    img = make_field()
-    win.set_image(img, "sample_field.png")
-
-    # Period auto-detected on set_image.
-    assert win._period is not None
-    assert win._period.px == CELL_W
-    assert win._period.py == CELL_H
-
-    # Add a region programmatically over the feature block; auto-analyzes.
-    win.create_region((16, 13, 30, 26))
-    region = win._active_region()
-    assert region is not None
-    assert region.instances, "region must expand to instances"
-    assert region.ranking, "ranking must populate"
-    assert region.sel_attr is not None
-
-    # Ranking list and distribution populated in the Analysis panel.
-    assert win.analysis.ranking.count() > 0
-    assert win.analysis.hist._values.size == len(region.instances)
-
-    # Selecting a different attribute updates the panel without error.
-    second = region.ranking[min(1, len(region.ranking) - 1)].attr
-    win.on_attr_selected(second)
-    assert region.sel_attr == second
-
-    # The top attribute flags the injected outlier cells.
-    win.on_attr_selected(region.ranking[0].attr)
-    top = region.ranking[0]
-    flagged = {(region.records[i]["col"], region.records[i]["row"])
-               for i in top.outlier_indices}
-    for cell in OUTLIERS:
-        assert cell in flagged
-
-    # Export CSV to a temp path; assert non-empty.
-    out = tmp_path / "out.csv"
-    result = win.export_csv(str(out))
-    assert result == str(out)
-    assert out.exists()
-    assert out.stat().st_size > 0
-    content = out.read_text(encoding="utf-8-sig")
-    assert "region 1" in content
-    assert "attribute" in content
-
-
-def test_labelled_compare_mode_flow(app, tmp_path):
-    from pear.ui.main_window import MainWindow
-
     win = MainWindow()
     win.set_image(make_field(), "sample_field.png")
-    win.create_region((16, 13, 30, 26))
-    region = win._active_region()
+    assert win._period is not None
+    assert win._period.px == CELL_W and win._period.py == CELL_H
+    assert len(win._groups) == 1        # one group seeded
+    assert len(win._rois) == 1          # one default ROI seeded
 
-    # Switch to labelled compare mode.
-    win.on_mode_changed("labelled")
-    assert win._mode == "labelled"
-    assert win.image_view._labelled is True
 
-    # Tag the injected outlier cells as targets (as if clicked).
-    for i, rec in enumerate(region.records):
-        if (rec["col"], rec["row"]) in set(OUTLIERS):
-            win.on_cell_tag_toggled(i)
-    assert len(region.target_idx) == len(OUTLIERS)
-    assert region.sep_ranking, "separability ranking must populate"
-    assert region.sep_sel_attr is not None
-    assert win.analysis.ranking.count() > 0
+def test_paint_groups_and_membership_is_exclusive(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gA, gB = _paint_two_groups(win)
+    a = win._group(gA)
+    b = win._group(gB)
+    assert len(b.cells) == len(OUTLIERS)
+    assert a.cells and not (a.cells & b.cells)     # a cell is in exactly one group
 
-    # The histogram now shows two populations.
-    assert win.analysis.hist._target is not None
 
-    # Selecting another attribute updates sep selection, not sel_attr.
-    second = region.sep_ranking[min(1, len(region.sep_ranking) - 1)].attr
-    win.on_attr_selected(second)
-    assert region.sep_sel_attr == second
-
-    # Export carries the labelled ranking + is_target column.
-    out = tmp_path / "labelled.csv"
+def test_between_groups_export_csv(app, tmp_path):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _paint_two_groups(win)
+    win.set_metrics(["glv_mean", "glv_median"])
+    win.on_cmp_mode("between")
+    out = tmp_path / "ga.csv"
     assert win.export_csv(str(out)) == str(out)
     text = out.read_text(encoding="utf-8-sig")
-    assert "mode: labelled" in text
-    assert "separation_score" in text
-    assert "is_target" in text
-
-    # Re-editing the ROI clears target tags.
-    win.modify_region(region.rid, (18, 14, 28, 24))
-    assert region.target_idx == set()
+    assert "Group A" in text and "Group B" in text
+    assert "GLV mean" in text and "summary" in text
 
 
-def test_add_region_button_creates_active_default(app):
+def test_split_tr_enables_snr_and_within_mode(app):
     from pear.ui.main_window import MainWindow
-
+    from pear.core.analysis import TARGET, REFERENCE, find_role
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.add_region()
-    r = win._active_region()
-    assert r is not None
-    assert len(win._regions) == 1
-    assert r.instances, "default region must expand and analyze"
-    # Default ROI fits within a single cell.
-    x, y, w, h = r.roi
-    assert (x % CELL_W) + w <= CELL_W
-    assert (y % CELL_H) + h <= CELL_H
+    _, gB = _paint_two_groups(win)
+    win.add_roi()                              # a second ROI so T/R is possible
+    win.set_split(True)
+    assert find_role(win._rois, TARGET) is not None
+    assert find_role(win._rois, REFERENCE) is not None
+    win.set_metrics(["glv_mean", "snr"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gB)
+    # SNR line becomes visible in the analysis panel
+    assert win.analysis.snr_lbl.isVisibleTo(win.analysis) or win.analysis.snr_lbl.text()
+    assert "SNR" in win.analysis.snr_lbl.text()
 
 
-def test_drag_redraws_active_region_no_new_region(app):
-    from PySide6.QtCore import QPointF, QPoint, Qt
-    from PySide6.QtGui import QMouseEvent
+def test_add_roi_and_grid(app):
     from pear.ui.main_window import MainWindow
-
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.add_region()
-    iv = win.image_view
-    iv.resize(500, 400)
-    iv.set_regions(win._regions, win._active_rid)
-
-    def evt(kind, pos):
-        return QMouseEvent(kind, QPointF(pos), Qt.LeftButton,
-                           Qt.LeftButton, Qt.NoModifier)
-
-    # Draw over an empty area (a far cell, not over the default ROI).
-    start = iv._to_widget(6 * CELL_W + 8, 5 * CELL_H + 8)
-    end = iv._to_widget(6 * CELL_W + 8 + 24, 5 * CELL_H + 8 + 20)
-    iv.mousePressEvent(evt(QMouseEvent.Type.MouseButtonPress,
-                           QPoint(int(start.x()), int(start.y()))))
-    iv.mouseMoveEvent(evt(QMouseEvent.Type.MouseMove,
-                          QPoint(int(end.x()), int(end.y()))))
-    iv.mouseReleaseEvent(evt(QMouseEvent.Type.MouseButtonRelease,
-                             QPoint(int(end.x()), int(end.y()))))
-
-    # Drawing redefined the active region's ROI; it did NOT create a new one.
-    assert len(win._regions) == 1
-    assert win._active_region().roi[2] > 0
+    n0 = len(win._rois)
+    win.add_roi()
+    assert len(win._rois) == n0 + 1
+    win.add_roi_grid()
+    assert len(win._rois) == n0 + 1 + 4        # grid adds 2x2
+    assert win._mode == "roi"
 
 
-def test_drag_without_active_region_emits_prompt(app):
-    from PySide6.QtCore import QPointF, QPoint, Qt
-    from PySide6.QtGui import QMouseEvent
+def test_mode_toggle(app):
     from pear.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")  # no region added
-    iv = win.image_view
-    iv.resize(500, 400)
-    seen = []
-    iv.draw_without_region.connect(lambda: seen.append(True))
-
-    def evt(kind, pos):
-        return QMouseEvent(kind, QPointF(pos), Qt.LeftButton,
-                           Qt.LeftButton, Qt.NoModifier)
-
-    iv.mousePressEvent(evt(QMouseEvent.Type.MouseButtonPress, QPoint(120, 120)))
-    assert seen, "dragging with no active region should prompt to add one"
-    assert len(win._regions) == 0
-
-
-def test_cell_hover_and_focus(app):
-    from PySide6.QtCore import QPointF, QPoint, Qt
-    from PySide6.QtGui import QMouseEvent
-    from pear.ui.main_window import MainWindow
-
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.add_region()
-    iv = win.image_view
-    iv.resize(600, 460)
-    iv.set_regions(win._regions, win._active_rid)
-    region = win._active_region()
-
-    # Pick an instance that is NOT the reference ROI (avoid the move path).
-    target_idx = max(range(len(region.instances)),
-                     key=lambda i: region.instances[i][0] + region.instances[i][1])
-    center = iv._rect_to_widget(region.instances[target_idx]).center()
-    pt = QPoint(int(center.x()), int(center.y()))
-
-    def evt(kind, pos):
-        return QMouseEvent(kind, QPointF(pos), Qt.NoButton if kind ==
-                           QMouseEvent.Type.MouseMove else Qt.LeftButton,
-                           Qt.NoButton, Qt.NoModifier)
-
-    iv.mouseMoveEvent(evt(QMouseEvent.Type.MouseMove, pt))
-    assert iv._hover_idx == target_idx
-
-    focused = []
-    iv.cell_focused.connect(focused.append)
-    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, QPointF(pt),
-                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-    iv.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease, QPointF(pt),
-                                     Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-    assert focused == [target_idx]
-    assert iv._focus_idx == target_idx
-    # No new region created by the click.
-    assert len(win._regions) == 1
+    win.set_mode("roi")
+    assert win.image_view._mode == "roi"
+    win.set_mode("group")
+    assert win.image_view._mode == "group"
 
 
-def test_attribute_search_and_family_filter(app):
+def test_roi_created_from_stage(app):
     from pear.ui.main_window import MainWindow
-
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.create_region((16, 13, 30, 26))
-    rk = win.analysis.ranking
-    total = sum(1 for r in rk._rows)
-    assert total > 0
-
-    # Search narrows the shown rows (use isHidden — window isn't shown).
-    win.analysis.search.setText("glcm")
-    shown = [r for r in rk._rows if not r.isHidden()]
-    assert shown and all(r.attr.startswith("glcm") for r in shown)
-
-    win.analysis.search.setText("")
-    # Unchecking a family hides its rows.
-    win.analysis.family_btns["C2C"].setChecked(False)
-    assert all(not r.attr.startswith("c2c") for r in rk._rows
-               if not r.isHidden())
+    n0 = len(win._rois)
+    win.on_roi_created((20, 15, 24, 20))
+    assert len(win._rois) == n0 + 1
+    assert win._rois[-1].rect == (20, 15, 24, 20)
 
 
-def test_region_rename(app):
+def test_delete_group_and_roi(app):
     from pear.ui.main_window import MainWindow
-
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.add_region()
-    rid = win._active_rid
-    win.rename_region(rid, "my cells")
-    assert win._region(rid).name == "my cells"
+    gA, gB = _paint_two_groups(win)
+    win.delete_group(gB)
+    assert win._group(gB) is None
+    rid = win._rois[0].rid
+    win.delete_roi(rid)
+    assert win._roi(rid) is None
 
 
-def test_zoom_controls_change_scale(app):
+def test_color_and_role_customization(app):
     from pear.ui.main_window import MainWindow
-
+    from pear.core.analysis import TARGET
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    iv = win.image_view
-    iv.resize(500, 400)
-    iv.fit()
-    base = iv._scale
-    iv.zoom_in()
-    assert iv._scale > base
-    iv.zoom_out()
-    iv.zoom_out()
-    assert iv._scale < base
-    assert iv.zoom_percent() > 0
-
-
-def test_theme_toggle_switches_palette(app):
-    from pear.ui import theme
-    from pear.ui.main_window import MainWindow
-
-    theme.apply_theme(app, "dark")
-    win = MainWindow()
-    assert theme.active_palette() == "dark"
-    win.toggle_theme()
-    assert theme.active_palette() == "swiss"
-    win.toggle_theme()
-    assert theme.active_palette() == "dark"
-
-
-def test_additive_regions_do_not_wipe(app):
-    from pear.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    win.create_region((16, 13, 20, 20))
-    win.create_region((30, 20, 18, 18))
-    assert len(win._regions) == 2, "second draw must not wipe the first"
-
-
-def test_roi_size_capped_but_position_free(app):
-    from pear.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    iv = win.image_view
-    # A box at x=50, w=30 straddles the cell boundary — that is now allowed
-    # (position is free); only the size is capped to one cell.
-    x, y, w, h = iv._clamp_roi((50, 10, 30, 20))
-    assert (x, y, w, h) == (50, 10, 30, 20)
-    # Oversized boxes are capped to a single cell footprint.
-    _, _, w2, h2 = iv._clamp_roi((10, 10, 999, 999))
-    assert w2 <= CELL_W and h2 <= CELL_H
-
-
-def test_draw_rubberband_does_not_crash(app):
-    from PySide6.QtCore import QPointF, QPoint, Qt
-    from PySide6.QtGui import QMouseEvent
-    from pear.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    iv = win.image_view
-    iv.resize(400, 300)
-
-    def evt(kind, pos):
-        return QMouseEvent(kind, QPointF(pos), Qt.LeftButton,
-                           Qt.LeftButton, Qt.NoModifier)
-
-    iv.mousePressEvent(evt(QMouseEvent.Type.MouseButtonPress, QPoint(60, 60)))
-    iv.mouseMoveEvent(evt(QMouseEvent.Type.MouseMove, QPoint(110, 100)))
-    # A paint while the rubber-band is active must not raise.
-    iv.repaint()
-    iv.mouseReleaseEvent(evt(QMouseEvent.Type.MouseButtonRelease,
-                             QPoint(110, 100)))
-
-
-def test_grid_persists_when_regions_change(app):
-    from pear.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    assert win.image_view._period is not None
-    win.create_region((16, 13, 20, 20))
-    # Period (and therefore the grid) is still present after adding a region.
-    assert win.image_view._period is not None
+    gA = win._groups[0].gid
+    win.set_group_color(gA, "#123456")
+    assert win._group(gA).color == "#123456"
+    win.set_split(True)
+    rid = win._rois[0].rid
+    win.set_roi_role(rid, TARGET)
+    assert win._roi(rid).role == TARGET

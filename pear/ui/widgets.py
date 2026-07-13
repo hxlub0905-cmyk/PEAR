@@ -1,785 +1,749 @@
-"""Workspace widgets: Settings panel, Region list, Analysis panel, and a
-hand-painted histogram. No charting dependency — every plot is QPainter.
+"""Workspace widgets: the control rail (Lattice / Groups / ROIs / Metrics),
+a clean box-and-strip distribution chart, and the Analysis panel.
+
+No charting dependency — every plot is hand-painted with QPainter. The
+distribution chart uses a box + jittered strip (robust for the small,
+well-separated samples this tool produces) instead of a histogram.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QFrame, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
+                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
-from pear.core.analysis import PeriodInfo, Region
-from pear.core.attributes import (ATTR_FAMILY, ATTR_FORMULAS, ATTR_LABELS,
-                                  FAMILIES)
+from pear.core import analysis
+from pear.core.analysis import (ROI, Group, PeriodInfo, REFERENCE, TARGET,
+                                group_metric_values, summarize)
+from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
+                                  metric_label)
 from pear.ui import theme
 
 
 # --------------------------------------------------------------------------- #
-# small helpers
+# helpers
 # --------------------------------------------------------------------------- #
-def _card(title: Optional[str] = None, number: Optional[str] = None) -> QFrame:
+def _card(title: str, sub: str = "") -> QFrame:
     frame = QFrame()
     frame.setObjectName("Card")
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(16, 16, 16, 16)
-    lay.setSpacing(12)
-    if title:
-        if number:
-            lay.addWidget(_eyebrow(f"{number} — {title}"))
-        head = QLabel(title.upper())
-        head.setObjectName("SectionTitle")
-        head.setFont(theme.display_font(15))
-        lay.addWidget(head)
+    lay.setContentsMargins(14, 12, 14, 14)
+    lay.setSpacing(10)
+    head = QHBoxLayout()
+    head.setSpacing(7)
+    t = QLabel(title)
+    t.setObjectName("SectionTitle")
+    t.setFont(theme.display_font(13, weight=700))
+    head.addWidget(t)
+    if sub:
+        s = QLabel(sub)
+        s.setObjectName("Hint")
+        head.addWidget(s)
+    head.addStretch(1)
+    frame._head = head           # type: ignore[attr-defined]
+    lay.addLayout(head)
     return frame
 
 
-def _eyebrow(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setObjectName("Eyebrow")
-    lbl.setFont(theme.eyebrow_font(9))
-    return lbl
+def _swatch(color: str, on_pick: Callable[[str], None]) -> QPushButton:
+    b = QPushButton()
+    b.setFixedSize(16, 16)
+    b.setStyleSheet(
+        f"background:{color}; border:1px solid rgba(0,0,0,.15); border-radius:4px;")
+
+    def choose():
+        c = QColorDialog.getColor(QColor(color))
+        if c.isValid():
+            on_pick(c.name())
+    b.clicked.connect(choose)
+    return b
 
 
-def _swatch(hex_color: str, size: int = 12) -> QIcon:
-    """A small filled square icon in the region's colour."""
-    pm = QPixmap(size, size)
-    pm.fill(QColor(hex_color))
-    return QIcon(pm)
+def _tr_toggle(role: str, on_set: Callable[[str], None]) -> QWidget:
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    for letter, this_role, col in (("T", TARGET, theme.TARGET),
+                                   ("R", REFERENCE, theme.REFERENCE)):
+        b = QPushButton(letter)
+        b.setFixedSize(22, 20)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setStyleSheet(_tr_style(col, role == this_role))
+        b.clicked.connect(lambda _=False, rr=this_role: on_set(rr))
+        lay.addWidget(b)
+    return w
 
 
-def _mono(text: str = "") -> QLabel:
-    lbl = QLabel(text)
-    lbl.setObjectName("Mono")
-    lbl.setFont(theme.mono_font(10))
-    return lbl
+def _tr_style(color: str, on: bool) -> str:
+    if on:
+        return (f"QPushButton{{background:{color}; color:#fff; border:1px solid {color};"
+                " border-radius:5px; padding:0; font-weight:800; font-size:11px;}")
+    return (f"QPushButton{{background:{theme.PANEL}; color:{theme.INK3};"
+            f" border:1px solid {theme.LINE}; border-radius:5px; padding:0;"
+            " font-weight:800; font-size:11px;}")
 
 
 # --------------------------------------------------------------------------- #
-# Golden-cell preview
+# Distribution chart (box + jittered strip)
 # --------------------------------------------------------------------------- #
-class GoldenPreview(QWidget):
-    """Small canvas rendering the median-stacked golden cell."""
+class DistributionChart(QWidget):
+    """One metric, several series (groups or ROIs) as stacked box+strip lanes."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._title = ""
+        self._series: List[dict] = []      # {label,color,values}
         self.setMinimumHeight(96)
-        self._pixmap: Optional[QPixmap] = None
 
-    def set_cell(self, cell: Optional[np.ndarray]) -> None:
-        if cell is None or cell.size == 0:
-            self._pixmap = None
-        else:
-            arr = np.ascontiguousarray(cell.astype(np.uint8))
-            h, w = arr.shape
-            img = QImage(arr.data, w, h, w, QImage.Format_Grayscale8)
-            self._pixmap = QPixmap.fromImage(img.copy())
-        self.update()
-
-    def paintEvent(self, _e) -> None:
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor(theme.STAGE))
-        if self._pixmap is None:
-            p.setPen(QColor(theme.FAINT))
-            p.drawText(self.rect(), Qt.AlignCenter, "golden cell")
-            p.end()
-            return
-        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
-        iw, ih = self._pixmap.width(), self._pixmap.height()
-        scale = min(self.width() / iw, self.height() / ih) * 0.9
-        tw, th = iw * scale, ih * scale
-        x = (self.width() - tw) / 2
-        y = (self.height() - th) / 2
-        p.drawPixmap(QRectF(x, y, tw, th), self._pixmap,
-                     QRectF(self._pixmap.rect()))
-        p.end()
-
-
-# --------------------------------------------------------------------------- #
-# Histogram (hand-painted)
-# --------------------------------------------------------------------------- #
-class Histogram(QWidget):
-    """Distribution of one attribute's values across a region's cells."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(140)
-        self._values: np.ndarray = np.array([])
-        self._target: Optional[np.ndarray] = None
-        self._threshold: Optional[float] = None
-        self._median: Optional[float] = None
-        self._band: Optional[tuple] = None   # (lo, hi) outlier cutoffs
-        self._title = ""
-
-    def set_values(self, values, title: str = "",
-                   k_sigma: float = 3.5) -> None:
-        """Single population, with median and ±k·σ outlier-cutoff guides."""
-        vals = np.asarray(values, dtype=np.float64)
-        self._values = vals
-        self._target = None
-        self._threshold = None
+    def set_data(self, title: str, series: List[dict]) -> None:
         self._title = title
-        self._median = None
-        self._band = None
-        if vals.size:
-            med = float(np.median(vals))
-            mad = float(np.median(np.abs(vals - med)))
-            self._median = med
-            if mad > 1e-12:
-                delta = k_sigma * mad / 0.6745
-                self._band = (med - delta, med + delta)
-        self.update()
-
-    def set_compare(self, ref_values, target_values, title: str = "",
-                    threshold: Optional[float] = None) -> None:
-        """Two overlaid populations: reference (black) and target (red)."""
-        self._values = np.asarray(ref_values, dtype=np.float64)
-        self._target = np.asarray(target_values, dtype=np.float64)
-        self._threshold = threshold
-        self._median = None
-        self._band = None
-        self._title = title
-        self.update()
-
-    def clear(self) -> None:
-        self._values = np.array([])
-        self._target = None
-        self._threshold = None
-        self._median = None
-        self._band = None
-        self._title = ""
+        self._series = [s for s in series if s["values"].size]
+        n = max(1, len(self._series))
+        self.setMinimumHeight(30 + n * 30 + 22)
         self.update()
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), QColor(theme.PANEL))
-
-        vals = self._values
-        if vals.size == 0:
-            p.setPen(QColor(theme.FAINT))
-            p.drawText(self.rect(), Qt.AlignCenter, "no distribution")
+        p.fillRect(self.rect(), QColor(theme.CARD))
+        p.setPen(QColor(theme.INK))
+        p.setFont(theme.display_font(11, weight=700))
+        p.drawText(10, 16, self._title)
+        if not self._series:
+            p.setPen(QColor(theme.INK3))
+            p.setFont(theme.mono_font(9))
+            p.drawText(self.rect(), Qt.AlignCenter, "no data")
             p.end()
             return
 
-        margin_l, margin_r, margin_t, margin_b = 8, 8, 22, 22
-        plot = QRectF(margin_l, margin_t,
-                      self.width() - margin_l - margin_r,
-                      self.height() - margin_t - margin_b)
+        allv = np.concatenate([s["values"] for s in self._series])
+        lo, hi = float(allv.min()), float(allv.max())
+        if hi - lo < 1e-9:
+            lo -= 0.5
+            hi += 0.5
+        pad = (hi - lo) * 0.06
+        lo -= pad
+        hi += pad
+        L, R, top = 12, 62, 24
+        W = max(10, self.width() - L - R)
+        laneH = 30
+        n = len(self._series)
+        plot_bottom = top + n * laneH
 
-        has_target = self._target is not None and self._target.size > 0
-        allv = np.concatenate([vals, self._target]) if has_target else vals
-        vmin, vmax = float(allv.min()), float(allv.max())
-        if self._title:
-            p.setPen(QColor(theme.MUTED))
-            p.setFont(theme.mono_font(9))
-            p.drawText(int(margin_l), 14, self._title)
+        def X(v):
+            return L + (v - lo) / (hi - lo) * W
 
-        if vmax - vmin < 1e-12:
-            p.fillRect(QRectF(plot.center().x() - 12, plot.top(),
-                              24, plot.height()), QColor(theme.INK))
-        else:
-            nbins = min(24, max(6, int(np.sqrt(allv.size)) + 4))
-            ref_counts, _ = np.histogram(vals, bins=nbins, range=(vmin, vmax))
-            series = [(ref_counts, QColor(theme.INK))]
-            if has_target:
-                tgt_counts, _ = np.histogram(self._target, bins=nbins,
-                                             range=(vmin, vmax))
-                series.append((tgt_counts, QColor(theme.ACCENT)))
-            cmax = max(int(c.max()) for c, _ in series) or 1
-            bw = plot.width() / nbins
+        # vertical gridlines + axis ticks
+        p.setFont(theme.mono_font(8))
+        for t in range(5):
+            gx = L + W * t / 4.0
+            p.setPen(QPen(QColor(theme.LINE2), 1))
+            p.drawLine(int(gx), top - 4, int(gx), int(plot_bottom + 2))
+            p.setPen(QColor(theme.INK3))
+            val = lo + (hi - lo) * t / 4.0
+            p.drawText(int(gx) - 14, int(plot_bottom + 14), _fmt(val))
+
+        for i, s in enumerate(self._series):
+            v = s["values"]
+            col = QColor(s["color"])
+            yc = top + i * laneH + laneH / 2
+            q25, med, q75 = (float(np.percentile(v, 25)),
+                             float(np.median(v)), float(np.percentile(v, 75)))
+            bh = laneH * 0.52
+            # box Q25..Q75
+            box = QColor(col)
+            box.setAlpha(48)
+            p.setPen(QPen(col, 1))
+            p.setBrush(box)
+            p.drawRect(int(X(q25)), int(yc - bh / 2),
+                       max(2, int(X(q75) - X(q25))), int(bh))
+            # jittered dots
+            dot = QColor(col)
+            dot.setAlpha(190)
             p.setPen(Qt.NoPen)
-            for counts, col in series:
-                p.setBrush(col)
-                for i, c in enumerate(counts):
-                    if c == 0:
-                        continue
-                    bh = (c / cmax) * plot.height()
-                    p.drawRect(QRectF(plot.left() + i * bw + 1,
-                                      plot.bottom() - bh,
-                                      max(1.0, bw - 2), bh))
-            if self._threshold is not None and vmax > vmin:
-                tx = plot.left() + (self._threshold - vmin) / (vmax - vmin) * plot.width()
-                tx = float(np.clip(tx, plot.left(), plot.right()))
-                tpen = QPen(QColor(theme.ACCENT), 1.5)
-                tpen.setStyle(Qt.DashLine)
-                p.setPen(tpen)
-                p.drawLine(tx, plot.top(), tx, plot.bottom())
-
-            def _vline(value, col, style):
-                if not (vmin <= value <= vmax):
-                    return
-                vx = plot.left() + (value - vmin) / (vmax - vmin) * plot.width()
-                pen = QPen(col, 1.3)
-                pen.setStyle(style)
-                p.setPen(pen)
-                p.drawLine(vx, plot.top(), vx, plot.bottom())
-
-            if self._median is not None and vmax > vmin:
-                _vline(self._median, QColor(theme.MUTED), Qt.SolidLine)
-            if self._band is not None and vmax > vmin:
-                _vline(self._band[0], QColor(theme.FLAG), Qt.DashLine)
-                _vline(self._band[1], QColor(theme.FLAG), Qt.DashLine)
-
-        # baseline + min/max labels (mono)
-        p.setPen(QPen(QColor(theme.LINE), 1))
-        p.drawLine(plot.left(), plot.bottom(), plot.right(), plot.bottom())
-        p.setPen(QColor(theme.MUTED))
-        p.setFont(theme.mono_font(9))
-        p.drawText(int(plot.left()), self.height() - 6, _fmt(vmin))
-        p.drawText(int(plot.right()) - 60, self.height() - 6, _fmt(vmax))
+            p.setBrush(dot)
+            rngj = laneH * 0.34
+            for k, val in enumerate(v):
+                jitter = ((k % 7) / 6.0 - 0.5) * rngj
+                p.drawEllipse(int(X(val)) - 3, int(yc + jitter) - 3, 6, 6)
+            # median tick
+            p.setPen(QPen(col, 2.4))
+            p.drawLine(int(X(med)), int(yc - bh / 2 - 2),
+                       int(X(med)), int(yc + bh / 2 + 2))
+            # left label + right mean value
+            p.setPen(QColor(theme.INK2))
+            p.setFont(theme.mono_font(8))
+            p.drawText(int(L + 3), int(yc - bh / 2 - 5), f"{s['label']} · n={v.size}")
+            p.setPen(col)
+            p.setFont(theme.mono_font(9, weight=700))
+            p.drawText(self.width() - R + 5, int(yc + 4), _fmt(float(v.mean())))
         p.end()
 
 
 def _fmt(v: float) -> str:
-    if v == 0:
-        return "0"
     a = abs(v)
-    if a >= 1000 or a < 0.01:
+    if a >= 1000 or (0 < a < 0.01):
         return f"{v:.2e}"
     return f"{v:.3g}"
 
 
 # --------------------------------------------------------------------------- #
-# Ranking list (label · max|z| · bar)
+# Metric chips
 # --------------------------------------------------------------------------- #
-class _RankRow(QFrame):
-    clicked = Signal(str)
-
-    def __init__(self, attr: str, label: str, value_text: str,
-                 frac: float, parent=None):
-        super().__init__(parent)
-        self.attr = attr
-        self._frac = max(0.0, min(1.0, frac))
-        self._selected = False
-        self.setFixedHeight(40)
-        self.setCursor(Qt.PointingHandCursor)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 4, 10, 8)
-        self._name = QLabel(label)
-        self._name.setMinimumWidth(120)
-        self._name.setFont(theme.display_font(10, weight=700))
-        self._val = _mono(value_text)
-        self._val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lay.addWidget(self._name, 1)
-        lay.addWidget(self._val, 0)
-
-    def set_selected(self, sel: bool) -> None:
-        self._selected = sel
-        fg = theme.INVERT_FG if sel else theme.INK
-        self._name.setStyleSheet(f"color: {fg};")
-        self._val.setStyleSheet(f"color: {fg};")
-        self.update()
-
-    def mousePressEvent(self, _e) -> None:
-        self.clicked.emit(self.attr)
-
-    def paintEvent(self, _e) -> None:
-        p = QPainter(self)
-        # Selected row inverts; others use the panel colour with a hairline.
-        if self._selected:
-            p.fillRect(self.rect(), QColor(theme.INVERT_BG))
-        else:
-            p.fillRect(self.rect(), QColor(theme.PANEL))
-            p.setPen(QPen(QColor(theme.CHROME), 1))
-            p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
-        # Accent magnitude meter along the bottom edge (functional signal).
-        meter_w = self.width() * self._frac
-        p.fillRect(QRectF(0, self.height() - 4, meter_w, 4),
-                   QColor(theme.ACCENT))
-        p.end()
+class _Chip(QPushButton):
+    def __init__(self, mid: str, on: bool):
+        super().__init__(metric_label(mid))
+        self.mid = mid
+        self.setCheckable(True)
+        self.setChecked(on)
+        self.setFixedHeight(24)
+        self.setToolTip(f"{metric_label(mid)}\n{metric_formula(mid)}")
 
 
-class RankingList(QScrollArea):
-    """Scrollable list of attribute rows; selecting one emits its id."""
+class MetricPicker(QWidget):
+    """GLV stat chips + custom Qn + SNR (SNR shown only when T/R split is on)."""
 
-    attr_selected = Signal(str)
+    changed = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWidgetResizable(True)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._host = QWidget()
-        self._lay = QVBoxLayout(self._host)
-        self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(2)
-        self._lay.addStretch(1)
-        self.setWidget(self._host)
-        self._rows: List[_RankRow] = []
-        self._selected: Optional[str] = None
-        self._filter_text = ""
-        self._allowed: Optional[set] = None   # None = all families
+        self._selected: List[str] = ["glv_mean", "glv_median"]
+        self._custom: List[str] = []
+        self._split = False
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+        self._chip_host = QWidget()
+        self._chip_lay = QGridLayout(self._chip_host)
+        self._chip_lay.setContentsMargins(0, 0, 0, 0)
+        self._chip_lay.setSpacing(6)
+        root.addWidget(self._chip_host)
+        qn = QHBoxLayout()
+        qn.setSpacing(6)
+        lab = QLabel("custom Q")
+        lab.setObjectName("Hint")
+        self.qn_spin = QSpinBox()
+        self.qn_spin.setRange(1, 99)
+        self.qn_spin.setValue(90)
+        self.qn_spin.setFixedWidth(60)
+        add = QPushButton("Add")
+        add.setFixedHeight(26)
+        add.clicked.connect(self._add_custom)
+        qn.addWidget(lab)
+        qn.addWidget(self.qn_spin)
+        qn.addWidget(add)
+        qn.addStretch(1)
+        root.addLayout(qn)
+        self._rebuild()
 
-    def set_ranking(self, ranking, selected: Optional[str],
-                    value_fn=None, fmt=None, tooltip_fn=None) -> None:
-        """Populate rows. ``value_fn(score)`` gives the numeric magnitude
-        (drives the meter); ``fmt(value)`` renders the right-hand text;
-        ``tooltip_fn(score)`` an optional hover string."""
-        value_fn = value_fn or (lambda s: s.max_abs_z)
-        fmt = fmt or (lambda v: f"{v:.2f}σ")
-        for row in self._rows:
-            row.setParent(None)
-            row.deleteLater()
-        self._rows = []
-        self._selected = selected
-        maxv = max((value_fn(s) for s in ranking), default=1.0) or 1.0
-        for score in ranking:
-            label = ATTR_LABELS.get(score.attr, score.attr)
-            v = value_fn(score)
-            row = _RankRow(score.attr, label, fmt(v),
-                           (v / maxv) if maxv > 0 else 0.0)
-            if tooltip_fn is not None:
-                row.setToolTip(tooltip_fn(score))
-            row.clicked.connect(self.attr_selected)
-            row.set_selected(score.attr == selected)
-            self._lay.insertWidget(self._lay.count() - 1, row)
-            self._rows.append(row)
-        self._apply_current_filter()
+    def set_split(self, on: bool) -> None:
+        self._split = on
+        if not on and SNR_ID in self._selected:
+            self._selected.remove(SNR_ID)
+            self.changed.emit(list(self._selected))
+        self._rebuild()
 
-    def apply_filter(self, text: str, allowed: Optional[set]) -> None:
-        self._filter_text = (text or "").strip().lower()
-        self._allowed = allowed
-        self._apply_current_filter()
+    def selected(self) -> List[str]:
+        return list(self._selected)
 
-    def _apply_current_filter(self) -> None:
-        for row in self._rows:
-            label = ATTR_LABELS.get(row.attr, row.attr)
-            fam = ATTR_FAMILY.get(row.attr, "")
-            ok = (not self._filter_text or self._filter_text in label.lower())
-            if self._allowed is not None and fam not in self._allowed:
-                ok = False
-            row.setVisible(ok)
+    def _add_custom(self) -> None:
+        mid = f"glv_q{int(self.qn_spin.value())}"
+        if mid not in self._custom and mid not in GLV_STATS:
+            self._custom.append(mid)
+        if mid not in self._selected:
+            self._selected.append(mid)
+        self._rebuild()
+        self.changed.emit(list(self._selected))
 
-    def set_selected(self, attr: Optional[str]) -> None:
-        self._selected = attr
-        for row in self._rows:
-            row.set_selected(row.attr == attr)
+    def _ids(self) -> List[str]:
+        ids = list(GLV_STATS.keys()) + self._custom
+        if self._split:
+            ids.append(SNR_ID)
+        return ids
 
-    def count(self) -> int:
-        return len(self._rows)
+    def _rebuild(self) -> None:
+        while self._chip_lay.count():
+            it = self._chip_lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for i, mid in enumerate(self._ids()):
+            chip = _Chip(mid, mid in self._selected)
+            chip.clicked.connect(lambda _=False, m=mid: self._toggle(m))
+            self._chip_lay.addWidget(chip, i // 3, i % 3)
+
+    def _toggle(self, mid: str) -> None:
+        if mid in self._selected:
+            self._selected.remove(mid)
+        else:
+            self._selected.append(mid)
+        self.changed.emit(list(self._selected))
 
 
 # --------------------------------------------------------------------------- #
-# Settings panel
+# Control rail
 # --------------------------------------------------------------------------- #
-class SettingsPanel(QWidget):
+class RailPanel(QWidget):
     detect_requested = Signal()
     refine_requested = Signal()
-    manual_changed = Signal(int, int, float)   # px, py, nm_per_px (0 = unset)
-    region_add_requested = Signal()
-    region_selected = Signal(int)
-    region_deleted = Signal(int)
-    region_renamed = Signal(int, str)
+    manual_changed = Signal(int, int, float)
+    group_add = Signal()
+    group_pick = Signal(str)
+    group_del = Signal(str)
+    group_role = Signal(str, str)
+    group_color = Signal(str, str)
+    group_rename = Signal(str, str)
+    roi_add = Signal()
+    roi_grid = Signal()
+    roi_pick = Signal(int)
+    roi_del = Signal(int)
+    roi_role = Signal(int, str)
+    roi_color = Signal(int, str)
+    split_toggled = Signal(bool)
+    metrics_changed = Signal(list)
+    mode_changed = Signal(str)              # "group" | "roi"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(16)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(12)
 
-        # --- Lattice card ------------------------------------------------ #
-        lattice = _card("Lattice", number="01")
-        llay = lattice.layout()
-        self.period_lbl = _mono("period: —")
-        self.axis_lbl = _mono("axis: —")
-        self.align_pill = QLabel("—")
-        self.align_pill.setObjectName("Mono")
-        self.align_pill.setFont(theme.mono_font(10))
+        # Lattice
+        lat = _card("Lattice", "cell grid")
+        llay = lat.layout()
+        self.period_lbl = QLabel("period —")
+        self.period_lbl.setObjectName("Mono")
+        self.period_lbl.setFont(theme.mono_font(10))
         llay.addWidget(self.period_lbl)
-        llay.addWidget(self.axis_lbl)
-        llay.addWidget(self.align_pill)
-
-        btns = QHBoxLayout()
-        btns.setSpacing(10)
+        row = QHBoxLayout()
         self.detect_btn = QPushButton("Detect")
         self.detect_btn.setObjectName("Primary")
         self.refine_btn = QPushButton("Refine")
-        for b in (self.detect_btn, self.refine_btn):
-            b.setMinimumHeight(34)
         self.detect_btn.clicked.connect(self.detect_requested)
         self.refine_btn.clicked.connect(self.refine_requested)
-        btns.addWidget(self.detect_btn, 1)
-        btns.addWidget(self.refine_btn, 1)
-        llay.addLayout(btns)
+        row.addWidget(self.detect_btn)
+        row.addWidget(self.refine_btn)
+        llay.addLayout(row)
+        root.addWidget(lat)
 
-        llay.addWidget(_eyebrow("Golden cell"))
-        self.golden = GoldenPreview()
-        llay.addWidget(self.golden)
-
-        # --- Manual (collapsible) --------------------------------------- #
-        self.manual_toggle = QCheckBox("Set period / pixel size manually")
-        llay.addWidget(self.manual_toggle)
-        self.manual_box = QWidget()
-        mlay = QVBoxLayout(self.manual_box)
-        mlay.setContentsMargins(0, 6, 0, 0)
-        mlay.setSpacing(8)
-        self.px_spin = self._spin("px", 2, 100000)
-        self.py_spin = self._spin("py", 2, 100000)
-        self.nm_spin = self._dspin("nm/px", 0.0, 100000.0)
-        for w in (self.px_spin[0], self.py_spin[0], self.nm_spin[0]):
-            mlay.addWidget(w)
-        apply_btn = QPushButton("Apply")
-        apply_btn.setMinimumHeight(32)
-        apply_btn.clicked.connect(self._emit_manual)
-        mlay.addWidget(apply_btn)
-        self.manual_box.setVisible(False)
-        self.manual_toggle.toggled.connect(self.manual_box.setVisible)
-        llay.addWidget(self.manual_box)
-        root.addWidget(lattice)
-
-        # --- Regions card ----------------------------------------------- #
-        regions = _card("Regions", number="02")
-        rlay = regions.layout()
-        hint = QLabel("Add a region, then drag on the image to set its ROI.")
+        # Groups
+        grp = _card("Groups", "sets of cells")
+        self.grp_add_btn = QPushButton("+ Add")
+        self.grp_add_btn.setFixedHeight(26)
+        self.grp_add_btn.clicked.connect(self.group_add)
+        grp._head.addWidget(self.grp_add_btn)      # type: ignore[attr-defined]
+        glay = grp.layout()
+        self.grp_host = QVBoxLayout()
+        self.grp_host.setSpacing(6)
+        glay.addLayout(self.grp_host)
+        hint = QLabel("Paint mode: click / drag cells into the active group.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
-        rlay.addWidget(hint)
-        self.add_btn = QPushButton("+ Add region")
-        self.add_btn.setObjectName("Primary")
-        self.add_btn.setMinimumHeight(34)
-        self.add_btn.clicked.connect(self.region_add_requested)
-        rlay.addWidget(self.add_btn)
-        self.region_list = QListWidget()
-        self.region_list.setMinimumHeight(120)
-        self.region_list.itemClicked.connect(self._on_region_clicked)
-        self.region_list.itemChanged.connect(self._on_item_changed)
-        rlay.addWidget(self.region_list)
-        self.delete_btn = QPushButton("Delete selected region")
-        self.delete_btn.setMinimumHeight(32)
-        self.delete_btn.clicked.connect(self._on_delete)
-        rlay.addWidget(self.delete_btn)
-        root.addWidget(regions)
+        glay.addWidget(hint)
+        root.addWidget(grp)
+
+        # ROIs
+        roi = _card("ROIs", "measure window")
+        self.roi_add_btn = QPushButton("+ Add")
+        self.roi_grid_btn = QPushButton("Grid")
+        for b in (self.roi_add_btn, self.roi_grid_btn):
+            b.setFixedHeight(26)
+        self.roi_add_btn.clicked.connect(self.roi_add)
+        self.roi_grid_btn.clicked.connect(self.roi_grid)
+        roi._head.addWidget(self.roi_add_btn)      # type: ignore[attr-defined]
+        roi._head.addWidget(self.roi_grid_btn)     # type: ignore[attr-defined]
+        rlay = roi.layout()
+        from PySide6.QtWidgets import QCheckBox
+        self.split_chk = QCheckBox("Split into Target / Reference (enables SNR)")
+        self.split_chk.toggled.connect(self.split_toggled)
+        rlay.addWidget(self.split_chk)
+        self.roi_host = QVBoxLayout()
+        self.roi_host.setSpacing(6)
+        rlay.addLayout(self.roi_host)
+        rhint = QLabel("Draw ROI mode: drag on the image. Each ROI repeats in "
+                       "every cell.")
+        rhint.setObjectName("Hint")
+        rhint.setWordWrap(True)
+        rlay.addWidget(rhint)
+        root.addWidget(roi)
+
+        # Metrics
+        met = _card("Metrics", "per cell · per ROI")
+        self.metrics = MetricPicker()
+        self.metrics.changed.connect(self.metrics_changed)
+        met.layout().addWidget(self.metrics)
+        root.addWidget(met)
         root.addStretch(1)
 
-    # widget builders ---------------------------------------------------- #
-    def _spin(self, label, lo, hi):
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(10)
-        lbl = QLabel(label)
-        lbl.setFont(theme.eyebrow_font(9))
-        lbl.setMinimumWidth(56)
-        sp = QSpinBox()
-        sp.setRange(lo, hi)
-        sp.setMinimumHeight(30)
-        h.addWidget(lbl)
-        h.addWidget(sp, 1)
-        return row, sp
-
-    def _dspin(self, label, lo, hi):
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(10)
-        lbl = QLabel(label)
-        lbl.setFont(theme.eyebrow_font(9))
-        lbl.setMinimumWidth(56)
-        sp = QDoubleSpinBox()
-        sp.setRange(lo, hi)
-        sp.setDecimals(3)
-        sp.setMinimumHeight(30)
-        h.addWidget(lbl)
-        h.addWidget(sp, 1)
-        return row, sp
-
-    # API ---------------------------------------------------------------- #
+    # -- render --------------------------------------------------------- #
     def set_period(self, period: Optional[PeriodInfo]) -> None:
         if period is None:
-            self.period_lbl.setText("period: —")
-            self.axis_lbl.setText("axis: —")
-            self.align_pill.setText("—")
-            self.golden.set_cell(None)
-            return
-        self.period_lbl.setText(f"period: {period.px} x {period.py} px")
-        self.axis_lbl.setText(f"axis: {period.axis_mode}  "
-                              f"conf: {period.confidence:.0f}%")
-        self.golden.set_cell(period.golden_cell)
-        # sync manual spinboxes without re-emitting
-        self.px_spin[1].blockSignals(True)
-        self.py_spin[1].blockSignals(True)
-        self.px_spin[1].setValue(period.px)
-        self.py_spin[1].setValue(period.py)
-        self.px_spin[1].blockSignals(False)
-        self.py_spin[1].blockSignals(False)
-
-    def set_alignment(self, lap_var: float) -> None:
-        if lap_var > 80:
-            text, col = "aligned", theme.OK
-        elif lap_var > 25:
-            text, col = "marginal", theme.FLAG
+            self.period_lbl.setText("period —")
         else:
-            text, col = "check alignment", theme.ACCENT
-        self.align_pill.setText(f"alignment: {text}")
-        self.align_pill.setStyleSheet(f"color: {col}; font-weight: 700;")
+            self.period_lbl.setText(
+                f"period {period.px} × {period.py} px · {period.axis_mode} · "
+                f"{period.confidence:.0f}%")
 
-    def set_regions(self, regions: List[Region], active_rid: Optional[int]) -> None:
-        self.region_list.blockSignals(True)
-        self.region_list.clear()
-        for r in regions:
-            item = QListWidgetItem(r.name)              # editable = name only
-            item.setData(Qt.UserRole, r.rid)
-            item.setIcon(_swatch(r.color))             # colour badge
-            item.setToolTip(f"{len(r.instances)} cells")
-            item.setFlags(item.flags() | Qt.ItemIsEditable)
-            self.region_list.addItem(item)
-            if r.rid == active_rid:
-                self.region_list.setCurrentItem(item)
-        self.region_list.blockSignals(False)
+    def set_groups(self, groups: List[Group], active_gid, split: bool) -> None:
+        _clear(self.grp_host)
+        for g in groups:
+            self.grp_host.addWidget(self._group_row(g, g.gid == active_gid, split))
 
-    def nm_per_px(self) -> float:
-        return float(self.nm_spin[1].value())
+    def set_rois(self, rois: List[ROI], active_rid, split: bool) -> None:
+        _clear(self.roi_host)
+        for r in rois:
+            self.roi_host.addWidget(self._roi_row(r, r.rid == active_rid, split))
 
-    # handlers ----------------------------------------------------------- #
-    def _emit_manual(self) -> None:
-        self.manual_changed.emit(int(self.px_spin[1].value()),
-                                 int(self.py_spin[1].value()),
-                                 float(self.nm_spin[1].value()))
+    def _group_row(self, g: Group, active: bool, split: bool) -> QWidget:
+        row = _ItemRow(active)
+        row.add_swatch(g.color, lambda c: self.group_color.emit(g.gid, c))
+        row.add_name(g.name, lambda t: self.group_rename.emit(g.gid, t))
+        row.add_count(str(len(g.cells)))
+        if split:
+            row.add_tr(g.role, lambda role: self.group_role.emit(g.gid, role))
+        row.add_delete(lambda: self.group_del.emit(g.gid))
+        row.clicked = lambda: self.group_pick.emit(g.gid)
+        return row
 
-    def _on_region_clicked(self, item: QListWidgetItem) -> None:
-        rid = item.data(Qt.UserRole)
-        if rid is not None:
-            self.region_selected.emit(int(rid))
+    def _roi_row(self, r: ROI, active: bool, split: bool) -> QWidget:
+        row = _ItemRow(active)
+        row.add_swatch(r.color, lambda c: self.roi_color.emit(r.rid, c))
+        row.add_name(r.label, None)
+        if split:
+            row.add_tr(r.role, lambda role: self.roi_role.emit(r.rid, role))
+        row.add_delete(lambda: self.roi_del.emit(r.rid))
+        row.clicked = lambda: self.roi_pick.emit(r.rid)
+        return row
 
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
-        rid = item.data(Qt.UserRole)
-        name = item.text().strip()
-        if rid is not None and name:
-            self.region_renamed.emit(int(rid), name)
 
-    def _on_delete(self) -> None:
-        item = self.region_list.currentItem()
-        if item is not None:
-            rid = item.data(Qt.UserRole)
-            if rid is not None:
-                self.region_deleted.emit(int(rid))
+class _ItemRow(QFrame):
+    def __init__(self, active: bool):
+        super().__init__()
+        self.clicked: Optional[Callable] = None
+        self.setStyleSheet(
+            f"background:{theme.AMBER_SOFT if active else theme.CARD};"
+            f"border:1px solid {theme.AMBER if active else theme.LINE};"
+            "border-radius:9px;")
+        self.lay = QHBoxLayout(self)
+        self.lay.setContentsMargins(8, 5, 8, 5)
+        self.lay.setSpacing(8)
+
+    def add_swatch(self, color, on_pick):
+        self.lay.addWidget(_swatch(color, on_pick))
+
+    def add_name(self, name, on_rename):
+        if on_rename is None:
+            lbl = QLabel(name)
+            lbl.setStyleSheet("font-weight:600;")
+            self.lay.addWidget(lbl)
+        else:
+            ed = QLineEdit(name)
+            ed.setFrame(False)
+            ed.setStyleSheet("background:transparent; font-weight:600; padding:0;")
+            ed.editingFinished.connect(lambda: on_rename(ed.text().strip() or name))
+            self.lay.addWidget(ed)
+        self.lay.addStretch(1)
+
+    def add_count(self, text):
+        c = QLabel(text)
+        c.setStyleSheet(f"color:{theme.INK2};")
+        c.setFont(theme.mono_font(10))
+        self.lay.addWidget(c)
+
+    def add_tr(self, role, on_set):
+        self.lay.addWidget(_tr_toggle(role, on_set))
+
+    def add_delete(self, on_del):
+        b = QPushButton("×")
+        b.setFixedSize(20, 20)
+        b.setStyleSheet(f"border:none; color:{theme.INK3}; font-size:15px;")
+        b.clicked.connect(on_del)
+        self.lay.addWidget(b)
+
+    def mousePressEvent(self, e):
+        # ignore clicks on child controls (they handle their own)
+        if self.clicked and self.childAt(e.position().toPoint()) in (None,):
+            self.clicked()
+        super().mousePressEvent(e)
+
+
+def _clear(layout) -> None:
+    while layout.count():
+        it = layout.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
 
 
 # --------------------------------------------------------------------------- #
-# Analysis panel
+# Analysis panel (bottom dock / floatable window)
 # --------------------------------------------------------------------------- #
 class AnalysisPanel(QWidget):
-    attr_selected = Signal(str)
-    export_requested = Signal()
-    mode_changed = Signal(str)          # "unsupervised" | "labelled"
-    tag_mode_toggled = Signal(bool)
+    """Between-groups and within-group comparison with box+strip charts."""
 
-    _CAP_UNSUP = ""
-    _CAP_LABEL = "Tag target cells; the rest are reference."
-    _EMPTY_UNSUP = "Add a region to rank attributes."
-    _EMPTY_LABEL = "Tag target cells on the image."
+    mode_changed = Signal(str)          # "between" | "within"
+    between_roi_changed = Signal(int)
+    within_group_changed = Signal(str)
+    export_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._mode = "unsupervised"
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(16)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(10)
 
-        card = _card("Analysis", number="03")
-        clay = card.layout()
-
-        # mode selector
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(0)
-        self.unsup_btn = QPushButton("Unsupervised")
-        self.label_btn = QPushButton("Labelled compare")
-        for b, m in ((self.unsup_btn, "unsupervised"), (self.label_btn, "labelled")):
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        title = QLabel("Analysis")
+        title.setFont(theme.display_font(14, weight=700))
+        head.addWidget(title)
+        self.between_btn = QPushButton("Between groups")
+        self.within_btn = QPushButton("Within a group")
+        for b, m in ((self.between_btn, "between"), (self.within_btn, "within")):
             b.setCheckable(True)
-            b.setMinimumHeight(32)
-            b.clicked.connect(lambda _=False, mm=m: self._select_mode(mm))
-            mode_row.addWidget(b, 1)
-        self.unsup_btn.setChecked(True)
-        clay.addLayout(mode_row)
-
-        self.caption = QLabel(self._CAP_UNSUP)
-        self.caption.setObjectName("Caption")
-        self.caption.setWordWrap(True)
-        self.caption.setVisible(bool(self._CAP_UNSUP))
-        clay.addWidget(self.caption)
-
-        # tag toggle (labelled mode only)
-        self.tag_btn = QPushButton("Tag target cells")
-        self.tag_btn.setCheckable(True)
-        self.tag_btn.setMinimumHeight(32)
-        self.tag_btn.toggled.connect(self.tag_mode_toggled)
-        self.tag_btn.setVisible(False)
-        clay.addWidget(self.tag_btn)
-
-        self.empty_lbl = QLabel(self._EMPTY_UNSUP)
-        self.empty_lbl.setObjectName("Hint")
-        self.empty_lbl.setWordWrap(True)
-        clay.addWidget(self.empty_lbl)
-
-        clay.addWidget(_eyebrow("Ranking"))
-
-        # filter bar: search + per-family chips
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("search attribute…")
-        self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._apply_filter)
-        clay.addWidget(self.search)
-
-        chips = QHBoxLayout()
-        chips.setSpacing(4)
-        self.family_btns = {}
-        for fam in FAMILIES:
-            b = QPushButton(fam)
-            b.setCheckable(True)
-            b.setChecked(True)
-            b.setFixedHeight(24)
-            b.toggled.connect(self._apply_filter)
-            self.family_btns[fam] = b
-            chips.addWidget(b)
-        chips.addStretch(1)
-        clay.addLayout(chips)
-
-        self.ranking = RankingList()
-        self.ranking.setMinimumHeight(180)
-        self.ranking.attr_selected.connect(self.attr_selected)
-        clay.addWidget(self.ranking, 1)
-
-        clay.addWidget(_eyebrow("Distribution"))
-        self.hist = Histogram()
-        clay.addWidget(self.hist)
-
-        self.measured = QLabel("")
-        self.measured.setObjectName("MeasuredLine")
-        self.measured.setFont(theme.mono_font(9))
-        self.measured.setWordWrap(True)
-        clay.addWidget(self.measured)
-
+            b.setFixedHeight(28)
+            b.clicked.connect(lambda _=False, mm=m: self._pick_mode(mm))
+            head.addWidget(b)
+        self.between_btn.setChecked(True)
+        self.selector_lbl = QLabel("")
+        self.selector_lbl.setObjectName("Hint")
+        head.addWidget(self.selector_lbl)
+        self.selector = QComboBox()
+        self.selector.setMinimumWidth(150)
+        self.selector.currentIndexChanged.connect(self._selector_changed)
+        head.addWidget(self.selector)
+        head.addStretch(1)
+        self.sub = QLabel("")
+        self.sub.setObjectName("Hint")
+        head.addWidget(self.sub)
         self.export_btn = QPushButton("Export CSV")
         self.export_btn.setObjectName("Primary")
         self.export_btn.clicked.connect(self.export_requested)
-        self.export_btn.setEnabled(False)
-        self.export_btn.setMinimumHeight(36)
-        clay.addWidget(self.export_btn)
+        head.addWidget(self.export_btn)
+        root.addLayout(head)
 
-        root.addWidget(card)
-        self._region: Optional[Region] = None
-        self._set_results_visible(False)
+        self.snr_lbl = QLabel("")
+        self.snr_lbl.setObjectName("Measured")
+        self.snr_lbl.setFont(theme.mono_font(10))
+        self.snr_lbl.setVisible(False)
+        root.addWidget(self.snr_lbl)
 
-    # mode -------------------------------------------------------------- #
-    def set_mode(self, mode: str) -> None:
-        """Set the display mode and sync the controls (no signal emitted)."""
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.body = QWidget()
+        self.body_lay = QVBoxLayout(self.body)
+        self.body_lay.setContentsMargins(0, 0, 0, 0)
+        self.body_lay.setSpacing(10)
+        self.scroll.setWidget(self.body)
+        root.addWidget(self.scroll, 1)
+
+        self._mode = "between"
+        self._between_rid: Optional[int] = None
+        self._within_gid: Optional[str] = None
+        self._suppress = False
+
+    # -- controls ------------------------------------------------------- #
+    def _pick_mode(self, mode: str) -> None:
         self._mode = mode
-        self.unsup_btn.setChecked(mode == "unsupervised")
-        self.label_btn.setChecked(mode == "labelled")
-        labelled = mode == "labelled"
-        cap = self._CAP_LABEL if labelled else self._CAP_UNSUP
-        self.caption.setText(cap)
-        self.caption.setVisible(bool(cap))
-        self.tag_btn.setVisible(labelled)
-        if not labelled and self.tag_btn.isChecked():
-            self.tag_btn.setChecked(False)
-
-    def _select_mode(self, mode: str) -> None:
-        self.set_mode(mode)
+        self.between_btn.setChecked(mode == "between")
+        self.within_btn.setChecked(mode == "within")
         self.mode_changed.emit(mode)
 
-    def mode(self) -> str:
-        return self._mode
-
-    def set_tag_active(self, on: bool) -> None:
-        self.tag_btn.setChecked(on)
-
-    def _set_results_visible(self, on: bool) -> None:
-        self.empty_lbl.setVisible(not on)
-        self.export_btn.setEnabled(on)
-
-    def _apply_filter(self, *_args) -> None:
-        allowed = {f for f, b in self.family_btns.items() if b.isChecked()}
-        self.ranking.apply_filter(self.search.text(), allowed)
-
-    # rendering --------------------------------------------------------- #
-    def show_region(self, region: Optional[Region]) -> None:
-        self._region = region
-        if self._mode == "labelled":
-            self._show_labelled(region)
+    def _selector_changed(self, _i: int) -> None:
+        if self._suppress:
+            return
+        data = self.selector.currentData()
+        if data is None:
+            return
+        if self._mode == "between":
+            self.between_roi_changed.emit(int(data))
         else:
-            self._show_unsupervised(region)
+            self.within_group_changed.emit(str(data))
 
-    def _show_unsupervised(self, region: Optional[Region]) -> None:
-        self.empty_lbl.setText(self._EMPTY_UNSUP)
-        if region is None or not region.ranking:
-            self.ranking.set_ranking([], None)
-            self.hist.clear()
-            self.measured.setText("")
-            self._set_results_visible(False)
-            return
-        self._set_results_visible(True)
-        self.ranking.set_ranking(
-            region.ranking, region.sel_attr,
-            value_fn=lambda s: s.max_abs_z,
-            fmt=lambda v: f"{v:.2f}σ",
-            tooltip_fn=lambda s: (
-                f"{ATTR_LABELS.get(s.attr, s.attr)}\n"
-                f"formula:  {ATTR_FORMULAS.get(s.attr, '—')}\n"
-                f"max|z| = 0.6745·(x − median)/MAD\n"
-                f"{s.n_outliers} cell(s) beyond 3.5σ"))
-        self.update_attr(region, region.sel_attr)
+    # -- render --------------------------------------------------------- #
+    def render_state(self, image, period, groups: List[Group], rois: List[ROI],
+                     metrics: List[str], mode: str, between_rid, within_gid,
+                     split: bool) -> None:
+        self._mode = mode
+        self.between_btn.setChecked(mode == "between")
+        self.within_btn.setChecked(mode == "within")
+        _clear(self.body_lay)
+        self.snr_lbl.setVisible(False)
 
-    def _show_labelled(self, region: Optional[Region]) -> None:
-        self.empty_lbl.setText(self._EMPTY_LABEL)
-        if region is None or not region.sep_ranking:
-            self.ranking.set_ranking([], None)
-            self.hist.clear()
-            if region is not None and region.target_idx:
-                self.measured.setText("Tag at least one reference and one "
-                                      "target cell to compare.")
-            else:
-                self.measured.setText("")
-            self._set_results_visible(False)
-            return
-        self._set_results_visible(True)
-        self.ranking.set_ranking(
-            region.sep_ranking, region.sep_sel_attr,
-            value_fn=lambda s: s.separation_score,
-            fmt=lambda v: f"{v:.0f}/100",
-            tooltip_fn=lambda s: (
-                f"{ATTR_LABELS.get(s.attr, s.attr)}\n"
-                f"formula:  {ATTR_FORMULAS.get(s.attr, '—')}\n"
-                f"separation = clip((AUC−0.5)·200, 0, 100)\n"
-                f"AUC {s.auc:.3f} · CNR {s.cnr:.2f} · d {s.cohens_d:.2f}"))
-        self.update_attr(region, region.sep_sel_attr)
-
-    def update_attr(self, region: Region, attr: Optional[str]) -> None:
-        if region is None or attr is None:
-            return
-        self.ranking.set_selected(attr)
-        if self._mode == "labelled":
-            self._update_labelled_attr(region, attr)
+        self._suppress = True
+        self.selector.clear()
+        if mode == "between":
+            self.selector_lbl.setText("ROI")
+            for r in rois:
+                tag = " (T)" if r.role == TARGET else " (R)" if (split and r.role == REFERENCE) else ""
+                self.selector.addItem(r.label + tag, r.rid)
+            idx = _index_of(rois, between_rid)
+            self.selector.setCurrentIndex(idx)
         else:
-            values = [rec.get(attr, 0.0) for rec in region.records]
-            self.hist.set_values(values, ATTR_LABELS.get(attr, attr))
-            score = next((s for s in region.ranking if s.attr == attr), None)
-            if score is not None:
-                self.measured.setText(
-                    f"max|z| {score.max_abs_z:.1f}σ  ·  "
-                    f"{score.n_outliers} cell(s) > 3.5σ")
+            self.selector_lbl.setText("Group")
+            for g in groups:
+                self.selector.addItem(g.name, g.gid)
+            idx = _gindex_of(groups, within_gid)
+            self.selector.setCurrentIndex(idx)
+        self._suppress = False
 
-    def _update_labelled_attr(self, region: Region, attr: str) -> None:
-        score = next((s for s in region.sep_ranking if s.attr == attr), None)
-        vals = np.array([rec.get(attr, 0.0) for rec in region.records],
-                        dtype=np.float64)
-        mask = np.zeros(len(region.records), dtype=bool)
-        for i in region.target_idx:
-            if 0 <= i < mask.size:
-                mask[i] = True
-        ref = vals[~mask]
-        tgt = vals[mask]
-        thr = score.threshold if score is not None else None
-        self.hist.set_compare(ref, tgt, ATTR_LABELS.get(attr, attr), thr)
-        if score is not None:
-            catch = score.catch_rate * 100.0
-            fa = score.false_alarm * 100.0
-            self.measured.setText(
-                f"sep {score.separation_score:.0f}/100  ·  AUC {score.auc:.3f}  ·  "
-                f"thr {score.threshold:.4g} ({score.direction})  ·  "
-                f"catch {catch:.0f}%  ·  FA {fa:.0f}%")
+        ok = image is not None and period is not None and metrics
+        self.export_btn.setEnabled(bool(ok and any(g.cells for g in groups)))
+        if not ok:
+            self._empty("Load an image, detect the lattice, then paint groups.")
+            return
+        if mode == "between":
+            self._render_between(image, period, groups, rois, metrics,
+                                 between_rid, split)
+        else:
+            self._render_within(image, period, groups, rois, metrics,
+                                within_gid, split)
+
+    def _render_between(self, image, period, groups, rois, metrics,
+                        between_rid, split):
+        used = [g for g in groups if g.cells]
+        if len(used) < 2:
+            self._empty("Assign cells to two or more groups (Paint mode).")
+            return
+        roi = _find(rois, between_rid) or (rois[0] if rois else None)
+        if roi is None:
+            self._empty("Add an ROI to measure.")
+            return
+        tgt = analysis.find_role(rois, TARGET) if split else None
+        ref = analysis.find_role(rois, REFERENCE) if split else None
+        self.sub.setText(f"{len(used)} groups · ROI {roi.label}")
+
+        def vals(g, mid):
+            return group_metric_values(image, g, roi, period, mid,
+                                       target_roi=tgt, reference_roi=ref)
+        charts = [(metric_label(mid),
+                   [{"label": g.name, "color": g.color, "values": vals(g, mid)}
+                    for g in used]) for mid in metrics]
+        self._chart_grid(charts)
+        self._table([(g.name, g.color, {mid: vals(g, mid) for mid in metrics})
+                     for g in used], metrics)
+
+    def _render_within(self, image, period, groups, rois, metrics,
+                       within_gid, split):
+        g = _gfind(groups, within_gid) or (groups[0] if groups else None)
+        if g is None or not g.cells:
+            self._empty("Paint cells into a group first.")
+            return
+        if split:
+            tgt = analysis.find_role(rois, TARGET)
+            ref = analysis.find_role(rois, REFERENCE)
+            if tgt is None or ref is None:
+                self._empty("Tag one ROI as T and one as R (ROIs card).")
+                return
+            self.sub.setText(f"{g.name} · {len(g.cells)} cells · "
+                             f"{tgt.label} (T) vs {ref.label} (R)")
+            snr_v = group_metric_values(image, g, tgt, period, SNR_ID,
+                                        target_roi=tgt, reference_roi=ref)
+            s = summarize(snr_v)
+            tmean = summarize(group_metric_values(image, g, tgt, period, "glv_mean"))
+            rmean = summarize(group_metric_values(image, g, ref, period, "glv_mean"))
+            self.snr_lbl.setText(
+                f"SNR = (μT − μR)/σR   →   μT {tmean['mean']:.1f} · "
+                f"μR {rmean['mean']:.1f}   ⇒   SNR {s['mean']:.2f} ± {s['std']:.2f} "
+                f"over {s['n']} cells")
+            self.snr_lbl.setVisible(True)
+            charts = [(metric_label(mid), [
+                {"label": tgt.label, "color": tgt.color,
+                 "values": group_metric_values(image, g, tgt, period, mid)},
+                {"label": ref.label, "color": ref.color,
+                 "values": group_metric_values(image, g, ref, period, mid)}])
+                for mid in metrics if mid != SNR_ID]
+            self._chart_grid(charts)
+        else:
+            roi = _find(rois, self._between_rid) or (rois[0] if rois else None)
+            if roi is None:
+                self._empty("Add an ROI to measure.")
+                return
+            self.sub.setText(f"{g.name} · {len(g.cells)} cells · ROI {roi.label}")
+            charts = [(metric_label(mid), [
+                {"label": g.name, "color": g.color,
+                 "values": group_metric_values(image, g, roi, period, mid)}])
+                for mid in metrics if mid != SNR_ID]
+            self._chart_grid(charts)
+
+    # -- render helpers ------------------------------------------------- #
+    def _chart_grid(self, charts) -> None:
+        grid_host = QWidget()
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        for i, (title, series) in enumerate(charts):
+            chart = DistributionChart()
+            chart.set_data(title, series)
+            grid.addWidget(chart, i // 3, i % 3)
+        self.body_lay.addWidget(grid_host)
+
+    def _table(self, rows, metrics) -> None:
+        host = QFrame()
+        host.setObjectName("Card")
+        lay = QGridLayout(host)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+        headers = ["Group", "n"] + [metric_label(m) for m in metrics]
+        for c, h in enumerate(headers):
+            lbl = QLabel(h)
+            lbl.setStyleSheet(f"color:{theme.INK3}; font-weight:600;")
+            lbl.setFont(theme.mono_font(8))
+            lay.addWidget(lbl, 0, c)
+        for r, (name, color, vals) in enumerate(rows, start=1):
+            nm = QLabel(f"■ {name}")
+            nm.setStyleSheet(f"color:{color}; font-weight:600;")
+            lay.addWidget(nm, r, 0)
+            first = next(iter(vals.values())) if vals else np.array([])
+            n = QLabel(str(int(np.isfinite(first).sum())))
+            n.setFont(theme.mono_font(9))
+            lay.addWidget(n, r, 1)
+            for c, mid in enumerate(metrics, start=2):
+                s = summarize(vals[mid])
+                cell = QLabel(f"{s['mean']:.3g} ±{s['std']:.2g}")
+                cell.setFont(theme.mono_font(9))
+                lay.addWidget(cell, r, c)
+        self.body_lay.addWidget(host)
+
+    def _empty(self, text: str) -> None:
+        self.sub.setText("")
+        lbl = QLabel(text)
+        lbl.setObjectName("Hint")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setMinimumHeight(120)
+        self.body_lay.addWidget(lbl)
+
+
+# small lookup helpers
+def _find(rois, rid):
+    for r in rois:
+        if r.rid == rid:
+            return r
+    return None
+
+
+def _gfind(groups, gid):
+    for g in groups:
+        if g.gid == gid:
+            return g
+    return None
+
+
+def _index_of(rois, rid):
+    for i, r in enumerate(rois):
+        if r.rid == rid:
+            return i
+    return 0
+
+
+def _gindex_of(groups, gid):
+    for i, g in enumerate(groups):
+        if g.gid == gid:
+            return i
+    return 0

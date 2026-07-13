@@ -1,9 +1,4 @@
-"""Headless core tests (no Qt).
-
-Synthesize a repeating field with injected outlier cells and verify the
-full core path: period detection -> ROI expansion -> attribute bank ->
-unsupervised outlier ranking.
-"""
+"""Headless core tests (no Qt) for the group/ROI analysis model."""
 
 from __future__ import annotations
 
@@ -16,137 +11,101 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import (CELL_H, CELL_W, N_COLS, N_ROWS, OUTLIERS,
                                   make_field)
-from pear.core.analysis import (PeriodInfo, Region, build_golden_cell,
-                                expand_reference_roi, run_region_analysis,
-                                run_region_separability, toggle_target)
-from pear.core.attributes import ATTR_LABELS, SIZE_ATTRS, compute_attributes
+from pear.core.analysis import (ROI, REFERENCE, TARGET, Group, PeriodInfo,
+                                all_cells, build_golden_cell, cell_at_point,
+                                cell_patch, find_role, grid_dims,
+                                group_metric_values, set_role, summarize)
+from pear.core.attributes import (GLV_STATS, SNR_ID, glv_value, metric_label,
+                                  quantile_of, snr)
 from pear.core.period_core import estimate_period
-from pear.core import separability
 
 
-def _period(image) -> PeriodInfo:
-    res = estimate_period(image)
-    conf = (res.confidence_x + res.confidence_y) / 2.0
-    golden = build_golden_cell(image, res.px, res.py)
+def _period(img) -> PeriodInfo:
+    res = estimate_period(img)
     return PeriodInfo(px=res.px, py=res.py, axis_mode=res.axis_mode,
-                      confidence=conf, golden_cell=golden)
+                      confidence=80.0, golden_cell=build_golden_cell(img, res.px, res.py))
 
 
 def test_estimate_period_recovers_cell_size():
     img = make_field()
     res = estimate_period(img)
-    assert res.px == CELL_W
-    assert res.py == CELL_H
-    assert res.axis_mode == "XY"
+    assert res.px == CELL_W and res.py == CELL_H and res.axis_mode == "XY"
 
 
-def test_expand_yields_one_instance_per_cell():
-    img = make_field()
-    # An ROI in the feature block of the top-left cell.
-    roi = (16, 13, 30, 26)
-    inst = expand_reference_roi(roi, CELL_W, CELL_H, img.shape)
-    assert len(inst) == N_COLS * N_ROWS
-
-
-def test_full_attribute_bank_present_and_labelled():
-    img = make_field()
-    patch = img[0:CELL_H, 0:CELL_W]
-    golden = build_golden_cell(img, CELL_W, CELL_H)
-    attrs = compute_attributes(patch, golden_sub=golden, nm_per_px=1.5)
-    # The full attribute table (every id in §8) is labelled and produced.
-    assert len(ATTR_LABELS) == 29
-    for key in attrs:
-        assert key in ATTR_LABELS
-    # With golden + nm_per_px every attribute id should be produced.
-    assert set(attrs.keys()) == set(ATTR_LABELS.keys())
-
-
-def test_ranking_flags_injected_outliers():
+def test_grid_and_cell_geometry():
     img = make_field()
     period = _period(img)
-    roi = (16, 13, 30, 26)  # over the feature block
-    region = Region(rid=1, name="region 1", color="#0E8C8C", roi=roi)
-    run_region_analysis(img, region, period)
-
-    assert region.ranking, "ranking must be non-empty"
-    assert region.sel_attr is not None
-    # Size attributes excluded from ranking.
-    ranked_ids = {s.attr for s in region.ranking}
-    assert not (ranked_ids & SIZE_ATTRS)
-
-    # The top attribute must flag the 4 injected outlier cells (and only
-    # those), identified by (col, row).
-    top = region.ranking[0]
-    assert top.n_outliers >= len(OUTLIERS)
-    flagged = {(region.records[i]["col"], region.records[i]["row"])
-               for i in top.outlier_indices}
-    for cell in OUTLIERS:
-        assert cell in flagged, f"injected outlier {cell} not flagged by {top.attr}"
+    assert grid_dims(img.shape, period) == (N_ROWS, N_COLS)
+    assert len(all_cells(img.shape, period)) == N_ROWS * N_COLS
+    # cell hit-test lands in the right cell
+    assert cell_at_point(period, CELL_W + 3, CELL_H + 3, img.shape) == (1, 1)
+    patch = cell_patch(img, (16, 13, 20, 18), period, 0, 0)
+    assert patch is not None and patch.shape == (18, 20)
 
 
-def test_labelled_separability_ranks_injected_targets():
+def test_glv_metrics_and_custom_quantile():
+    patch = np.array([[10, 20, 30, 40, 50]], dtype=np.uint8)
+    assert abs(glv_value(patch, "glv_mean") - 30.0) < 1e-9
+    assert glv_value(patch, "glv_min") == 10.0 and glv_value(patch, "glv_max") == 50.0
+    assert quantile_of("glv_q90") == 90 and quantile_of("glv_median") is None
+    assert metric_label("glv_q90") == "GLV Q90"
+    # custom quantile computes a percentile
+    assert abs(glv_value(patch, "glv_q50") - 30.0) < 1e-9
+
+
+def test_snr_definition():
+    # target brighter than reference, low reference noise -> high SNR
+    tgt = np.full((8, 8), 150.0)
+    ref = np.random.default_rng(0).normal(70, 5, (8, 8))
+    assert snr(tgt, ref) > 5.0
+    # zero-variance reference guarded
+    assert snr(tgt, np.full((4, 4), 70.0)) == 0.0
+
+
+def test_group_metric_between_separates_outliers():
     img = make_field()
     period = _period(img)
-    roi = (16, 13, 30, 26)
-    region = Region(rid=1, name="region 1", color="#2DD4BF", roi=roi)
-    run_region_analysis(img, region, period)
-
-    # Tag the injected outlier cells as targets.
-    for i, rec in enumerate(region.records):
-        if (rec["col"], rec["row"]) in set(OUTLIERS):
-            toggle_target(region, i)
-    assert len(region.target_idx) == len(OUTLIERS)
-
-    run_region_separability(region)
-    assert region.sep_ranking, "separability ranking must populate"
-    assert region.sep_sel_attr is not None
-    top = region.sep_ranking[0]
-    # The best attribute should separate targets from reference well and
-    # the suggested threshold should catch most targets with few false alarms.
-    assert top.separation_score > 80.0
-    assert top.auc > 0.9
-    assert top.catch_rate >= 0.75
-    assert top.false_alarm <= 0.25
-    assert top.n_target == len(OUTLIERS)
+    roi = ROI(1, "Center", "#F59E0B", (16, 13, 30, 26))
+    outset = set(OUTLIERS)
+    gA, gB = Group("A", "A", "#F59E0B"), Group("B", "B", "#2563EB")
+    for (r, c) in all_cells(img.shape, period):
+        (gB if (c, r) in outset else gA).cells.add((r, c))
+    assert len(gB.cells) == len(OUTLIERS)
+    mA = summarize(group_metric_values(img, gA, roi, period, "glv_mean"))
+    mB = summarize(group_metric_values(img, gB, roi, period, "glv_mean"))
+    # outlier group is clearly dimmer and well separated
+    assert mA["mean"] - mB["mean"] > 30.0
+    assert mA["n"] == N_ROWS * N_COLS - len(OUTLIERS)
 
 
-def test_separability_empty_without_targets():
+def test_within_group_snr_target_vs_reference():
     img = make_field()
     period = _period(img)
-    region = Region(rid=1, name="r", color="#2DD4BF", roi=(16, 13, 30, 26))
-    run_region_analysis(img, region, period)
-    run_region_separability(region)   # no targets tagged
-    assert region.sep_ranking == []
+    center = ROI(1, "Center", "#DC2626", (16, 13, 30, 26), role=TARGET)
+    bg = ROI(2, "Background", "#0891B2", (2, 2, 12, 12), role=REFERENCE)
+    outset = set(OUTLIERS)
+    gB = Group("B", "B", "#2563EB")
+    gA = Group("A", "A", "#F59E0B")
+    for (r, c) in all_cells(img.shape, period):
+        (gB if (c, r) in outset else gA).cells.add((r, c))
+    snrA = group_metric_values(img, gA, center, period, SNR_ID,
+                               target_roi=center, reference_roi=bg)
+    snrB = group_metric_values(img, gB, center, period, SNR_ID,
+                               target_roi=center, reference_roi=bg)
+    # normal cells have a stronger feature-vs-background SNR than outliers
+    assert snrA.mean() > snrB.mean() > 0
 
 
-def test_modified_zscore_constant_is_zero():
-    z = separability.modified_zscores(np.full(20, 5.0))
-    assert np.allclose(z, 0.0)
+def test_set_role_single_target():
+    rois = [ROI(1, "a", "#000", (0, 0, 4, 4)),
+            ROI(2, "b", "#000", (0, 0, 4, 4))]
+    set_role(rois, rois[0], TARGET)
+    set_role(rois, rois[1], TARGET)      # second target demotes the first
+    assert rois[0].role == REFERENCE and rois[1].role == TARGET
+    assert find_role(rois, TARGET) is rois[1]
 
 
-def test_zero_mad_does_not_mask_minority_outlier():
-    # A majority of identical values collapses the MAD to 0; the mean-AD
-    # fallback must still surface the lone deviating cell.
-    vals = np.array([5.0] * 9 + [100.0])
-    z = separability.modified_zscores(vals)
-    assert abs(z[-1]) > 3.5
-    assert np.allclose(z[:9], 0.0)
-    scores = separability.rank_outlier_attributes({"a": vals})
-    assert scores[0].n_outliers == 1
-    assert scores[0].outlier_indices == [9]
-
-
-def test_phase2_metrics_directionagnostic_auc():
-    rng = np.random.default_rng(0)
-    ref = rng.normal(0, 1, 200)
-    tgt = rng.normal(4, 1, 50)
-    assert separability.auc(ref, tgt) > 0.95
-    # AUC is symmetric (direction-agnostic).
-    assert np.isclose(separability.auc(ref, tgt), separability.auc(tgt, ref))
-    sugg = separability.suggest_threshold(ref, tgt)
-    assert sugg.catch_rate > 0.8
-    assert sugg.false_alarm < 0.2
-    assert separability.cnr(ref, tgt) > 0
-    assert separability.fisher(ref, tgt) > 0
-    assert separability.cohens_d(ref, tgt) > 0
-    assert 0.0 <= separability.separation_score(ref, tgt) <= 100.0
+def test_metric_labels_complete():
+    for mid in GLV_STATS:
+        assert metric_label(mid)
+    assert metric_label(SNR_ID) == "SNR"
