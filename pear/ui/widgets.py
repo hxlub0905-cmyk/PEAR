@@ -101,7 +101,13 @@ class DistributionChart(QWidget):
 
     def set_data(self, title: str, series: List[dict]) -> None:
         self._title = title
-        self._series = [s for s in series if s["values"].size]
+        clean = []
+        for s in series:
+            v = np.asarray(s["values"], dtype=np.float64)
+            v = v[np.isfinite(v)]
+            if v.size:
+                clean.append({"label": s["label"], "color": s["color"], "values": v})
+        self._series = clean
         n = max(1, len(self._series))
         self.setMinimumHeight(30 + n * 30 + 22)
         self.update()

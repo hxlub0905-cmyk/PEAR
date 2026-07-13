@@ -364,11 +364,16 @@ def _by_gid(groups, gid):
 # Role helpers (target / reference)
 # --------------------------------------------------------------------------- #
 def set_role(items: List, item, role: str) -> None:
-    """Set ``item.role``; if it becomes target, demote any other target."""
-    if role == TARGET:
+    """Set ``item.role``, enforcing at most one holder of each role.
+
+    Assigning ``target`` or ``reference`` clears that same role from every
+    other item (to ``none``) so ``find_role`` is never ambiguous and the SNR
+    target/reference can't silently switch when an unrelated item is retagged.
+    """
+    if role in (TARGET, REFERENCE):
         for other in items:
-            if other is not item and other.role == TARGET:
-                other.role = REFERENCE
+            if other is not item and other.role == role:
+                other.role = NONE
     item.role = role
 
 

@@ -96,13 +96,21 @@ def test_within_group_snr_target_vs_reference():
     assert snrA.mean() > snrB.mean() > 0
 
 
-def test_set_role_single_target():
+def test_set_role_one_holder_per_role():
+    from pear.core.analysis import NONE
     rois = [ROI(1, "a", "#000", (0, 0, 4, 4)),
-            ROI(2, "b", "#000", (0, 0, 4, 4))]
+            ROI(2, "b", "#000", (0, 0, 4, 4)),
+            ROI(3, "c", "#000", (0, 0, 4, 4))]
     set_role(rois, rois[0], TARGET)
-    set_role(rois, rois[1], TARGET)      # second target demotes the first
-    assert rois[0].role == REFERENCE and rois[1].role == TARGET
-    assert find_role(rois, TARGET) is rois[1]
+    set_role(rois, rois[1], REFERENCE)
+    # retagging c as target must clear the old target (not demote it to a
+    # second reference) and must leave the reference untouched
+    set_role(rois, rois[2], TARGET)
+    assert rois[2].role == TARGET
+    assert rois[0].role == NONE
+    assert rois[1].role == REFERENCE
+    assert find_role(rois, TARGET) is rois[2]
+    assert find_role(rois, REFERENCE) is rois[1]
 
 
 def test_metric_labels_complete():

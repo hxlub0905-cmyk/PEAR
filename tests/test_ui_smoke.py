@@ -134,6 +134,20 @@ def test_delete_group_and_roi(app):
     assert win._roi(rid) is None
 
 
+def test_group_gids_unique_after_delete(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_group()
+    win.add_group()                        # A (seeded), B, C
+    assert [g.gid for g in win._groups] == ["A", "B", "C"]
+    win.delete_group("B")
+    win.add_group()                        # must reuse freed "B", never collide
+    gids = [g.gid for g in win._groups]
+    assert len(gids) == len(set(gids)), "group gids must stay unique"
+    assert set(gids) == {"A", "B", "C"}
+
+
 def test_color_and_role_customization(app):
     from pear.ui.main_window import MainWindow
     from pear.core.analysis import TARGET

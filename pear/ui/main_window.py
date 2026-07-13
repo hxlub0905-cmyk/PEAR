@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self._active_gid: Optional[str] = None
         self._active_rid: Optional[int] = None
         self._next_rid = 1
+        self._next_gid = 1        # fallback id counter beyond 26 groups
         self._metrics: List[str] = ["glv_mean", "glv_median"]
         self._mode = "group"
         self._split = False
@@ -295,11 +296,19 @@ class MainWindow(QMainWindow):
         if self._image is None or self._period is None:
             self.statusBar().showMessage("Load an image and detect a lattice first.", 4000)
             return
-        idx = len(self._groups)
-        gid = chr(ord("A") + idx) if idx < 26 else f"G{idx}"
-        color = GROUP_PALETTE[idx % len(GROUP_PALETTE)]
-        self._groups.append(Group(gid=gid, name=f"Group {gid}", color=color))
-        self._active_gid = gid
+        # Pick the lowest currently-unused letter so gids stay unique (never
+        # reused) — reusing a gid after a delete would alias group identity
+        # and the analysis cache.
+        used = {g.gid for g in self._groups}
+        letter = next((chr(ord("A") + i) for i in range(26)
+                       if chr(ord("A") + i) not in used), None)
+        if letter is None:
+            letter = f"G{self._next_gid}"
+            self._next_gid += 1
+        ci = (ord(letter) - ord("A")) if len(letter) == 1 else self._next_gid
+        color = GROUP_PALETTE[ci % len(GROUP_PALETTE)]
+        self._groups.append(Group(gid=letter, name=f"Group {letter}", color=color))
+        self._active_gid = letter
         self.set_mode("group")
         self._refresh()
 
@@ -311,6 +320,8 @@ class MainWindow(QMainWindow):
         self._groups = [g for g in self._groups if g.gid != gid]
         if self._active_gid == gid:
             self._active_gid = self._groups[-1].gid if self._groups else None
+        if self._within_gid == gid:
+            self._within_gid = self._groups[0].gid if self._groups else None
         self._refresh()
 
     def set_group_role(self, gid: str, role: str) -> None:
@@ -556,7 +567,11 @@ class MainWindow(QMainWindow):
                         row = [g.name, r, c, roi.label]
                         for mid in self._metrics:
                             if mid == SNR_ID:
-                                if tgt is not None and ref is not None:
+                                # SNR is a per-cell value (uses the T/R ROIs, not
+                                # this row's ROI) — write it once, on the target
+                                # ROI's row, blank on the others.
+                                if (tgt is not None and ref is not None
+                                        and roi.rid == tgt.rid):
                                     v = group_metric_values(
                                         self._image, Group("t", "t", "#000", {(r, c)}),
                                         roi, self._period, SNR_ID,
