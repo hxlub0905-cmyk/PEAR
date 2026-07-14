@@ -291,6 +291,7 @@ class RailPanel(QWidget):
     grid_mode_toggled = Signal(bool)
     grid_commit = Signal()
     grid_shape_changed = Signal(int, int)
+    roi_size_changed = Signal(int, int)     # ROI W × H for click / grid
     roi_del = Signal(int)
     metrics_changed = Signal(list)
     show_metric_changed = Signal(str)
@@ -330,6 +331,26 @@ class RailPanel(QWidget):
         self.add_grid_btn.setEnabled(False)
         self.add_grid_btn.clicked.connect(self.grid_commit)
         rlay.addLayout(_button_row(self.grid_btn, self.add_grid_btn))
+        # ROI size (W × H) used by click-to-place and by the grid
+        szrow = QHBoxLayout()
+        szrow.setSpacing(8)
+        szl = QLabel("size")
+        szl.setObjectName("Hint")
+        szrow.addWidget(szl)
+        self.roi_w = QSpinBox()
+        self.roi_w.setRange(4, 4000)
+        self.roi_w.setValue(28)
+        self.roi_h = QSpinBox()
+        self.roi_h.setRange(4, 4000)
+        self.roi_h.setValue(28)
+        for sp in (self.roi_w, self.roi_h):
+            sp.setMinimumHeight(28)
+            sp.valueChanged.connect(
+                lambda _=0: self.roi_size_changed.emit(*self.roi_size()))
+        szrow.addWidget(self.roi_w, 1)
+        szrow.addWidget(QLabel("×"))
+        szrow.addWidget(self.roi_h, 1)
+        rlay.addLayout(szrow)
         grow = QHBoxLayout()
         grow.setSpacing(8)
         gl = QLabel("grid")
@@ -353,7 +374,7 @@ class RailPanel(QWidget):
         self.roi_host.setSpacing(4)
         rlay.addLayout(self.roi_host)
         self.roi_hint = QLabel(
-            "• Click the image → drop an ROI · drag → size it\n"
+            "• Click → drop a size-W×H ROI · drag → custom size\n"
             "• Grid → click two corners, set row×col, Add grid")
         self.roi_hint.setObjectName("Hint")
         self.roi_hint.setWordWrap(True)
@@ -381,7 +402,7 @@ class RailPanel(QWidget):
 
     # -- render --------------------------------------------------------- #
     def set_ready(self, has_image: bool) -> None:
-        for w in (self.grp_add_btn, self.grid_btn,
+        for w in (self.grp_add_btn, self.grid_btn, self.roi_w, self.roi_h,
                   self.clear_btn, self.analysis_btn):
             w.setEnabled(has_image)
 
@@ -402,6 +423,9 @@ class RailPanel(QWidget):
 
     def grid_shape(self):
         return int(self.grid_rows.value()), int(self.grid_cols.value())
+
+    def roi_size(self):
+        return int(self.roi_w.value()), int(self.roi_h.value())
 
     def _group_row(self, g: Group, active: bool, count: int) -> QWidget:
         row = _ItemRow(active)

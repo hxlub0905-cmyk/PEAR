@@ -58,6 +58,7 @@ class ImageView(QWidget):
         self._grid_tl: Optional[QPointF] = None   # centre of top-left ROI
         self._grid_br: Optional[QPointF] = None   # centre of bottom-right ROI
         self._grid_rows, self._grid_cols = 3, 3
+        self._roi_w, self._roi_h = _DEFAULT, _DEFAULT   # size for click / grid
         self._cursor_img = QPointF()
         self._roi_values: dict = {}        # rid -> short text drawn on the ROI
 
@@ -101,6 +102,10 @@ class ImageView(QWidget):
 
     def set_grid_shape(self, rows: int, cols: int) -> None:
         self._grid_rows, self._grid_cols = max(1, rows), max(1, cols)
+        self.update()
+
+    def set_roi_size(self, w: int, h: int) -> None:
+        self._roi_w, self._roi_h = max(_MIN_ROI, int(w)), max(_MIN_ROI, int(h))
         self.update()
 
     def commit_grid(self) -> None:
@@ -256,7 +261,7 @@ class ImageView(QWidget):
         br = self._grid_br if self._grid_stage >= 2 else self._cursor_img
         return grid_between((self._grid_tl.x(), self._grid_tl.y()),
                             (br.x(), br.y()), self._grid_rows, self._grid_cols,
-                            _DEFAULT, _DEFAULT)
+                            self._roi_w, self._roi_h)
 
     def _paint_grid_preview(self, p: QPainter) -> None:
         if not self._grid_mode or self._grid_stage == 0:
@@ -519,10 +524,11 @@ class ImageView(QWidget):
         r = self._draw_rect.normalized()
         w, h = int(round(r.width())), int(round(r.height()))
         if w < _MIN_ROI or h < _MIN_ROI:
-            # plain click -> default-size box centred on the click
+            # plain click -> place a box of the configured W×H centred on it
             c = self._to_image(self._drag_start)
-            return self._clamp((int(round(c.x() - _DEFAULT / 2)),
-                                int(round(c.y() - _DEFAULT / 2)), _DEFAULT, _DEFAULT))
+            return self._clamp((int(round(c.x() - self._roi_w / 2)),
+                                int(round(c.y() - self._roi_h / 2)),
+                                self._roi_w, self._roi_h))
         return self._clamp((int(round(r.x())), int(round(r.y())), w, h))
 
     def _clamp(self, roi: Rect) -> Rect:

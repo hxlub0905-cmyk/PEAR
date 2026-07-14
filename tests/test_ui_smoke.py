@@ -160,6 +160,20 @@ def test_delete_individual_roi(app):
     assert len(group_rois(win._rois, gid)) == 1 and win._roi(rid) is None
 
 
+def test_roi_size_setting_reaches_image_view(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.rail.roi_w.setValue(40)
+    win.rail.roi_h.setValue(30)
+    assert win.image_view._roi_w == 40 and win.image_view._roi_h == 30
+    # a plain click (no drag) drops a box of that size
+    from pear.core.analysis import grid_between
+    # grid also uses the configured size
+    rects = grid_between((30, 30), (200, 160), 2, 2, *win.rail.roi_size())
+    assert rects[0][2] == 40 and rects[0][3] == 30
+
+
 def test_show_metric_on_rois(app):
     from pear.ui.main_window import MainWindow
     win = MainWindow()

@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self.rail.grid_mode_toggled.connect(self.set_grid_mode)
         self.rail.grid_commit.connect(self.image_view.commit_grid)
         self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
+        self.rail.roi_size_changed.connect(self.image_view.set_roi_size)
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.metrics_changed.connect(self.set_metrics)
         self.rail.show_metric_changed.connect(self.on_show_metric)
