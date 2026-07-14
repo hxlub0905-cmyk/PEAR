@@ -1,5 +1,5 @@
-"""Workspace widgets: the control rail (Lattice / Groups / ROIs / Metrics),
-a box-and-strip distribution chart, and the Analysis panel (hosted in its own
+"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
+box-and-strip distribution chart, and the Analysis panel (hosted in its own
 window).
 
 No charting dependency — every plot is hand-painted with QPainter.
@@ -292,6 +292,8 @@ class RailPanel(QWidget):
     grid_commit = Signal()
     grid_shape_changed = Signal(int, int)
     roi_size_changed = Signal(int, int)     # ROI W × H for click / grid
+    roi_pick = Signal(int)                  # select an ROI from the list
+    roi_set_target = Signal(int)            # tag an ROI as its group's SNR target
     roi_del = Signal(int)
     metrics_changed = Signal(list)
     show_metric_changed = Signal(str)
@@ -370,12 +372,24 @@ class RailPanel(QWidget):
         grow.addWidget(QLabel("×"))
         grow.addWidget(self.grid_cols, 1)
         rlay.addLayout(grow)
+        # ROI list — capped height so a long list never buries the buttons
         self.roi_host = QVBoxLayout()
         self.roi_host.setSpacing(4)
-        rlay.addLayout(self.roi_host)
+        self.roi_host.setContentsMargins(0, 0, 0, 0)
+        roi_list_host = QWidget()
+        roi_list_host.setLayout(self.roi_host)
+        self.roi_scroll = QScrollArea()
+        self.roi_scroll.setWidgetResizable(True)
+        self.roi_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.roi_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.roi_scroll.setWidget(roi_list_host)
+        self.roi_scroll.setFixedHeight(6)        # grows with content up to a cap
+        rlay.addWidget(self.roi_scroll)
         self.roi_hint = QLabel(
             "• Click → drop a size-W×H ROI · drag → custom size\n"
-            "• Grid → click two corners, set row×col, Add grid")
+            "• Grid → two corners, set row×col, Add grid\n"
+            "• Shift+drag → box-select · Del removes them\n"
+            "• T → pick the group’s SNR target (rest are reference)")
         self.roi_hint.setObjectName("Hint")
         self.roi_hint.setWordWrap(True)
         rlay.addWidget(self.roi_hint)
@@ -385,7 +399,7 @@ class RailPanel(QWidget):
         root.addWidget(roi)
 
         # Metrics
-        met = _card("Metrics", "per ROI")
+        met = _card("Metrics", "GLV + SNR")
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
         self.metrics.show_changed.connect(self.show_metric_changed)
@@ -416,10 +430,17 @@ class RailPanel(QWidget):
             self.grp_host.addWidget(
                 self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 
-    def set_rois(self, active_group_rois, active_rid) -> None:
+    def set_rois(self, active_group_rois, active_rid, target_rid=None,
+                 selected_rids=None) -> None:
+        selected = set(selected_rids or [])
         _clear(self.roi_host)
         for r in active_group_rois:
-            self.roi_host.addWidget(self._roi_row(r, r.rid == active_rid))
+            self.roi_host.addWidget(
+                self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
+                              r.rid in selected))
+        # size the list to its content, capped so it never buries the buttons
+        n = len(active_group_rois)
+        self.roi_scroll.setFixedHeight(min(176, n * 30 + 6) if n else 6)
 
     def grid_shape(self):
         return int(self.grid_rows.value()), int(self.grid_cols.value())
@@ -436,11 +457,13 @@ class RailPanel(QWidget):
         row.clicked = lambda: self.group_pick.emit(g.gid)
         return row
 
-    def _roi_row(self, r, active: bool) -> QWidget:
-        row = _ItemRow(active, compact=True)
+    def _roi_row(self, r, active: bool, is_target: bool,
+                 selected: bool) -> QWidget:
+        row = _ItemRow(active, compact=True, boxed=False, selected=selected)
         row.add_name(r.label or f"ROI {r.rid}", None)
-        row.add_count(f"{r.rect[2]}×{r.rect[3]}")
+        row.add_target_toggle(is_target, lambda: self.roi_set_target.emit(r.rid))
         row.add_delete(lambda: self.roi_del.emit(r.rid))
+        row.clicked = lambda: self.roi_pick.emit(r.rid)
         return row
 
     def _clear_active(self) -> None:
@@ -459,19 +482,44 @@ def _button_row(*buttons):
 
 
 class _ItemRow(QFrame):
-    def __init__(self, active: bool, compact: bool = False):
+    def __init__(self, active: bool, compact: bool = False,
+                 boxed: bool = True, selected: bool = False):
         super().__init__()
         self.clicked: Optional[Callable] = None
-        self.setStyleSheet(
-            f"background:{theme.AMBER_SOFT if active else theme.CARD};"
-            f"border:1px solid {theme.AMBER if active else theme.LINE};"
-            "border-radius:9px;")
+        hl = active or selected
+        if boxed:
+            self.setStyleSheet(
+                f"background:{theme.AMBER_SOFT if hl else theme.CARD};"
+                f"border:1px solid {theme.AMBER if hl else theme.LINE};"
+                "border-radius:9px;")
+        else:
+            # borderless (ROI rows) — highlight via a soft fill only, no frame
+            self.setStyleSheet(
+                f"background:{theme.AMBER_SOFT if hl else 'transparent'};"
+                "border:none; border-radius:7px;")
         self.lay = QHBoxLayout(self)
         self.lay.setContentsMargins(8, 3 if compact else 5, 8, 3 if compact else 5)
         self.lay.setSpacing(8)
 
     def add_swatch(self, color, on_pick):
         self.lay.addWidget(_swatch(color, on_pick))
+
+    def add_target_toggle(self, is_target: bool, on_toggle):
+        b = QPushButton("T")
+        b.setCheckable(True)
+        b.setChecked(is_target)
+        b.setFixedSize(22, 20)
+        b.setToolTip("SNR target (T). The group’s other ROIs are the "
+                     "reference (R). Click to toggle.")
+        if is_target:
+            b.setStyleSheet(f"background:{theme.AMBER}; color:#FFFFFF; "
+                            "border:none; border-radius:5px; font-weight:700;")
+        else:
+            b.setStyleSheet(f"background:transparent; color:{theme.INK3}; "
+                            f"border:1px solid {theme.LINE}; border-radius:5px; "
+                            "font-weight:700;")
+        b.clicked.connect(lambda: on_toggle())
+        self.lay.addWidget(b)
 
     def add_name(self, name, on_rename):
         if on_rename is None:

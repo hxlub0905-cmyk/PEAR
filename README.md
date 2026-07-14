@@ -21,14 +21,17 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
 - **Group** — a *category* of features (e.g. "round holes", "square holes").
   Custom colour, rename inline. You create groups first.
 - **ROI** — a measurement rectangle that **belongs to a group**. A group holds
-  many ROIs. Pick a group, then add ROIs three ways:
-  - **click** the image to drop a default box, or **drag** to size one,
+  many ROIs. Set the box size (**W × H**), pick a group, then add ROIs three ways:
+  - **click** the image to drop a size-W×H box, or **drag** to size one,
   - **Grid** — click the top-left then bottom-right corner, set *row × col*
     (live preview), and place the grid (Add grid / Enter).
+  - **Shift+drag** box-selects ROIs of the active group (highlighted in the
+    list); **Delete** removes the selection.
 - **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
-  Q75, std, min, max, plus any custom **Q*n***) and **SNR** — the e-beam
-  definition **(mean_ROI − mean_background) / std_background**, measured against
-  the ring around each ROI (self-contained per ROI).
+  Q75, std, min, max, plus any custom **Q*n***) and **SNR**. SNR is a
+  *within-group* measurement: tag one ROI as the **target (T)** and the rest
+  become the **reference (R)**, giving the e-beam definition
+  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs.
 
 ## Comparisons (in a separate Analysis window)
 
@@ -47,7 +50,6 @@ ROI's metrics and a per-group summary.
 - Analysis runs **off the UI thread** (debounced), so placing many ROIs stays
   responsive.
 - Calm **light instrument theme** with a single amber accent and system-safe fonts.
-- Optional **pixel size (nm/px)** adds physical cell size and an area column to CSV.
 
 ## Install & run
 
@@ -77,9 +79,10 @@ pip install pytest
 pytest                              # headless core + offscreen UI smoke
 ```
 
-- `tests/test_core.py` — headless (no Qt): period, ROI metrics, SNR, grid /
-  per-cell, between/within comparison.
-- `tests/test_ui_smoke.py` — offscreen: full UI path, multi-add, CSV export.
+- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
+  grid interpolation, between/within comparison, snapshot isolation.
+- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
+  select, target/SNR, ROI re-indexing, CSV export.
 
 ## Repository layout
 
@@ -87,7 +90,6 @@ pytest                              # headless core + offscreen UI smoke
 pear/
   pear/
     core/          # pure NumPy/OpenCV, ZERO Qt imports (headless-testable)
-      period_core.py, stacking.py   # VENDORED (see below)
       attributes.py                 # GLV statistics + SNR
       analysis.py                   # group/ROI model, geometry, metric collection
     ui/            # all Qt (theme, image_view, widgets, main_window)
@@ -95,17 +97,10 @@ pear/
   examples/        # make_sample.py
 ```
 
-## Vendored period core (provenance)
-
-`pear/core/period_core.py` and `pear/core/stacking.py` are vendored **verbatim**
-from [`hxlub0905-cmyk/cell-period-estimator`](https://github.com/hxlub0905-cmyk/cell-period-estimator)
-(`main` branch, Qt-free core). They are **not modified**; call sites adapt to
-their API.
-
 ## Scope (V1)
 
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-grid), GLV + SNR metrics, between-group and within-group distribution comparison
-in a separate window, CSV export, optional nm/px.
+grid / box-select), GLV + within-group SNR metrics, between-group and
+within-group distribution comparison in a separate window, CSV export.
 
 Out of scope: defect detection/decision, classification, ML; batch processing.

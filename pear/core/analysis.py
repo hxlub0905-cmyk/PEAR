@@ -13,10 +13,9 @@ either *between* groups or *within* a single group.
 
 Metrics
 -------
-GLV statistics come from the ROI patch. SNR follows the e-beam definition
-``(mean_roi - mean_background) / std_background`` where the background is the
-ring around the ROI (a self-contained per-ROI measurement, no separate
-reference ROI needed).
+GLV statistics come from each ROI patch. SNR is a *within-group* measurement:
+one ROI in the group is tagged the *target* (T) and the remaining ROIs are the
+*reference* (R); SNR = ``(mean_target - mean_reference) / std_reference``.
 """
 
 from __future__ import annotations
@@ -37,8 +36,6 @@ GROUP_PALETTE: List[str] = [
     "#0891B2", "#EA580C", "#4B5563",
 ]
 
-SNR_MARGIN = 8          # default background ring width (px) for ROI SNR
-
 
 @dataclass
 class ROI:
@@ -52,11 +49,13 @@ class ROI:
 
 @dataclass
 class Group:
-    """A category of ROIs."""
+    """A category of ROIs. One ROI may be tagged the SNR *target*; the rest
+    of the group's ROIs are the SNR *reference*."""
 
     gid: str
     name: str
     color: str
+    target_rid: Optional[int] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -94,43 +93,45 @@ def roi_patch(image: np.ndarray, rect: Rect) -> Optional[np.ndarray]:
     return image[y0:y1, x0:x1]
 
 
-def roi_snr(image: np.ndarray, rect: Rect, margin: int = SNR_MARGIN) -> float:
-    """E-beam SNR: (mean_roi - mean_bg) / std_bg over a background ring."""
-    sig = roi_patch(image, rect)
-    if sig is None or sig.size == 0:
-        return 0.0
-    x, y, w, h = rect
-    ih, iw = image.shape[:2]
-    ex0, ey0 = max(0, x - margin), max(0, y - margin)
-    ex1, ey1 = min(iw, x + w + margin), min(ih, y + h + margin)
-    outer = image[ey0:ey1, ex0:ex1].astype(np.float64)
-    mask = np.ones(outer.shape, dtype=bool)
-    iy0, ix0 = y - ey0, x - ex0
-    mask[max(0, iy0):max(0, iy0) + h, max(0, ix0):max(0, ix0) + w] = False
-    bg = outer[mask]
-    if bg.size == 0:
-        return 0.0
-    sd = float(bg.std())
-    if sd < 1e-9:
-        return 0.0
-    return (float(sig.astype(np.float64).mean()) - float(bg.mean())) / sd
-
-
-def roi_metric(image: np.ndarray, roi: ROI, mid: str,
-               margin: int = SNR_MARGIN) -> float:
-    if mid == SNR_ID:
-        return roi_snr(image, roi.rect, margin)
+def roi_metric(image: np.ndarray, roi: ROI, mid: str) -> float:
+    """A per-ROI GLV statistic (SNR is a per-group metric, not per ROI)."""
     p = roi_patch(image, roi.rect)
     return glv_value(p, mid) if p is not None else 0.0
+
+
+def group_snr(image: np.ndarray, rois: List[ROI],
+              target_rid: Optional[int]) -> Optional[float]:
+    """Within-group SNR = (mean_target - mean_reference) / std_reference.
+
+    ``target_rid`` selects the target ROI; every other ROI in the group is
+    the reference (their pixels are pooled). Returns None when there is no
+    target, no reference, or the reference has no spread.
+    """
+    tgt = next((r for r in rois if r.rid == target_rid), None)
+    refs = [r for r in rois if r.rid != target_rid]
+    if tgt is None or not refs:
+        return None
+    tp = roi_patch(image, tgt.rect)
+    if tp is None or tp.size == 0:
+        return None
+    ref_pix = [roi_patch(image, r.rect).astype(np.float64).ravel()
+               for r in refs if roi_patch(image, r.rect) is not None]
+    ref_pix = [a for a in ref_pix if a.size]
+    if not ref_pix:
+        return None
+    ref = np.concatenate(ref_pix)
+    sd = float(ref.std())
+    if sd < 1e-9:
+        return None
+    return (float(tp.astype(np.float64).mean()) - float(ref.mean())) / sd
 
 
 def group_rois(rois: List[ROI], gid: str) -> List[ROI]:
     return [r for r in rois if r.gid == gid]
 
 
-def group_values(image: np.ndarray, rois: List[ROI], mid: str,
-                 margin: int = SNR_MARGIN) -> np.ndarray:
-    return np.asarray([roi_metric(image, r, mid, margin) for r in rois],
+def group_values(image: np.ndarray, rois: List[ROI], mid: str) -> np.ndarray:
+    return np.asarray([roi_metric(image, r, mid) for r in rois],
                       dtype=np.float64)
 
 
@@ -200,7 +201,7 @@ class AnalysisResult:
 
 def snapshot(groups: List[Group], rois: List[ROI]):
     """Copy the mutable model for safe use on a worker thread."""
-    gs = [Group(g.gid, g.name, g.color) for g in groups]
+    gs = [Group(g.gid, g.name, g.color, g.target_rid) for g in groups]
     rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
     return gs, rs
 
@@ -210,8 +211,7 @@ def _cell(mean: float, std: float) -> str:
 
 
 def compute_analysis(image, groups: List[Group], rois: List[ROI],
-                     metrics: List[str], mode: str, within_gid,
-                     margin: int = SNR_MARGIN) -> AnalysisResult:
+                     metrics: List[str], mode: str, within_gid) -> AnalysisResult:
     from pear.core.attributes import metric_label
 
     if image is None or not metrics:
@@ -222,7 +222,13 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
     def vals(g: Group, mid: str) -> np.ndarray:
         key = (g.gid, mid)
         if key not in cache:
-            cache[key] = group_values(image, group_rois(rois, g.gid), mid, margin)
+            grois = group_rois(rois, g.gid)
+            if mid == SNR_ID:
+                s = group_snr(image, grois, g.target_rid)
+                cache[key] = np.asarray(
+                    [] if s is None else [s], dtype=np.float64)
+            else:
+                cache[key] = group_values(image, grois, mid)
         return cache[key]
 
     if mode == "between":
@@ -259,6 +265,10 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
 
 def _summ(values: np.ndarray) -> str:
     s = summarize(values)
+    if s["n"] == 0:
+        return "—"
+    if s["n"] == 1:
+        return f"{s['mean']:.3g}"
     return _cell(s["mean"], s["std"])
 
 

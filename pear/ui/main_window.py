@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMessageBox, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
-from pear.core.analysis import (GROUP_PALETTE, SNR_MARGIN, ROI, Group,
-                                compute_analysis, group_rois, load_image,
-                                roi_metric, snapshot, summarize)
-from pear.core.attributes import metric_label
+from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
+                                group_rois, group_snr, load_image, roi_metric,
+                                snapshot, summarize)
+from pear.core.attributes import SNR_ID, metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
 from pear.ui.widgets import AnalysisPanel, RailPanel
@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
         self._rois: List[ROI] = []
         self._active_gid: Optional[str] = None
         self._active_rid: Optional[int] = None
+        self._selected_rids: set = set()   # rids marquee-selected on the canvas
         self._next_rid = 1
         self._metrics: List[str] = ["glv_mean", "glv_median"]
         self._show_metric = ""            # single metric drawn live on ROIs
@@ -94,6 +95,9 @@ class MainWindow(QMainWindow):
         sub.setObjectName("BrandSub")
         self.dataset_lbl = QLabel("no image")
         self.dataset_lbl.setObjectName("DatasetTag")
+        self.analysis_btn_top = QPushButton("Analysis ⤢")
+        self.analysis_btn_top.setToolTip("Open the analysis window.")
+        self.analysis_btn_top.setEnabled(False)
         self.load_btn = QPushButton("Load…")
         self.load_btn.setObjectName("Primary")
         lay.addWidget(brand, 0, Qt.AlignVCenter)
@@ -101,6 +105,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(sub)
         lay.addStretch(1)
         lay.addWidget(self.dataset_lbl)
+        lay.addWidget(self.analysis_btn_top)
         lay.addWidget(self.load_btn)
         self.setMenuWidget(bar)
 
@@ -159,6 +164,7 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load)
+        self.analysis_btn_top.clicked.connect(self.open_analysis)
         self.rail.group_add.connect(self.add_group)
         self.rail.group_pick.connect(self.select_group)
         self.rail.group_del.connect(self.delete_group)
@@ -169,6 +175,8 @@ class MainWindow(QMainWindow):
         self.rail.grid_commit.connect(self.image_view.commit_grid)
         self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
         self.rail.roi_size_changed.connect(self.image_view.set_roi_size)
+        self.rail.roi_pick.connect(self.select_roi)
+        self.rail.roi_set_target.connect(self.set_target_roi)
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.metrics_changed.connect(self.set_metrics)
         self.rail.show_metric_changed.connect(self.on_show_metric)
@@ -180,6 +188,8 @@ class MainWindow(QMainWindow):
         self.image_view.roi_modified.connect(self.on_roi_modified)
         self.image_view.roi_selected.connect(self.select_roi)
         self.image_view.roi_delete_requested.connect(self.delete_roi)
+        self.image_view.rois_selected.connect(self.on_marquee_selected)
+        self.image_view.rois_delete_requested.connect(self.delete_rois)
         self.image_view.cursor_info.connect(self.cursor_lbl.setText)
         self.image_view.zoom_changed.connect(
             lambda s: self.zoom_lbl.setText(f"{int(round(s * 100))}%"))
@@ -210,6 +220,7 @@ class MainWindow(QMainWindow):
         self._rois = []
         self._active_gid = None
         self._active_rid = None
+        self._selected_rids = set()
         self._within_gid = None
         self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
         self.image_view.set_image(img)
@@ -304,16 +315,58 @@ class MainWindow(QMainWindow):
 
     def select_roi(self, rid: int) -> None:
         self._active_rid = rid
+        self._selected_rids = set()          # a single pick clears the marquee set
         roi = self._roi(rid)
         if roi is not None and roi.gid != self._active_gid:
             self._active_gid = roi.gid
         self._refresh()
 
+    def set_target_roi(self, rid: int) -> None:
+        """Tag an ROI as its group's SNR target (toggle off if already target)."""
+        roi = self._roi(rid)
+        if roi is None:
+            return
+        g = self._group(roi.gid)
+        if g is not None:
+            g.target_rid = None if g.target_rid == rid else rid
+            self._refresh()
+
+    def on_marquee_selected(self, rids) -> None:
+        self._selected_rids = set(rids or [])
+        self._refresh()
+        if self._selected_rids:
+            self.statusBar().showMessage(
+                f"{len(self._selected_rids)} ROIs selected · Delete to remove.",
+                4000)
+
     def delete_roi(self, rid: int) -> None:
         self._rois = [r for r in self._rois if r.rid != rid]
         if self._active_rid == rid:
             self._active_rid = None
+        self._selected_rids.discard(rid)
+        self._drop_targets({rid})
         self._refresh()
+
+    def delete_rois(self, rids) -> None:
+        rid_set = set(rids or [])
+        if not rid_set:
+            return
+        self._rois = [r for r in self._rois if r.rid not in rid_set]
+        if self._active_rid in rid_set:
+            self._active_rid = None
+        self._selected_rids -= rid_set
+        self._drop_targets(rid_set)
+        self.statusBar().showMessage(f"Deleted {len(rid_set)} ROIs.", 3000)
+        self._refresh()
+
+    def _drop_targets(self, rid_set: set) -> None:
+        for g in self._groups:
+            if g.target_rid in rid_set:
+                g.target_rid = None
+
+    def _target_of_active(self) -> Optional[int]:
+        g = self._group(self._active_gid)
+        return g.target_rid if g is not None else None
 
     # ------------------------------------------------------------------ #
     # metrics / comparison
@@ -331,9 +384,16 @@ class MainWindow(QMainWindow):
             self.image_view.set_roi_values({})
             return
         vals = {}
-        for r in self._rois:
-            v = roi_metric(self._image, r, self._show_metric, SNR_MARGIN)
-            vals[r.rid] = f"{v:.3g}"
+        if self._show_metric == SNR_ID:
+            # SNR is a per-group value; label the target (T) ROI with it.
+            for g in self._groups:
+                s = group_snr(self._image, group_rois(self._rois, g.gid),
+                              g.target_rid)
+                if s is not None and g.target_rid is not None:
+                    vals[g.target_rid] = f"{s:.3g}"
+        else:
+            for r in self._rois:
+                vals[r.rid] = f"{roi_metric(self._image, r, self._show_metric):.3g}"
         self.image_view.set_roi_values(vals)
 
     def on_cmp_mode(self, mode: str) -> None:
@@ -353,14 +413,25 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # refresh
     # ------------------------------------------------------------------ #
+    def _renumber(self) -> None:
+        """Re-index each group's ROI display labels 1..n (rids stay unique)."""
+        for g in self._groups:
+            for i, r in enumerate(group_rois(self._rois, g.gid), 1):
+                r.label = f"ROI {i}"
+
     def _refresh(self) -> None:
+        self._renumber()
         has_img = self._image is not None
         self.rail.set_ready(has_img)
+        self.analysis_btn_top.setEnabled(has_img)
         counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
         self.rail.set_groups(self._groups, self._active_gid, counts)
-        self.rail.set_rois(group_rois(self._rois, self._active_gid), self._active_rid)
+        self.rail.set_rois(group_rois(self._rois, self._active_gid),
+                           self._active_rid, self._target_of_active(),
+                           self._selected_rids)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
+        self.image_view.set_selection(self._selected_rids)
         self._update_roi_values()
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
@@ -378,7 +449,7 @@ class MainWindow(QMainWindow):
         token = self._analysis_token
         gs, rs = snapshot(self._groups, self._rois)
         args = (self._image, gs, rs, list(self._metrics), self._cmp_mode,
-                self._within_gid, SNR_MARGIN)
+                self._within_gid)
         self.analysis.set_computing(True)
         self._pool.start(_AnalysisJob(token, args, self._sig))
 
@@ -392,7 +463,7 @@ class MainWindow(QMainWindow):
         self._analysis_timer.stop()
         gs, rs = snapshot(self._groups, self._rois)
         result = compute_analysis(self._image, gs, rs, list(self._metrics),
-                                  self._cmp_mode, self._within_gid, SNR_MARGIN)
+                                  self._cmp_mode, self._within_gid)
         enabled = result.empty is None
         self.analysis.set_controls(self._cmp_mode, self._groups,
                                    self._within_gid, enabled)
@@ -431,15 +502,24 @@ class MainWindow(QMainWindow):
             w = csv.writer(fh)
             w.writerow(["PEAR group & ROI analysis"])
             w.writerow([])
-            header = ["group", "roi", "x", "y", "w", "h"] + \
+            header = ["group", "roi", "role", "x", "y", "w", "h"] + \
                      [metric_label(m) for m in self._metrics]
             w.writerow(header)
             for g in self._groups:
-                for roi in group_rois(self._rois, g.gid):
+                grois = group_rois(self._rois, g.gid)
+                gsnr = group_snr(self._image, grois, g.target_rid)
+                for roi in grois:
                     x, y, wid, hei = roi.rect
-                    row = [g.name, roi.label, x, y, wid, hei]
+                    role = ("T" if roi.rid == g.target_rid
+                            else ("R" if g.target_rid is not None else ""))
+                    row = [g.name, roi.label, role, x, y, wid, hei]
                     for mid in self._metrics:
-                        row.append(f"{roi_metric(self._image, roi, mid, SNR_MARGIN):.6g}")
+                        if mid == SNR_ID:
+                            # SNR is per group; report it on the target row only
+                            row.append(f"{gsnr:.6g}" if (roi.rid == g.target_rid
+                                       and gsnr is not None) else "")
+                        else:
+                            row.append(f"{roi_metric(self._image, roi, mid):.6g}")
                     w.writerow(row)
             w.writerow([])
             w.writerow(["summary"])
@@ -450,7 +530,11 @@ class MainWindow(QMainWindow):
                     continue
                 line = [g.name, len(grois)]
                 for mid in self._metrics:
-                    vals = np.array([roi_metric(self._image, r, mid, SNR_MARGIN)
-                                     for r in grois])
-                    line.append(f"{summarize(vals)['mean']:.6g}")
+                    if mid == SNR_ID:
+                        s = group_snr(self._image, grois, g.target_rid)
+                        line.append(f"{s:.6g}" if s is not None else "")
+                    else:
+                        vals = np.array([roi_metric(self._image, r, mid)
+                                         for r in grois])
+                        line.append(f"{summarize(vals)['mean']:.6g}")
                 w.writerow(line)

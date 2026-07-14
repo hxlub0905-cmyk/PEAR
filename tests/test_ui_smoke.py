@@ -194,3 +194,91 @@ def test_color_and_rename(app):
     win.rename_group(gA, "round holes")
     assert win._group(gA).color == "#123456"
     assert win._group(gA).name == "round holes"
+
+
+def test_roi_labels_reindex_after_delete(app):
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((20, 20, 16, 16))
+    win.on_roi_created((60, 20, 16, 16))
+    win.on_roi_created((100, 20, 16, 16))
+    gid = win._active_gid
+    mid_rid = group_rois(win._rois, gid)[1].rid
+    win.delete_roi(mid_rid)
+    assert [r.label for r in group_rois(win._rois, gid)] == ["ROI 1", "ROI 2"]
+
+
+def test_set_target_roi_toggles_and_snr(app):
+    from pear.core.analysis import group_rois, group_snr
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((22, 18, 20, 16))        # bright feature
+    win.on_roi_created((3, 3, 10, 8))           # dark background
+    win.on_roi_created((CELL_W + 3, 3, 10, 8))  # dark background
+    gid = win._active_gid
+    tgt = group_rois(win._rois, gid)[0].rid
+    win.set_target_roi(tgt)
+    assert win._group(gid).target_rid == tgt
+    snr = group_snr(win._image, group_rois(win._rois, gid), tgt)
+    assert snr is not None and snr > 0
+    win.set_target_roi(tgt)                      # toggles back off
+    assert win._group(gid).target_rid is None
+
+
+def test_show_snr_labels_target_only(app):
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((22, 18, 20, 16))
+    win.on_roi_created((3, 3, 10, 8))
+    gid = win._active_gid
+    tgt = group_rois(win._rois, gid)[0].rid
+    win.set_target_roi(tgt)
+    win.on_show_metric("snr")
+    assert list(win.image_view._roi_values.keys()) == [tgt]
+
+
+def test_marquee_select_and_batch_delete(app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QMouseEvent
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    iv = win.image_view
+    iv.resize(500, 400)
+    win.on_roi_created((20, 20, 16, 16))
+    win.on_roi_created((60, 20, 16, 16))
+    win.on_roi_created((120, 20, 16, 16))
+    gid = win._active_gid
+    p1 = iv._to_widget(10, 10)
+    p2 = iv._to_widget(90, 60)                    # covers the first two only
+    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, p1,
+                                   Qt.LeftButton, Qt.LeftButton, Qt.ShiftModifier))
+    iv.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, p2,
+                                  Qt.NoButton, Qt.LeftButton, Qt.ShiftModifier))
+    iv.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease, p2,
+                                     Qt.LeftButton, Qt.NoButton, Qt.ShiftModifier))
+    assert len(win._selected_rids) == 2
+    win.delete_rois(list(win._selected_rids))
+    assert len(group_rois(win._rois, gid)) == 1
+
+
+def test_export_includes_snr_with_target(app, tmp_path):
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((22, 18, 20, 16))
+    win.on_roi_created((3, 3, 10, 8))
+    gid = win._active_gid
+    win.set_target_roi(group_rois(win._rois, gid)[0].rid)
+    win.set_metrics(["glv_mean", "snr"])
+    out = tmp_path / "snr.csv"
+    assert win.export_csv(str(out)) == str(out)
+    text = out.read_text(encoding="utf-8-sig")
+    assert "role" in text and "SNR" in text

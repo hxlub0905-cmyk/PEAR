@@ -34,6 +34,8 @@ class ImageView(QWidget):
     roi_modified = Signal(int, object)      # rid, rect
     roi_selected = Signal(int)              # rid
     roi_delete_requested = Signal(int)      # rid (Delete key on selected ROI)
+    rois_selected = Signal(object)          # list[rid] (marquee multi-select)
+    rois_delete_requested = Signal(object)  # list[rid] (Delete on a selection)
     cursor_info = Signal(str)
     zoom_changed = Signal(float)
 
@@ -52,6 +54,8 @@ class ImageView(QWidget):
         self._active_gid: Optional[str] = None
         self._rois: List[ROI] = []
         self._active_rid: Optional[int] = None
+        self._selection: set = set()           # rids marquee-selected
+        self._marquee: Optional[QRectF] = None  # selection rect (image coords)
 
         self._grid_mode = False
         self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
@@ -92,6 +96,11 @@ class ImageView(QWidget):
     def set_roi_values(self, values: dict) -> None:
         """Map of rid -> short text drawn centred on each ROI (live metric)."""
         self._roi_values = values or {}
+        self.update()
+
+    def set_selection(self, rids) -> None:
+        """Highlight a set of ROIs (kept in sync with the rail's selection)."""
+        self._selection = set(rids or [])
         self.update()
 
     def set_grid_mode(self, on: bool) -> None:
@@ -198,14 +207,17 @@ class ImageView(QWidget):
         p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
         self._paint_rois(p)
         self._paint_rubberband(p)
+        self._paint_marquee(p)
         self._paint_grid_preview(p)
         self._paint_hud(p)
         p.end()
 
     def _paint_rois(self, p: QPainter) -> None:
+        targets = {g.gid: g.target_rid for g in self._groups}
         for roi in self._rois:
             active_grp = roi.gid == self._active_gid
             selected = roi.rid == self._active_rid
+            in_sel = roi.rid in self._selection
             color = self._gcolor(roi.gid)
             r = self._rect_to_widget(roi.rect)
             fill = QColor(color)
@@ -217,11 +229,37 @@ class ImageView(QWidget):
             p.setPen(pen)
             p.setBrush(fill)
             p.drawRect(r)
+            if in_sel:
+                self._paint_selection_ring(p, r)
+            if targets.get(roi.gid) == roi.rid:
+                self._paint_badge(p, r, "T", color)
             val = self._roi_values.get(roi.rid)
             if val is not None:
                 self._paint_value(p, r, val)
             if selected and not self._grid_mode:
                 self._paint_handles(p, r, color)
+
+    def _paint_selection_ring(self, p: QPainter, r: QRectF) -> None:
+        pen = QPen(QColor("#FFFFFF"), 1.6)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-2, -2, 2, 2))
+
+    def _paint_badge(self, p: QPainter, r: QRectF, text: str,
+                     color: QColor) -> None:
+        p.setFont(theme.mono_font(8, weight=700))
+        fm = p.fontMetrics()
+        bw = fm.horizontalAdvance(text) + 8
+        bh = fm.height() + 2
+        by = r.top() - bh if r.top() - bh >= 0 else r.top()
+        bg = QRectF(r.left(), by, bw, bh)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        p.drawRoundedRect(bg, 3, 3)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(bg, Qt.AlignCenter, text)
 
     def _paint_value(self, p: QPainter, r: QRectF, text: str) -> None:
         p.setFont(theme.mono_font(9, weight=700))
@@ -254,6 +292,22 @@ class ImageView(QWidget):
         tl = self._to_widget(rn.left(), rn.top())
         p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
                           rn.height() * self._scale))
+
+    def _paint_marquee(self, p: QPainter) -> None:
+        if self._marquee is None:
+            return
+        rn = self._marquee.normalized()
+        tl = self._to_widget(rn.left(), rn.top())
+        rect = QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+                      rn.height() * self._scale)
+        fill = QColor(theme.INFO)
+        fill.setAlpha(28)
+        pen = QPen(QColor(theme.INFO), 1.5)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        p.setPen(pen)
+        p.setBrush(fill)
+        p.drawRect(rect)
 
     def _grid_rects(self) -> List[Rect]:
         if self._grid_tl is None:
@@ -351,6 +405,20 @@ class ImageView(QWidget):
                 return r.rid
         return None
 
+    def _marquee_hits(self) -> List[int]:
+        """rids of active-group ROIs intersecting the marquee rectangle."""
+        if self._marquee is None:
+            return []
+        sel = self._marquee.normalized()
+        hits = []
+        for r in self._rois:
+            if r.gid != self._active_gid:
+                continue
+            x, y, w, h = r.rect
+            if sel.intersects(QRectF(x, y, w, h)):
+                hits.append(r.rid)
+        return hits
+
     # ------------------------------------------------------------------ #
     # mouse / key / wheel
     # ------------------------------------------------------------------ #
@@ -377,6 +445,17 @@ class ImageView(QWidget):
                 self.commit_grid()
             self.update()
             return
+        if e.modifiers() & Qt.ShiftModifier:
+            # Shift+drag → marquee select ROIs of the active group
+            ip = self._to_image(pos)
+            self._interact = "marquee"
+            self._drag_start = pos
+            self._marquee = QRectF(ip, ip)
+            self.update()
+            return
+        if self._selection:                       # a plain click clears a marquee
+            self._selection = set()
+            self.rois_selected.emit([])
         handle = self._handle_at(pos)
         if handle is not None:
             self._interact = "resize"
@@ -412,6 +491,10 @@ class ImageView(QWidget):
             self._offset = self._pan_at_press + (pos - self._drag_start)
             self.update()
             return
+        if self._interact == "marquee" and self._marquee is not None:
+            self._marquee.setBottomRight(self._to_image(pos))
+            self.update()
+            return
         if self._interact == "draw" and self._draw_rect is not None:
             self._draw_rect.setBottomRight(self._to_image(pos))
             self.update()
@@ -428,6 +511,14 @@ class ImageView(QWidget):
         if self._interact == "pan":
             self._interact = None
             self.unsetCursor()
+            return
+        if self._interact == "marquee":
+            self._interact = None
+            rids = self._marquee_hits()
+            self._marquee = None
+            self._selection = set(rids)
+            self.rois_selected.emit(list(rids))
+            self.update()
             return
         if self._grid_mode:
             self._interact = None
@@ -449,13 +540,19 @@ class ImageView(QWidget):
         self._interact = None
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
+        is_del = e.key() in (Qt.Key_Delete, Qt.Key_Backspace)
         if self._grid_mode and e.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.commit_grid()
         elif self._grid_mode and e.key() == Qt.Key_Escape:
             self.cancel_grid()
-        elif (not self._grid_mode and self._active_rid is not None
-              and e.key() in (Qt.Key_Delete, Qt.Key_Backspace)):
+        elif not self._grid_mode and self._selection and is_del:
+            self.rois_delete_requested.emit(list(self._selection))
+        elif not self._grid_mode and self._active_rid is not None and is_del:
             self.roi_delete_requested.emit(self._active_rid)
+        elif not self._grid_mode and self._selection and e.key() == Qt.Key_Escape:
+            self._selection = set()
+            self.rois_selected.emit([])
+            self.update()
         else:
             super().keyPressEvent(e)
 
