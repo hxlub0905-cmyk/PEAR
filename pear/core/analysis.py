@@ -36,6 +36,24 @@ GROUP_PALETTE: List[str] = [
     "#0891B2", "#EA580C", "#4B5563",
 ]
 
+# Sequential ramp for the metric heatmap: cool → amber → warm.
+_HEAT_STOPS = [(0.0, (37, 99, 235)), (0.5, (245, 158, 11)), (1.0, (220, 38, 38))]
+
+
+def heat_color(t: float) -> str:
+    """Map ``t`` in [0, 1] to a hex colour on the blue → amber → red ramp."""
+    if not np.isfinite(t):
+        return "#4B5563"
+    t = 0.0 if t < 0 else (1.0 if t > 1 else float(t))
+    for i in range(len(_HEAT_STOPS) - 1):
+        t0, c0 = _HEAT_STOPS[i]
+        t1, c1 = _HEAT_STOPS[i + 1]
+        if t <= t1:
+            f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            r, g, b = (round(a + (b - a) * f) for a, b in zip(c0, c1))
+            return f"#{r:02X}{g:02X}{b:02X}"
+    return "#DC2626"
+
 
 @dataclass
 class ROI:
@@ -135,6 +153,33 @@ def group_values(image: np.ndarray, rois: List[ROI], mid: str) -> np.ndarray:
                       dtype=np.float64)
 
 
+def group_outliers(image: np.ndarray, rois: List[ROI], mid: str,
+                   k: float = 1.5) -> set:
+    """rids that are Tukey outliers of ``mid`` *within their own group*.
+
+    A value outside ``[Q1 − k·IQR, Q3 + k·IQR]`` is an outlier. Groups with
+    fewer than 4 ROIs (too few for a stable IQR) are skipped.
+    """
+    out: set = set()
+    by_gid: Dict[str, List[ROI]] = {}
+    for r in rois:
+        by_gid.setdefault(r.gid, []).append(r)
+    for grs in by_gid.values():
+        if len(grs) < 4:
+            continue
+        vals = np.array([roi_metric(image, r, mid) for r in grs],
+                        dtype=np.float64)
+        q1, q3 = float(np.percentile(vals, 25)), float(np.percentile(vals, 75))
+        iqr = q3 - q1
+        if iqr <= 1e-12:
+            continue
+        lo, hi = q1 - k * iqr, q3 + k * iqr
+        for r, v in zip(grs, vals):
+            if v < lo or v > hi:
+                out.add(r.rid)
+    return out
+
+
 def summarize(values: np.ndarray) -> Dict[str, float]:
     v = np.asarray(values, dtype=np.float64)
     v = v[np.isfinite(v)]
@@ -204,6 +249,29 @@ def snapshot(groups: List[Group], rois: List[ROI]):
     gs = [Group(g.gid, g.name, g.color, g.target_rid) for g in groups]
     rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
     return gs, rs
+
+
+# --------------------------------------------------------------------------- #
+# Project (de)serialization — plain JSON-friendly dicts
+# --------------------------------------------------------------------------- #
+def groups_to_json(groups: List[Group]) -> List[dict]:
+    return [{"gid": g.gid, "name": g.name, "color": g.color,
+             "target_rid": g.target_rid} for g in groups]
+
+
+def rois_to_json(rois: List[ROI]) -> List[dict]:
+    return [{"rid": r.rid, "gid": r.gid, "rect": list(r.rect),
+             "label": r.label} for r in rois]
+
+
+def groups_from_json(items) -> List[Group]:
+    return [Group(g["gid"], g["name"], g["color"], g.get("target_rid"))
+            for g in (items or [])]
+
+
+def rois_from_json(items) -> List[ROI]:
+    return [ROI(r["rid"], r["gid"], tuple(r["rect"]), r.get("label", ""))
+            for r in (items or [])]
 
 
 def _cell(mean: float, std: float) -> str:

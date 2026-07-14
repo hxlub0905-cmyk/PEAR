@@ -14,11 +14,11 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import (QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPen,
-                           QPixmap, QWheelEvent)
+from PySide6.QtGui import (QColor, QImage, QKeyEvent, QLinearGradient,
+                           QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent)
 from PySide6.QtWidgets import QWidget
 
-from pear.core.analysis import ROI, Group, grid_between
+from pear.core.analysis import ROI, Group, grid_between, heat_color
 from pear.ui import theme
 
 Rect = Tuple[int, int, int, int]
@@ -36,6 +36,9 @@ class ImageView(QWidget):
     roi_delete_requested = Signal(int)      # rid (Delete key on selected ROI)
     rois_selected = Signal(object)          # list[rid] (marquee multi-select)
     rois_delete_requested = Signal(object)  # list[rid] (Delete on a selection)
+    roi_hovered = Signal(int)               # rid under the cursor (-1 = none)
+    roi_duplicate_requested = Signal(int)   # rid (Ctrl+D)
+    group_index_requested = Signal(int)     # switch active group by index (1–9)
     cursor_info = Signal(str)
     zoom_changed = Signal(float)
 
@@ -56,6 +59,10 @@ class ImageView(QWidget):
         self._active_rid: Optional[int] = None
         self._selection: set = set()           # rids marquee-selected
         self._marquee: Optional[QRectF] = None  # selection rect (image coords)
+        self._heat: dict = {}                  # rid -> hex colour (heatmap)
+        self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
+        self._outliers: set = set()            # rids flagged as outliers
+        self._hover_rid: int = -1              # rid under the cursor
 
         self._grid_mode = False
         self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
@@ -102,6 +109,23 @@ class ImageView(QWidget):
         """Highlight a set of ROIs (kept in sync with the rail's selection)."""
         self._selection = set(rids or [])
         self.update()
+
+    def set_heatmap(self, colors: dict, legend=None) -> None:
+        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label)."""
+        self._heat = colors or {}
+        self._heat_legend = legend
+        self.update()
+
+    def set_outliers(self, rids) -> None:
+        self._outliers = set(rids or [])
+        self.update()
+
+    def set_hover(self, rid: int) -> None:
+        """Highlight the hovered ROI (list → canvas hover sync)."""
+        rid = -1 if rid is None else int(rid)
+        if rid != self._hover_rid:
+            self._hover_rid = rid
+            self.update()
 
     def set_grid_mode(self, on: bool) -> None:
         self._grid_mode = bool(on)
@@ -209,6 +233,7 @@ class ImageView(QWidget):
         self._paint_rubberband(p)
         self._paint_marquee(p)
         self._paint_grid_preview(p)
+        self._paint_colorbar(p)
         self._paint_hud(p)
         p.end()
 
@@ -220,8 +245,13 @@ class ImageView(QWidget):
             in_sel = roi.rid in self._selection
             color = self._gcolor(roi.gid)
             r = self._rect_to_widget(roi.rect)
-            fill = QColor(color)
-            fill.setAlpha(64 if active_grp else 26)
+            heat = self._heat.get(roi.rid)
+            if heat is not None:                     # value heatmap fill
+                fill = QColor(heat)
+                fill.setAlpha(175)
+            else:
+                fill = QColor(color)
+                fill.setAlpha(64 if active_grp else 26)
             stroke = QColor(color)
             stroke.setAlpha(255 if active_grp else 130)
             pen = QPen(stroke, 2.4 if selected else (1.8 if active_grp else 1.2))
@@ -229,8 +259,12 @@ class ImageView(QWidget):
             p.setPen(pen)
             p.setBrush(fill)
             p.drawRect(r)
+            if roi.rid == self._hover_rid:
+                self._paint_hover_ring(p, r)
             if in_sel:
                 self._paint_selection_ring(p, r)
+            if roi.rid in self._outliers:
+                self._paint_outlier(p, r)
             if targets.get(roi.gid) == roi.rid:
                 self._paint_badge(p, r, "T", color)
             val = self._roi_values.get(roi.rid)
@@ -238,6 +272,42 @@ class ImageView(QWidget):
                 self._paint_value(p, r, val)
             if selected and not self._grid_mode:
                 self._paint_handles(p, r, color)
+
+    def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
+        pen = QPen(QColor(255, 255, 255, 210), 1.4)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-3, -3, 3, 3))
+
+    def _paint_outlier(self, p: QPainter, r: QRectF) -> None:
+        pen = QPen(QColor(theme.WARNING), 2.0)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-1, -1, 1, 1))
+        self._paint_badge(p, r, "!", QColor(theme.WARNING), corner="tr")
+
+    def _paint_colorbar(self, p: QPainter) -> None:
+        if not self._heat_legend or not self._heat:
+            return
+        vmin, vmax, label = self._heat_legend
+        x, y, w, h = 14, self.height() - 42, 150, 12
+        grad = QLinearGradient(float(x), 0.0, float(x + w), 0.0)
+        for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+            grad.setColorAt(t, QColor(heat_color(t)))
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawRoundedRect(QRectF(x, y, w, h), 3, 3)
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(x, y, w, h), 3, 3)
+        p.setPen(QColor("#FFFFFF"))
+        p.setFont(theme.mono_font(8, weight=700))
+        p.drawText(int(x), int(y - 4), label)
+        p.setFont(theme.mono_font(8))
+        p.drawText(QRectF(x, y + h + 1, w, 12), Qt.AlignLeft, f"{vmin:.3g}")
+        p.drawText(QRectF(x, y + h + 1, w, 12), Qt.AlignRight, f"{vmax:.3g}")
 
     def _paint_selection_ring(self, p: QPainter, r: QRectF) -> None:
         pen = QPen(QColor("#FFFFFF"), 1.6)
@@ -248,13 +318,14 @@ class ImageView(QWidget):
         p.drawRect(r.adjusted(-2, -2, 2, 2))
 
     def _paint_badge(self, p: QPainter, r: QRectF, text: str,
-                     color: QColor) -> None:
+                     color: QColor, corner: str = "tl") -> None:
         p.setFont(theme.mono_font(8, weight=700))
         fm = p.fontMetrics()
         bw = fm.horizontalAdvance(text) + 8
         bh = fm.height() + 2
         by = r.top() - bh if r.top() - bh >= 0 else r.top()
-        bg = QRectF(r.left(), by, bw, bh)
+        bx = r.left() if corner == "tl" else r.right() - bw
+        bg = QRectF(bx, by, bw, bh)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(color))
         p.drawRoundedRect(bg, 3, 3)
@@ -505,6 +576,7 @@ class ImageView(QWidget):
         if self._interact == "resize":
             self._do_resize(pos)
             return
+        self._update_hover(pos)
         self._update_cursor(pos)
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
@@ -539,22 +611,51 @@ class ImageView(QWidget):
                 self.roi_modified.emit(roi.rid, roi.rect)
         self._interact = None
 
+    _ARROWS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0),
+               Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
+
     def keyPressEvent(self, e: QKeyEvent) -> None:
-        is_del = e.key() in (Qt.Key_Delete, Qt.Key_Backspace)
-        if self._grid_mode and e.key() in (Qt.Key_Return, Qt.Key_Enter):
+        key, mods = e.key(), e.modifiers()
+        is_del = key in (Qt.Key_Delete, Qt.Key_Backspace)
+        ctrl = bool(mods & Qt.ControlModifier)
+        if self._grid_mode and key in (Qt.Key_Return, Qt.Key_Enter):
             self.commit_grid()
-        elif self._grid_mode and e.key() == Qt.Key_Escape:
+        elif self._grid_mode and key == Qt.Key_Escape:
             self.cancel_grid()
-        elif not self._grid_mode and self._selection and is_del:
+        elif self._grid_mode:
+            super().keyPressEvent(e)
+        elif self._selection and is_del:
             self.rois_delete_requested.emit(list(self._selection))
-        elif not self._grid_mode and self._active_rid is not None and is_del:
+        elif self._active_rid is not None and is_del:
             self.roi_delete_requested.emit(self._active_rid)
-        elif not self._grid_mode and self._selection and e.key() == Qt.Key_Escape:
+        elif self._selection and key == Qt.Key_Escape:
             self._selection = set()
             self.rois_selected.emit([])
             self.update()
+        elif key in self._ARROWS and self._active_rid is not None:
+            dx, dy = self._ARROWS[key]
+            step = 10 if (mods & Qt.ShiftModifier) else 1
+            self._nudge_active(dx * step, dy * step)
+        elif ctrl and key == Qt.Key_D and self._active_rid is not None:
+            self.roi_duplicate_requested.emit(self._active_rid)
+        elif ctrl and key == Qt.Key_A:
+            rids = [r.rid for r in self._rois if r.gid == self._active_gid]
+            self._selection = set(rids)
+            self.rois_selected.emit(rids)
+            self.update()
+        elif Qt.Key_1 <= key <= Qt.Key_9 and not ctrl:
+            self.group_index_requested.emit(key - Qt.Key_1)
         else:
             super().keyPressEvent(e)
+
+    def _nudge_active(self, dx: int, dy: int) -> None:
+        roi = self._active_roi()
+        if roi is None:
+            return
+        x, y, w, h = roi.rect
+        roi.rect = self._clamp((x + dx, y + dy, w, h))
+        self.roi_modified.emit(roi.rid, roi.rect)
+        self.update()
 
     def wheelEvent(self, e: QWheelEvent) -> None:
         if self._image is None:
@@ -564,6 +665,18 @@ class ImageView(QWidget):
 
     def leaveEvent(self, _e) -> None:
         self.cursor_info.emit("")
+        if self._hover_rid != -1:
+            self._hover_rid = -1
+            self.roi_hovered.emit(-1)
+            self.update()
+
+    def _update_hover(self, pos: QPointF) -> None:
+        rid = self._roi_body_at(pos)
+        rid = rid if rid is not None else -1
+        if rid != self._hover_rid:
+            self._hover_rid = rid
+            self.roi_hovered.emit(rid)
+            self.update()
 
     # ------------------------------------------------------------------ #
     # helpers

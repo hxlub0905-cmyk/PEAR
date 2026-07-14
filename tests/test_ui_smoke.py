@@ -268,6 +268,107 @@ def test_marquee_select_and_batch_delete(app):
     assert len(group_rois(win._rois, gid)) == 1
 
 
+def test_heatmap_and_outliers_state(app):
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)]:      # bright features
+        win.on_roi_created((c * CELL_W + 22, r * CELL_H + 18, 20, 16))
+    win.on_roi_created((3, 3, 10, 8))                    # dark → outlier
+    gid = win._active_gid
+    dark_rid = group_rois(win._rois, gid)[-1].rid
+    win.on_show_metric("glv_mean")
+    win.on_heatmap(True)
+    win.on_flag_outliers(True)
+    assert win.image_view._heat and win.image_view._heat_legend is not None
+    assert dark_rid in win.image_view._outliers
+    win.on_heatmap(False)
+    win.on_flag_outliers(False)
+    assert win.image_view._heat == {} and win.image_view._outliers == set()
+
+
+def test_keyboard_nudge_duplicate_group_switch(app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeyEvent
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((40, 40, 20, 20))
+    iv = win.image_view
+    rid = win._active_rid
+    x0 = win._roi(rid).rect[0]
+    iv.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Right, Qt.NoModifier))
+    assert win._roi(rid).rect[0] == x0 + 1
+    iv.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Right,
+                              Qt.ShiftModifier))
+    assert win._roi(rid).rect[0] == x0 + 11
+    n = len(group_rois(win._rois, win._active_gid))
+    win.duplicate_roi(rid)
+    assert len(group_rois(win._rois, win._active_gid)) == n + 1
+    win.add_group()                                   # A, B (active B)
+    win.select_group_by_index(0)
+    assert win._active_gid == "A"
+
+
+def test_hover_sync_state(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((40, 40, 20, 20))
+    rid = win._active_rid
+    win.image_view.set_hover(rid)
+    assert win.image_view._hover_rid == rid
+    win.image_view.set_hover(-1)
+    assert win.image_view._hover_rid == -1
+    win.rail.set_hovered_roi(rid)                     # canvas → list, no crash
+
+
+def test_chart_option_toggles(app):
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("hist")
+    ap._pick_ctype("box")
+    ap.points_chk.setChecked(False)
+    ap.whiskers_chk.setChecked(False)
+    app.processEvents()          # flush deleteLater so stale charts are gone
+    charts = ap.body.findChildren(DistributionChart)
+    assert any(c._opts == {"points": False, "whiskers": False} for c in charts)
+
+
+def test_project_save_open_roundtrip(app, tmp_path):
+    import cv2
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    ipath = tmp_path / "field.png"
+    cv2.imwrite(str(ipath), make_field())
+    win = MainWindow()
+    win.load_path(str(ipath))
+    win.rename_group(win._active_gid, "round holes")
+    win.on_roi_created((22, 18, 20, 16))
+    win.on_roi_created((3, 3, 10, 8))
+    win.set_target_roi(group_rois(win._rois, win._active_gid)[0].rid)
+    win.set_metrics(["glv_mean", "snr"])
+    proj = tmp_path / "p.pear.json"
+    assert win.save_project(str(proj)) == str(proj)
+
+    win2 = MainWindow()
+    assert win2.open_project(str(proj)) == str(proj)
+    assert win2._image is not None
+    assert win2._group("A").name == "round holes"
+    a_rois = group_rois(win2._rois, "A")
+    assert len(a_rois) == 2 and win2._group("A").target_rid == a_rois[0].rid
+    assert win2._metrics == ["glv_mean", "snr"]
+
+
 def test_export_includes_snr_with_target(app, tmp_path):
     from pear.core.analysis import group_rois
     from pear.ui.main_window import MainWindow

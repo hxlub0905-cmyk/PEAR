@@ -8,18 +8,21 @@ metric distributions between or within groups in the Analysis window.
 from __future__ import annotations
 
 import csv
+import json
 import os
 from typing import List, Optional
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMessageBox, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+                               QMainWindow, QMenu, QMessageBox, QPushButton,
+                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
 from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
-                                group_rois, group_snr, load_image, roi_metric,
-                                snapshot, summarize)
+                                group_outliers, group_rois, group_snr,
+                                groups_from_json, groups_to_json, heat_color,
+                                load_image, roi_metric, rois_from_json,
+                                rois_to_json, snapshot, summarize)
 from pear.core.attributes import SNR_ID, metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
@@ -62,6 +65,10 @@ class MainWindow(QMainWindow):
         self._next_rid = 1
         self._metrics: List[str] = ["glv_mean", "glv_median"]
         self._show_metric = ""            # single metric drawn live on ROIs
+        self._heatmap = False             # colour ROIs by the shown metric
+        self._flag_outliers = False       # flag Tukey outliers of the shown metric
+        self._outlier_rids: set = set()
+        self._image_path: Optional[str] = None
         self._cmp_mode = "between"
         self._within_gid: Optional[str] = None
 
@@ -95,6 +102,13 @@ class MainWindow(QMainWindow):
         sub.setObjectName("BrandSub")
         self.dataset_lbl = QLabel("no image")
         self.dataset_lbl.setObjectName("DatasetTag")
+        self.project_btn = QToolButton()
+        self.project_btn.setText("Project ▾")
+        self.project_btn.setPopupMode(QToolButton.InstantPopup)
+        pmenu = QMenu(self.project_btn)
+        pmenu.addAction("Open project…", self.on_open_project)
+        self._save_action = pmenu.addAction("Save project…", self.on_save_project)
+        self.project_btn.setMenu(pmenu)
         self.analysis_btn_top = QPushButton("Analysis ⤢")
         self.analysis_btn_top.setToolTip("Open the analysis window.")
         self.analysis_btn_top.setEnabled(False)
@@ -105,6 +119,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(sub)
         lay.addStretch(1)
         lay.addWidget(self.dataset_lbl)
+        lay.addWidget(self.project_btn)
         lay.addWidget(self.analysis_btn_top)
         lay.addWidget(self.load_btn)
         self.setMenuWidget(bar)
@@ -178,8 +193,11 @@ class MainWindow(QMainWindow):
         self.rail.roi_pick.connect(self.select_roi)
         self.rail.roi_set_target.connect(self.set_target_roi)
         self.rail.roi_del.connect(self.delete_roi)
+        self.rail.roi_hovered.connect(self.image_view.set_hover)
         self.rail.metrics_changed.connect(self.set_metrics)
         self.rail.show_metric_changed.connect(self.on_show_metric)
+        self.rail.heatmap_changed.connect(self.on_heatmap)
+        self.rail.outliers_changed.connect(self.on_flag_outliers)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -190,6 +208,9 @@ class MainWindow(QMainWindow):
         self.image_view.roi_delete_requested.connect(self.delete_roi)
         self.image_view.rois_selected.connect(self.on_marquee_selected)
         self.image_view.rois_delete_requested.connect(self.delete_rois)
+        self.image_view.roi_hovered.connect(self.rail.set_hovered_roi)
+        self.image_view.roi_duplicate_requested.connect(self.duplicate_roi)
+        self.image_view.group_index_requested.connect(self.select_group_by_index)
         self.image_view.cursor_info.connect(self.cursor_lbl.setText)
         self.image_view.zoom_changed.connect(
             lambda s: self.zoom_lbl.setText(f"{int(round(s * 100))}%"))
@@ -213,14 +234,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Load failed", str(exc))
             return
         self.set_image(img, os.path.basename(path))
+        self._image_path = path
 
     def set_image(self, img: np.ndarray, name: str = "image") -> None:
         self._image = img
+        self._image_path = None
         self._groups = []
         self._rois = []
         self._active_gid = None
         self._active_rid = None
         self._selected_rids = set()
+        self._outlier_rids = set()
         self._within_gid = None
         self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
         self.image_view.set_image(img)
@@ -339,6 +363,27 @@ class MainWindow(QMainWindow):
                 f"{len(self._selected_rids)} ROIs selected · Delete to remove.",
                 4000)
 
+    def duplicate_roi(self, rid: int) -> None:
+        src = self._roi(rid)
+        if src is None:
+            return
+        x, y, w, h = src.rect
+        nx, ny = x + 8, y + 8
+        if self._image is not None:
+            ih, iw = self._image.shape[:2]
+            nx, ny = max(0, min(nx, iw - w)), max(0, min(ny, ih - h))
+        roi = ROI(rid=self._next_rid, gid=src.gid, rect=(nx, ny, w, h), label="")
+        self._next_rid += 1
+        self._rois.append(roi)
+        self._active_gid = src.gid
+        self._active_rid = roi.rid
+        self._selected_rids = set()
+        self._refresh()
+
+    def select_group_by_index(self, i: int) -> None:
+        if 0 <= i < len(self._groups):
+            self.select_group(self._groups[i].gid)
+
     def delete_roi(self, rid: int) -> None:
         self._rois = [r for r in self._rois if r.rid != rid]
         if self._active_rid == rid:
@@ -377,7 +422,39 @@ class MainWindow(QMainWindow):
 
     def on_show_metric(self, mid: str) -> None:
         self._show_metric = mid or ""
-        self._update_roi_values()
+        self._refresh()
+
+    def on_heatmap(self, on: bool) -> None:
+        self._heatmap = bool(on)
+        if on and not self._is_glv_show():
+            self.statusBar().showMessage(
+                "Pick a GLV metric in “show on ROIs” to colour the heatmap.", 4000)
+        self._refresh()
+
+    def on_flag_outliers(self, on: bool) -> None:
+        self._flag_outliers = bool(on)
+        if on and not self._is_glv_show():
+            self.statusBar().showMessage(
+                "Pick a GLV metric in “show on ROIs” to flag outliers.", 4000)
+        self._refresh()
+
+    def _is_glv_show(self) -> bool:
+        return bool(self._show_metric) and self._show_metric != SNR_ID
+
+    def _update_heatmap(self) -> None:
+        if self._heatmap and self._image is not None and self._is_glv_show():
+            vals = {r.rid: roi_metric(self._image, r, self._show_metric)
+                    for r in self._rois}
+            finite = [v for v in vals.values() if np.isfinite(v)]
+            if finite:
+                vmin, vmax = min(finite), max(finite)
+                span = (vmax - vmin) or 1.0
+                colors = {rid: heat_color((v - vmin) / span)
+                          for rid, v in vals.items() if np.isfinite(v)}
+                self.image_view.set_heatmap(
+                    colors, (vmin, vmax, metric_label(self._show_metric)))
+                return
+        self.image_view.set_heatmap({}, None)
 
     def _update_roi_values(self) -> None:
         if not self._show_metric or self._image is None:
@@ -424,15 +501,22 @@ class MainWindow(QMainWindow):
         has_img = self._image is not None
         self.rail.set_ready(has_img)
         self.analysis_btn_top.setEnabled(has_img)
+        self._save_action.setEnabled(has_img)
+        self._outlier_rids = (
+            group_outliers(self._image, self._rois, self._show_metric)
+            if (self._flag_outliers and has_img and self._is_glv_show())
+            else set())
         counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
         self.rail.set_groups(self._groups, self._active_gid, counts)
         self.rail.set_rois(group_rois(self._rois, self._active_gid),
                            self._active_rid, self._target_of_active(),
-                           self._selected_rids)
+                           self._selected_rids, self._outlier_rids)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
         self.image_view.set_selection(self._selected_rids)
+        self.image_view.set_outliers(self._outlier_rids)
         self._update_roi_values()
+        self._update_heatmap()
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
         self._render_analysis()
@@ -482,6 +566,88 @@ class MainWindow(QMainWindow):
             if r.rid == rid:
                 return r
         return None
+
+    # ------------------------------------------------------------------ #
+    # project save / open (JSON)
+    # ------------------------------------------------------------------ #
+    def on_open_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open project", "", "PEAR project (*.pear.json *.json)")
+        if path:
+            self.open_project(path)
+
+    def on_save_project(self) -> None:
+        if self._image is None:
+            QMessageBox.information(self, "Save project", "Load an image first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save project", "project.pear.json",
+            "PEAR project (*.pear.json *.json)")
+        if path:
+            self.save_project(path)
+            self.statusBar().showMessage(
+                f"Saved project → {os.path.basename(path)}", 3000)
+
+    def _project_dict(self) -> dict:
+        shape = list(self._image.shape[:2]) if self._image is not None else None
+        return {
+            "app": "PEAR", "version": 1,
+            "image_path": self._image_path,
+            "image_shape": shape,
+            "groups": groups_to_json(self._groups),
+            "rois": rois_to_json(self._rois),
+            "next_rid": self._next_rid,
+            "metrics": list(self._metrics),
+            "show_metric": self._show_metric,
+            "heatmap": self._heatmap,
+            "flag_outliers": self._flag_outliers,
+            "cmp_mode": self._cmp_mode,
+            "within_gid": self._within_gid,
+            "active_gid": self._active_gid,
+        }
+
+    def save_project(self, path: str) -> str:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self._project_dict(), fh, indent=2, ensure_ascii=False)
+        return path
+
+    def open_project(self, path: str) -> Optional[str]:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        ipath = data.get("image_path")
+        if ipath and os.path.exists(ipath):
+            try:
+                self.set_image(load_image(ipath), os.path.basename(ipath))
+                self._image_path = ipath
+            except Exception:  # noqa: BLE001
+                pass
+        if self._image is None:
+            QMessageBox.warning(
+                self, "Open project",
+                "The project's image was not found. Load the image first, "
+                "then open the project again.")
+            return None
+        self._restore_project(data)
+        return path
+
+    def _restore_project(self, data: dict) -> None:
+        self._groups = groups_from_json(data.get("groups"))
+        self._rois = rois_from_json(data.get("rois"))
+        self._next_rid = int(data.get("next_rid")
+                             or (max((r.rid for r in self._rois), default=0) + 1))
+        self._metrics = list(data.get("metrics") or ["glv_mean", "glv_median"])
+        self._show_metric = data.get("show_metric") or ""
+        self._heatmap = bool(data.get("heatmap", False))
+        self._flag_outliers = bool(data.get("flag_outliers", False))
+        self._cmp_mode = data.get("cmp_mode", "between")
+        self._within_gid = data.get("within_gid")
+        self._active_gid = (data.get("active_gid")
+                            or (self._groups[0].gid if self._groups else None))
+        self._active_rid = None
+        self._selected_rids = set()
+        self.rail.set_metric_state(self._metrics, self._show_metric,
+                                   self._heatmap, self._flag_outliers)
+        self._refresh()
 
     # ------------------------------------------------------------------ #
     # export

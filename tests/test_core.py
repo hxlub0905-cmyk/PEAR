@@ -11,8 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
 from pear.core.analysis import (ROI, Group, compute_analysis, grid_between,
-                                group_rois, group_snr, group_values, roi_metric,
-                                roi_patch, snapshot, summarize)
+                                group_outliers, group_rois, group_snr,
+                                group_values, groups_from_json, groups_to_json,
+                                heat_color, roi_metric, roi_patch, rois_from_json,
+                                rois_to_json, snapshot, summarize)
 from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
 
 
@@ -99,6 +101,37 @@ def test_compute_analysis_empty_paths():
     assert compute_analysis(img, groups, only_one, ["glv_mean"], "between", None).empty
     assert compute_analysis(None, groups, rois, ["glv_mean"], "between", None).empty
     assert compute_analysis(img, groups, rois, [], "between", None).empty
+
+
+def test_group_outliers_flags_within_group():
+    img = make_field()
+    # four ROIs on bright features + one on dark background (the outlier)
+    rois = [ROI(1, "g", (22, 18, 20, 16)),
+            ROI(2, "g", (CELL_W + 22, 18, 20, 16)),
+            ROI(3, "g", (2 * CELL_W + 22, 18, 20, 16)),
+            ROI(4, "g", (22, CELL_H + 18, 20, 16)),
+            ROI(5, "g", (3, 3, 10, 8))]           # dark → outlier in glv_mean
+    out = group_outliers(img, rois, "glv_mean")
+    assert 5 in out and 1 not in out
+    # a group too small for a stable IQR is skipped
+    assert group_outliers(img, rois[:3], "glv_mean") == set()
+
+
+def test_heat_color_ramp_and_clamp():
+    assert heat_color(0.0) == "#2563EB"       # cool end
+    assert heat_color(0.5) == "#F59E0B"       # amber middle
+    assert heat_color(1.0) == "#DC2626"       # warm end
+    assert heat_color(-5) == "#2563EB" and heat_color(9) == "#DC2626"  # clamped
+
+
+def test_project_model_roundtrip():
+    groups, rois = _bright_dark(make_field())
+    g2 = groups_from_json(groups_to_json(groups))
+    r2 = rois_from_json(rois_to_json(rois))
+    assert [ (g.gid, g.name, g.color, g.target_rid) for g in g2 ] == \
+           [ (g.gid, g.name, g.color, g.target_rid) for g in groups ]
+    assert r2[0].rect == rois[0].rect and r2[0].rid == rois[0].rid
+    assert isinstance(r2[0].rect, tuple)
 
 
 def test_snapshot_isolates_from_mutation():

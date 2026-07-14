@@ -12,9 +12,10 @@ from typing import Callable, List, Optional
 import numpy as np
 from PySide6.QtCore import Qt, QRectF, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
+                               QWidget)
 
 from pear.core.analysis import Group
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
@@ -79,11 +80,14 @@ class DistributionChart(QWidget):
         self._title = ""
         self._series: List[dict] = []
         self._ctype = "box"
+        self._opts = {"points": True, "whiskers": True}
         self.setMinimumHeight(212)
 
-    def set_data(self, title: str, series: List[dict], ctype: str = "box") -> None:
+    def set_data(self, title: str, series: List[dict], ctype: str = "box",
+                 opts=None) -> None:
         self._title = title
         self._ctype = ctype
+        self._opts = {"points": True, "whiskers": True, **(opts or {})}
         clean = []
         for s in series:
             v = np.asarray(s["values"], dtype=np.float64)
@@ -122,11 +126,21 @@ class DistributionChart(QWidget):
         pad = (hi - lo) * 0.08
         return lo - pad, hi + pad
 
+    def _ytitle(self, p: QPainter, text: str) -> None:
+        p.save()
+        p.setFont(theme.mono_font(8))
+        p.setPen(QColor(theme.INK3))
+        tw = p.fontMetrics().horizontalAdvance(text)
+        p.translate(11, self.height() / 2.0)
+        p.rotate(-90)
+        p.drawText(int(-tw / 2), 0, text)
+        p.restore()
+
     # -- vertical box + jittered strip -------------------------------- #
     def _paint_box(self, p: QPainter) -> None:
         lo, hi = self._range()
-        top, left = 34, 46
-        bottom = self.height() - 30
+        top, left = 34, 54
+        bottom = self.height() - 42
         right = self.width() - 12
         H = max(10, bottom - top)
         W = max(10, right - left)
@@ -141,7 +155,9 @@ class DistributionChart(QWidget):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
             p.setPen(QColor(theme.INK3))
-            p.drawText(4, int(gy) + 3, _fmt(hi - (hi - lo) * t / 4.0))
+            p.drawText(QRectF(16, gy - 6, left - 20, 12),
+                       Qt.AlignRight | Qt.AlignVCenter, _fmt(hi - (hi - lo) * t / 4.0))
+        self._ytitle(p, "value")
 
         lane = W / n
         for i, s in enumerate(self._series):
@@ -152,12 +168,12 @@ class DistributionChart(QWidget):
             q25, med, q75 = (float(np.percentile(v, 25)),
                              float(np.median(v)), float(np.percentile(v, 75)))
             vmin, vmax = float(v.min()), float(v.max())
-            # whisker (min–max) with caps
-            p.setPen(QPen(col, 1))
-            p.drawLine(int(cx), int(Y(vmax)), int(cx), int(Y(vmin)))
-            for yy in (vmin, vmax):
-                p.drawLine(int(cx - bw * 0.22), int(Y(yy)),
-                           int(cx + bw * 0.22), int(Y(yy)))
+            if self._opts.get("whiskers", True):
+                p.setPen(QPen(col, 1))
+                p.drawLine(int(cx), int(Y(vmax)), int(cx), int(Y(vmin)))
+                for yy in (vmin, vmax):
+                    p.drawLine(int(cx - bw * 0.22), int(Y(yy)),
+                               int(cx + bw * 0.22), int(Y(yy)))
             # IQR box
             box = QColor(col)
             box.setAlpha(48)
@@ -165,14 +181,14 @@ class DistributionChart(QWidget):
             p.setPen(QPen(col, 1))
             p.drawRect(int(cx - bw / 2), int(Y(q75)),
                        int(bw), max(2, int(Y(q25) - Y(q75))))
-            # jittered strip
-            dot = QColor(col)
-            dot.setAlpha(190)
-            p.setPen(Qt.NoPen)
-            p.setBrush(dot)
-            for k, val in enumerate(v):
-                jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
-                p.drawEllipse(int(cx + jitter) - 3, int(Y(val)) - 3, 6, 6)
+            if self._opts.get("points", True):
+                dot = QColor(col)
+                dot.setAlpha(190)
+                p.setPen(Qt.NoPen)
+                p.setBrush(dot)
+                for k, val in enumerate(v):
+                    jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
+                    p.drawEllipse(int(cx + jitter) - 3, int(Y(val)) - 3, 6, 6)
             # median
             p.setPen(QPen(col, 2.4))
             p.drawLine(int(cx - bw / 2), int(Y(med)), int(cx + bw / 2), int(Y(med)))
@@ -198,8 +214,8 @@ class DistributionChart(QWidget):
         edges = np.linspace(lo, hi, nbins + 1)
         counts = [np.histogram(s["values"], bins=edges)[0] for s in self._series]
         max_c = max(1, max(int(c.max()) for c in counts))
-        top, left = 36, 40
-        bottom = self.height() - 28
+        top, left = 36, 48
+        bottom = self.height() - 40
         right = self.width() - 12
         H = max(10, bottom - top)
         W = max(10, right - left)
@@ -214,12 +230,18 @@ class DistributionChart(QWidget):
         p.drawLine(left, bottom, right, bottom)
         p.setFont(theme.mono_font(8))
         p.setPen(QColor(theme.INK3))
-        for t in range(5):
+        for t in range(5):                      # value axis (X)
             gx = left + W * t / 4.0
-            p.drawText(int(gx) - 14, bottom + 14, _fmt(lo + (hi - lo) * t / 4.0))
-        for t in range(3):                      # count-axis ticks (left)
+            p.drawText(QRectF(gx - 24, bottom + 2, 48, 12),
+                       Qt.AlignHCenter, _fmt(lo + (hi - lo) * t / 4.0))
+        for t in range(3):                      # count axis (Y)
             gy = bottom - H * t / 2.0
-            p.drawText(4, int(gy) + 3, str(int(round(max_c * t / 2.0))))
+            p.drawText(QRectF(16, gy - 6, left - 20, 12),
+                       Qt.AlignRight | Qt.AlignVCenter, str(int(round(max_c * t / 2.0))))
+        self._ytitle(p, "count")
+        p.setPen(QColor(theme.INK3))
+        p.setFont(theme.mono_font(8))
+        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter, "value")
 
         for s, c in zip(self._series, counts):  # overlaid bars
             col = QColor(s["color"])
@@ -272,6 +294,8 @@ class _Chip(QPushButton):
 class MetricPicker(QWidget):
     changed = Signal(list)
     show_changed = Signal(str)          # metric id to draw on ROIs ("" = none)
+    heatmap_changed = Signal(bool)      # colour ROIs by the shown metric
+    outliers_changed = Signal(bool)     # flag Tukey outliers of the shown metric
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -314,10 +338,38 @@ class MetricPicker(QWidget):
         show.addWidget(show_lbl)
         show.addWidget(self.show_combo, 1)
         root.addLayout(show)
+        # value-driven overlays for the shown metric (GLV only)
+        ov = QHBoxLayout()
+        ov.setSpacing(12)
+        self.heatmap_chk = QCheckBox("heatmap")
+        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
+        self.heatmap_chk.toggled.connect(self.heatmap_changed)
+        self.outliers_chk = QCheckBox("flag outliers")
+        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
+                                     "within their group.")
+        self.outliers_chk.toggled.connect(self.outliers_changed)
+        ov.addWidget(self.heatmap_chk)
+        ov.addWidget(self.outliers_chk)
+        ov.addStretch(1)
+        root.addLayout(ov)
         self._rebuild()
 
     def selected(self) -> List[str]:
         return list(self._selected)
+
+    def set_state(self, metrics, show, heatmap, outliers) -> None:
+        """Restore the picker (used when opening a project)."""
+        self._selected = list(metrics or [])
+        self._show = show or ""
+        for m in list(self._selected) + [self._show]:
+            if (m and m.startswith("glv_q") and m not in GLV_STATS
+                    and m not in self._custom):
+                self._custom.append(m)
+        self._rebuild()
+        for chk, val in ((self.heatmap_chk, heatmap), (self.outliers_chk, outliers)):
+            chk.blockSignals(True)
+            chk.setChecked(bool(val))
+            chk.blockSignals(False)
 
     def _add_custom(self) -> None:
         mid = f"glv_q{int(self.qn_spin.value())}"
@@ -379,8 +431,11 @@ class RailPanel(QWidget):
     roi_pick = Signal(int)                  # select an ROI from the list
     roi_set_target = Signal(int)            # tag an ROI as its group's SNR target
     roi_del = Signal(int)
+    roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
     metrics_changed = Signal(list)
     show_metric_changed = Signal(str)
+    heatmap_changed = Signal(bool)
+    outliers_changed = Signal(bool)
     open_analysis = Signal()
 
     def __init__(self, parent=None):
@@ -487,6 +542,8 @@ class RailPanel(QWidget):
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
         self.metrics.show_changed.connect(self.show_metric_changed)
+        self.metrics.heatmap_changed.connect(self.heatmap_changed)
+        self.metrics.outliers_changed.connect(self.outliers_changed)
         met.layout().addWidget(self.metrics)
         root.addWidget(met)
 
@@ -515,16 +572,27 @@ class RailPanel(QWidget):
                 self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 
     def set_rois(self, active_group_rois, active_rid, target_rid=None,
-                 selected_rids=None) -> None:
+                 selected_rids=None, outlier_rids=None) -> None:
         selected = set(selected_rids or [])
+        outliers = set(outlier_rids or [])
         _clear(self.roi_host)
+        self._roi_rows = {}
         for r in active_group_rois:
-            self.roi_host.addWidget(
-                self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
-                              r.rid in selected))
+            row = self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
+                                r.rid in selected, r.rid in outliers)
+            self._roi_rows[r.rid] = row
+            self.roi_host.addWidget(row)
         # size the list to its content, capped so it never buries the buttons
         n = len(active_group_rois)
         self.roi_scroll.setFixedHeight(min(176, n * 30 + 6) if n else 6)
+
+    def set_hovered_roi(self, rid: int) -> None:
+        """Highlight the row for `rid` (canvas → list hover sync)."""
+        for r, row in getattr(self, "_roi_rows", {}).items():
+            row.set_hover(r == rid)
+
+    def set_metric_state(self, metrics, show, heatmap, outliers) -> None:
+        self.metrics.set_state(metrics, show, heatmap, outliers)
 
     def grid_shape(self):
         return int(self.grid_rows.value()), int(self.grid_cols.value())
@@ -542,12 +610,17 @@ class RailPanel(QWidget):
         return row
 
     def _roi_row(self, r, active: bool, is_target: bool,
-                 selected: bool) -> QWidget:
+                 selected: bool, outlier: bool = False) -> QWidget:
         row = _ItemRow(active, compact=True, boxed=False, selected=selected)
-        row.add_name(r.label or f"ROI {r.rid}", None)
+        row.add_name(r.label or f"ROI {r.rid}", None,
+                     color=(theme.WARNING if outlier else None))
+        if outlier:
+            row.add_flag("!", theme.WARNING,
+                         "Outlier of the shown metric within this group")
         row.add_target_toggle(is_target, lambda: self.roi_set_target.emit(r.rid))
         row.add_delete(lambda: self.roi_del.emit(r.rid))
         row.clicked = lambda: self.roi_pick.emit(r.rid)
+        row.on_hover = lambda on, rid=r.rid: self.roi_hovered.emit(rid if on else -1)
         return row
 
     def _clear_active(self) -> None:
@@ -570,23 +643,49 @@ class _ItemRow(QFrame):
                  boxed: bool = True, selected: bool = False):
         super().__init__()
         self.clicked: Optional[Callable] = None
-        hl = active or selected
-        if boxed:
-            self.setStyleSheet(
-                f"background:{theme.AMBER_SOFT if hl else theme.CARD};"
-                f"border:1px solid {theme.AMBER if hl else theme.LINE};"
-                "border-radius:9px;")
-        else:
-            # borderless (ROI rows) — highlight via a soft fill only, no frame
-            self.setStyleSheet(
-                f"background:{theme.AMBER_SOFT if hl else 'transparent'};"
-                "border:none; border-radius:7px;")
+        self.on_hover: Optional[Callable] = None
+        self._boxed = boxed
+        self._hl = active or selected
+        self._apply_style(False)
         self.lay = QHBoxLayout(self)
         self.lay.setContentsMargins(8, 3 if compact else 5, 8, 3 if compact else 5)
         self.lay.setSpacing(8)
 
+    def _apply_style(self, hover: bool) -> None:
+        if self._boxed:
+            bg = theme.AMBER_SOFT if self._hl else theme.CARD
+            border = theme.AMBER if self._hl else theme.LINE
+            self.setStyleSheet(f"background:{bg}; border:1px solid {border};"
+                               "border-radius:9px;")
+        else:                                   # borderless (ROI rows)
+            bg = theme.AMBER_SOFT if self._hl else (theme.LINE2 if hover
+                                                    else "transparent")
+            self.setStyleSheet(f"background:{bg}; border:none; border-radius:7px;")
+
+    def set_hover(self, on: bool) -> None:
+        if not self._hl:
+            self._apply_style(on)
+
+    def enterEvent(self, e):
+        self.set_hover(True)
+        if self.on_hover:
+            self.on_hover(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.set_hover(False)
+        if self.on_hover:
+            self.on_hover(False)
+        super().leaveEvent(e)
+
     def add_swatch(self, color, on_pick):
         self.lay.addWidget(_swatch(color, on_pick))
+
+    def add_flag(self, text, color, tooltip=""):
+        f = QLabel(text)
+        f.setToolTip(tooltip)
+        f.setStyleSheet(f"color:{color}; font-weight:800;")
+        self.lay.addWidget(f)
 
     def add_target_toggle(self, is_target: bool, on_toggle):
         b = QPushButton("T")
@@ -605,10 +704,10 @@ class _ItemRow(QFrame):
         b.clicked.connect(lambda: on_toggle())
         self.lay.addWidget(b)
 
-    def add_name(self, name, on_rename):
+    def add_name(self, name, on_rename, color=None):
         if on_rename is None:
             lbl = QLabel(name)
-            lbl.setStyleSheet("font-weight:600;")
+            lbl.setStyleSheet("font-weight:600;" + (f"color:{color};" if color else ""))
             self.lay.addWidget(lbl)
         else:
             ed = QLineEdit(name)
@@ -679,6 +778,13 @@ class AnalysisPanel(QWidget):
             b.clicked.connect(lambda _=False, tt=t: self._pick_ctype(tt))
             head.addWidget(b)
         self.box_btn.setChecked(True)
+        head.addSpacing(8)
+        self.points_chk = QCheckBox("points")
+        self.whiskers_chk = QCheckBox("whiskers")
+        for chk in (self.points_chk, self.whiskers_chk):
+            chk.setChecked(True)
+            chk.toggled.connect(self._on_chart_opts)
+            head.addWidget(chk)
         self.selector_lbl = QLabel("")
         self.selector_lbl.setObjectName("Hint")
         head.addWidget(self.selector_lbl)
@@ -722,8 +828,14 @@ class AnalysisPanel(QWidget):
         self._chart_type = t
         self.box_btn.setChecked(t == "box")
         self.hist_btn.setChecked(t == "hist")
+        self.points_chk.setEnabled(t == "box")
+        self.whiskers_chk.setEnabled(t == "box")
         if self._last_result is not None:
             self._render_body(self._last_result)   # re-render, no recompute
+
+    def _on_chart_opts(self, _=False) -> None:
+        if self._last_result is not None:
+            self._render_body(self._last_result)
 
     def _selector_changed(self, _i: int) -> None:
         if self._suppress:
@@ -775,9 +887,11 @@ class AnalysisPanel(QWidget):
         grid = QGridLayout(grid_host)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
+        opts = {"points": self.points_chk.isChecked(),
+                "whiskers": self.whiskers_chk.isChecked()}
         for i, (title, series) in enumerate(charts):
             chart = DistributionChart()
-            chart.set_data(title, series, self._chart_type)
+            chart.set_data(title, series, self._chart_type, opts)
             grid.addWidget(chart, i // 2, i % 2)
         self.body_lay.addWidget(grid_host)
 
