@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
                                QScrollArea, QVBoxLayout, QWidget)
 
 from pear.core.analysis import (GROUP_PALETTE, SNR_MARGIN, ROI, Group,
-                                compute_analysis, grid_rois, group_rois,
-                                load_image, roi_metric, snapshot, summarize)
+                                compute_analysis, group_rois, load_image,
+                                roi_metric, snapshot, summarize)
 from pear.core.attributes import metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
@@ -54,13 +54,13 @@ class MainWindow(QMainWindow):
         self.resize(1180, 820)
 
         self._image: Optional[np.ndarray] = None
-        self._nm_per_px: float = 0.0
         self._groups: List[Group] = []
         self._rois: List[ROI] = []
         self._active_gid: Optional[str] = None
         self._active_rid: Optional[int] = None
         self._next_rid = 1
         self._metrics: List[str] = ["glv_mean", "glv_median"]
+        self._show_metric = ""            # single metric drawn live on ROIs
         self._cmp_mode = "between"
         self._within_gid: Optional[str] = None
 
@@ -87,21 +87,17 @@ class MainWindow(QMainWindow):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(18, 10, 18, 10)
         lay.setSpacing(8)
-        pe = QLabel("PE")
-        pe.setObjectName("BrandTitle")
-        a = QLabel("A")
-        a.setObjectName("BrandAccent")
-        r = QLabel("R")
-        r.setObjectName("BrandTitle")
+        brand = QLabel('PE<span style="color:%s">A</span>R' % theme.AMBER)
+        brand.setObjectName("BrandTitle")
+        brand.setTextFormat(Qt.RichText)
         sub = QLabel("group & ROI analysis")
         sub.setObjectName("BrandSub")
         self.dataset_lbl = QLabel("no image")
         self.dataset_lbl.setObjectName("DatasetTag")
         self.load_btn = QPushButton("Load…")
         self.load_btn.setObjectName("Primary")
-        for w in (pe, a, r):
-            lay.addWidget(w, 0, Qt.AlignVCenter)
-        lay.addSpacing(6)
+        lay.addWidget(brand, 0, Qt.AlignVCenter)
+        lay.addSpacing(8)
         lay.addWidget(sub)
         lay.addStretch(1)
         lay.addWidget(self.dataset_lbl)
@@ -163,7 +159,6 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load)
-        self.rail.scale_changed.connect(self.on_scale_changed)
         self.rail.group_add.connect(self.add_group)
         self.rail.group_pick.connect(self.select_group)
         self.rail.group_del.connect(self.delete_group)
@@ -175,6 +170,7 @@ class MainWindow(QMainWindow):
         self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.metrics_changed.connect(self.set_metrics)
+        self.rail.show_metric_changed.connect(self.on_show_metric)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -182,6 +178,7 @@ class MainWindow(QMainWindow):
         self.image_view.grid_ready.connect(self.rail.set_grid_ready)
         self.image_view.roi_modified.connect(self.on_roi_modified)
         self.image_view.roi_selected.connect(self.select_roi)
+        self.image_view.roi_delete_requested.connect(self.delete_roi)
         self.image_view.cursor_info.connect(self.cursor_lbl.setText)
         self.image_view.zoom_changed.connect(
             lambda s: self.zoom_lbl.setText(f"{int(round(s * 100))}%"))
@@ -217,9 +214,6 @@ class MainWindow(QMainWindow):
         self.image_view.set_image(img)
         self.add_group()          # start with one group so adding ROIs works
         self._refresh()
-
-    def on_scale_changed(self, nm: float) -> None:
-        self._nm_per_px = float(nm)
 
     # ------------------------------------------------------------------ #
     # groups
@@ -292,14 +286,13 @@ class MainWindow(QMainWindow):
             self.add_group()
         self._add_roi(rect)
 
-    def on_grid_committed(self, bounds) -> None:
+    def on_grid_committed(self, rects) -> None:
         if not self._groups:
             self.add_group()
-        rows, cols = self.rail.grid_shape()
-        for rect in grid_rois(tuple(bounds), rows, cols):
+        for rect in rects:
             self._add_roi(rect, refresh=False)
         self.rail.grid_btn.setChecked(False)     # exit grid mode
-        self.statusBar().showMessage(f"Added {rows * cols} ROIs.", 3000)
+        self.statusBar().showMessage(f"Added {len(rects)} ROIs.", 3000)
         self._refresh()
 
     def on_roi_modified(self, rid: int, rect) -> None:
@@ -328,6 +321,20 @@ class MainWindow(QMainWindow):
         self._metrics = list(metrics)
         self._render_analysis()
 
+    def on_show_metric(self, mid: str) -> None:
+        self._show_metric = mid or ""
+        self._update_roi_values()
+
+    def _update_roi_values(self) -> None:
+        if not self._show_metric or self._image is None:
+            self.image_view.set_roi_values({})
+            return
+        vals = {}
+        for r in self._rois:
+            v = roi_metric(self._image, r, self._show_metric, SNR_MARGIN)
+            vals[r.rid] = f"{v:.3g}"
+        self.image_view.set_roi_values(vals)
+
     def on_cmp_mode(self, mode: str) -> None:
         self._cmp_mode = mode
         self._render_analysis()
@@ -353,6 +360,7 @@ class MainWindow(QMainWindow):
         self.rail.set_rois(group_rois(self._rois, self._active_gid), self._active_rid)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
+        self._update_roi_values()
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
         self._render_analysis()
@@ -418,16 +426,12 @@ class MainWindow(QMainWindow):
         return path
 
     def _write_csv(self, path: str) -> None:
-        nm = self._nm_per_px
         with open(path, "w", newline="", encoding="utf-8-sig") as fh:
             w = csv.writer(fh)
             w.writerow(["PEAR group & ROI analysis"])
-            w.writerow(["pixel_size_nm_per_px", f"{nm:.6g}" if nm > 0 else ""])
             w.writerow([])
             header = ["group", "roi", "x", "y", "w", "h"] + \
                      [metric_label(m) for m in self._metrics]
-            if nm > 0:
-                header += ["area_nm2"]
             w.writerow(header)
             for g in self._groups:
                 for roi in group_rois(self._rois, g.gid):
@@ -435,8 +439,6 @@ class MainWindow(QMainWindow):
                     row = [g.name, roi.label, x, y, wid, hei]
                     for mid in self._metrics:
                         row.append(f"{roi_metric(self._image, roi, mid, SNR_MARGIN):.6g}")
-                    if nm > 0:
-                        row.append(f"{wid * hei * nm * nm:.6g}")
                     w.writerow(row)
             w.writerow([])
             w.writerow(["summary"])

@@ -63,12 +63,11 @@ def test_add_rois_to_groups(app):
 
 def test_grid_multi_add(app):
     from pear.ui.main_window import MainWindow
-    from pear.core.analysis import group_rois
+    from pear.core.analysis import grid_between, group_rois
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.rail.grid_rows.setValue(2)
-    win.rail.grid_cols.setValue(3)
-    win.on_grid_committed((20, 20, 200, 150))     # two-anchor bounds -> 2×3 grid
+    rects = grid_between((30, 30), (200, 160), 2, 3, 28, 28)   # 2×3 grid
+    win.on_grid_committed(rects)
     assert len(group_rois(win._rois, win._active_gid)) == 6
 
 
@@ -147,16 +146,29 @@ def test_group_gids_unique_after_delete(app):
     assert len(gids) == len(set(gids)) and set(gids) == {"A", "B", "C"}
 
 
-def test_nm_per_px_in_csv(app, tmp_path):
+def test_delete_individual_roi(app):
+    from pear.ui.main_window import MainWindow
+    from pear.core.analysis import group_rois
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((20, 20, 20, 20))
+    win.on_roi_created((60, 60, 20, 20))
+    gid = win._active_gid
+    assert len(group_rois(win._rois, gid)) == 2
+    rid = win._rois[0].rid
+    win.delete_roi(rid)
+    assert len(group_rois(win._rois, gid)) == 1 and win._roi(rid) is None
+
+
+def test_show_metric_on_rois(app):
     from pear.ui.main_window import MainWindow
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    _two_groups(win)
-    win.on_scale_changed(1.5)
-    out = tmp_path / "scaled.csv"
-    win.export_csv(str(out))
-    text = out.read_text(encoding="utf-8-sig")
-    assert "pixel_size_nm_per_px" in text and "1.5" in text and "area_nm2" in text
+    win.on_roi_created((22, 18, 20, 16))
+    win.on_show_metric("glv_mean")
+    assert win.image_view._roi_values           # one value per ROI
+    win.on_show_metric("")
+    assert win.image_view._roi_values == {}
 
 
 def test_color_and_rename(app):

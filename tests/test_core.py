@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
-from pear.core.analysis import (ROI, Group, compute_analysis, grid_rois,
+from pear.core.analysis import (ROI, Group, compute_analysis, grid_between,
                                 group_rois, group_values, roi_metric,
                                 roi_patch, roi_snr, snapshot, summarize)
 from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
@@ -54,11 +54,15 @@ def test_group_values_distributions_separate():
     assert b["mean"] - d["mean"] > 50 and b["n"] == 4 and d["n"] == 4
 
 
-def test_grid_rois():
-    g = grid_rois((10, 10, 120, 90), 2, 3)
+def test_grid_between_interpolates_anchor_centers():
+    g = grid_between((20, 20), (200, 140), 2, 3, 28, 28)
     assert len(g) == 6
-    for (x, y, w, h) in g:
-        assert w >= 2 and h >= 2 and 10 <= x <= 130
+    x0, y0, w0, h0 = g[0]
+    xl, yl, wl, hl = g[-1]
+    assert w0 == 28 and h0 == 28
+    # first ROI centred on the top-left anchor, last on the bottom-right anchor
+    assert abs((x0 + 14) - 20) <= 1 and abs((y0 + 14) - 20) <= 1
+    assert abs((xl + 14) - 200) <= 1 and abs((yl + 14) - 140) <= 1
 
 
 def test_compute_analysis_between_and_within():

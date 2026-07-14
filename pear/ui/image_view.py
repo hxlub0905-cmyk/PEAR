@@ -18,7 +18,7 @@ from PySide6.QtGui import (QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPe
                            QPixmap, QWheelEvent)
 from PySide6.QtWidgets import QWidget
 
-from pear.core.analysis import ROI, Group, grid_rois
+from pear.core.analysis import ROI, Group, grid_between
 from pear.ui import theme
 
 Rect = Tuple[int, int, int, int]
@@ -29,10 +29,11 @@ _DEFAULT = 28          # default single-ROI size (px) for a plain click
 
 class ImageView(QWidget):
     roi_created = Signal(object)            # rect (single ROI into active group)
-    grid_committed = Signal(object)         # bounds rect (for a row×col grid)
+    grid_committed = Signal(object)         # list[rect] (a row×col grid)
     grid_ready = Signal(bool)               # both grid anchors placed
     roi_modified = Signal(int, object)      # rid, rect
     roi_selected = Signal(int)              # rid
+    roi_delete_requested = Signal(int)      # rid (Delete key on selected ROI)
     cursor_info = Signal(str)
     zoom_changed = Signal(float)
 
@@ -54,10 +55,11 @@ class ImageView(QWidget):
 
         self._grid_mode = False
         self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
-        self._grid_tl: Optional[QPointF] = None
-        self._grid_br: Optional[QPointF] = None
+        self._grid_tl: Optional[QPointF] = None   # centre of top-left ROI
+        self._grid_br: Optional[QPointF] = None   # centre of bottom-right ROI
         self._grid_rows, self._grid_cols = 3, 3
         self._cursor_img = QPointF()
+        self._roi_values: dict = {}        # rid -> short text drawn on the ROI
 
         self._interact: Optional[str] = None   # draw|move|resize|pan
         self._drag_start = QPointF()
@@ -86,6 +88,11 @@ class ImageView(QWidget):
         self._active_rid = active_rid
         self.update()
 
+    def set_roi_values(self, values: dict) -> None:
+        """Map of rid -> short text drawn centred on each ROI (live metric)."""
+        self._roi_values = values or {}
+        self.update()
+
     def set_grid_mode(self, on: bool) -> None:
         self._grid_mode = bool(on)
         self._reset_grid()
@@ -98,9 +105,9 @@ class ImageView(QWidget):
 
     def commit_grid(self) -> None:
         if self._grid_stage == 2:
-            bounds = self._grid_bounds()
-            if bounds is not None:
-                self.grid_committed.emit(bounds)
+            rects = self._grid_rects()
+            if rects:
+                self.grid_committed.emit(rects)
         self._reset_grid()
         self.update()
 
@@ -205,8 +212,23 @@ class ImageView(QWidget):
             p.setPen(pen)
             p.setBrush(fill)
             p.drawRect(r)
+            val = self._roi_values.get(roi.rid)
+            if val is not None:
+                self._paint_value(p, r, val)
             if selected and not self._grid_mode:
                 self._paint_handles(p, r, color)
+
+    def _paint_value(self, p: QPainter, r: QRectF, text: str) -> None:
+        p.setFont(theme.mono_font(9, weight=700))
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(text)
+        cx, cy = r.center().x(), r.center().y()
+        bg = QRectF(cx - tw / 2 - 3, cy - fm.height() / 2, tw + 6, fm.height())
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(17, 24, 39, 200))
+        p.drawRoundedRect(bg, 3, 3)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(bg, Qt.AlignCenter, text)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
         p.setPen(QPen(QColor("#FFFFFF"), 1.4))
@@ -228,42 +250,37 @@ class ImageView(QWidget):
         p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
                           rn.height() * self._scale))
 
-    def _grid_bounds(self) -> Optional[Rect]:
+    def _grid_rects(self) -> List[Rect]:
         if self._grid_tl is None:
-            return None
+            return []
         br = self._grid_br if self._grid_stage >= 2 else self._cursor_img
-        x0, y0 = self._grid_tl.x(), self._grid_tl.y()
-        x1, y1 = br.x(), br.y()
-        x, y = int(round(min(x0, x1))), int(round(min(y0, y1)))
-        w, h = int(round(abs(x1 - x0))), int(round(abs(y1 - y0)))
-        if w < _MIN_ROI or h < _MIN_ROI:
-            return None
-        return (x, y, w, h)
+        return grid_between((self._grid_tl.x(), self._grid_tl.y()),
+                            (br.x(), br.y()), self._grid_rows, self._grid_cols,
+                            _DEFAULT, _DEFAULT)
 
     def _paint_grid_preview(self, p: QPainter) -> None:
         if not self._grid_mode or self._grid_stage == 0:
             return
-        bounds = self._grid_bounds()
-        if bounds is None:
+        rects = self._grid_rects()
+        if not rects:
             return
         color = self._gcolor(self._active_gid)
-        # bounding box
-        bpen = QPen(QColor(theme.INFO), 1.4)
-        bpen.setCosmetic(True)
-        bpen.setStyle(Qt.DashLine)
-        p.setPen(bpen)
-        p.setBrush(Qt.NoBrush)
-        p.drawRect(self._rect_to_widget(bounds))
-        # preview cells
         prev = QColor(color)
         prev.setAlpha(70)
         pen = QPen(color, 1.4)
         pen.setCosmetic(True)
-        for rect in grid_rois(bounds, self._grid_rows, self._grid_cols):
+        for i, rect in enumerate(rects):
             r = self._rect_to_widget(rect)
             p.setPen(pen)
             p.setBrush(prev)
             p.drawRect(r)
+        # emphasise the two corner anchors
+        apen = QPen(QColor(theme.INFO), 2.2)
+        apen.setCosmetic(True)
+        p.setPen(apen)
+        p.setBrush(Qt.NoBrush)
+        for rect in (rects[0], rects[-1]):
+            p.drawRect(self._rect_to_widget(rect))
 
     def _paint_hud(self, p: QPainter) -> None:
         if self._grid_mode:
@@ -431,6 +448,9 @@ class ImageView(QWidget):
             self.commit_grid()
         elif self._grid_mode and e.key() == Qt.Key_Escape:
             self.cancel_grid()
+        elif (not self._grid_mode and self._active_rid is not None
+              and e.key() in (Qt.Key_Delete, Qt.Key_Backspace)):
+            self.roi_delete_requested.emit(self._active_rid)
         else:
             super().keyPressEvent(e)
 

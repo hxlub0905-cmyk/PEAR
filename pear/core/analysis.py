@@ -149,18 +149,27 @@ def summarize(values: np.ndarray) -> Dict[str, float]:
 # --------------------------------------------------------------------------- #
 # Multi-add helpers
 # --------------------------------------------------------------------------- #
-def grid_rois(bounds: Rect, rows: int, cols: int, inset: float = 0.18) -> List[Rect]:
-    """Tile ``bounds`` into ``rows × cols`` rectangles (each slightly inset)."""
-    x, y, w, h = bounds
+def grid_between(tl_center: Tuple[float, float], br_center: Tuple[float, float],
+                 rows: int, cols: int, w: int, h: int) -> List[Rect]:
+    """Grid of same-size ROIs whose *centers* interpolate between two anchors.
+
+    ``tl_center`` is the centre of the top-left corner ROI (grid[0,0]) and
+    ``br_center`` the centre of the bottom-right one (grid[rows-1,cols-1]);
+    the ``rows × cols`` centres are spaced evenly between them (matching the
+    sibling tool's ``generate_grid``). Every ROI is ``w × h``.
+    """
+    tlx, tly = tl_center
+    brx, bry = br_center
     rows, cols = max(1, int(rows)), max(1, int(cols))
-    cw, ch = w / cols, h / rows
-    ix, iy = cw * inset, ch * inset
+    step_x = (brx - tlx) / (cols - 1) if cols > 1 else 0.0
+    step_y = (bry - tly) / (rows - 1) if rows > 1 else 0.0
     out: List[Rect] = []
-    for r in range(rows):
-        for c in range(cols):
-            out.append((int(round(x + c * cw + ix)), int(round(y + r * ch + iy)),
-                        max(2, int(round(cw * (1 - 2 * inset)))),
-                        max(2, int(round(ch * (1 - 2 * inset))))))
+    for i in range(rows):
+        for j in range(cols):
+            cx = tlx + j * step_x
+            cy = tly + i * step_y
+            out.append((int(round(cx - w / 2)), int(round(cy - h / 2)),
+                        int(w), int(h)))
     return out
 
 

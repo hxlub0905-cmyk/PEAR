@@ -12,10 +12,9 @@ from typing import Callable, List, Optional
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox, QFrame,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QFrame, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
+                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from pear.core.analysis import Group
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
@@ -181,17 +180,20 @@ class _Chip(QPushButton):
         self.mid = mid
         self.setCheckable(True)
         self.setChecked(on)
-        self.setFixedHeight(24)
+        self.setMinimumHeight(32)
+        self.setStyleSheet("padding: 4px 10px;")   # avoid vertical text clipping
         self.setToolTip(f"{metric_label(mid)}\n{metric_formula(mid)}")
 
 
 class MetricPicker(QWidget):
     changed = Signal(list)
+    show_changed = Signal(str)          # metric id to draw on ROIs ("" = none)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected: List[str] = ["glv_mean", "glv_median"]
         self._custom: List[str] = []
+        self._show = ""
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
@@ -208,14 +210,26 @@ class MetricPicker(QWidget):
         self.qn_spin.setRange(1, 99)
         self.qn_spin.setValue(90)
         self.qn_spin.setFixedWidth(60)
+        self.qn_spin.setMinimumHeight(28)
         add = QPushButton("Add")
-        add.setFixedHeight(26)
+        add.setMinimumHeight(28)
         add.clicked.connect(self._add_custom)
         qn.addWidget(lab)
         qn.addWidget(self.qn_spin)
         qn.addWidget(add)
         qn.addStretch(1)
         root.addLayout(qn)
+        # single metric drawn live on each ROI in the image
+        show = QHBoxLayout()
+        show.setSpacing(6)
+        show_lbl = QLabel("show on ROIs")
+        show_lbl.setObjectName("Hint")
+        self.show_combo = QComboBox()
+        self.show_combo.setMinimumHeight(28)
+        self.show_combo.currentIndexChanged.connect(self._on_show)
+        show.addWidget(show_lbl)
+        show.addWidget(self.show_combo, 1)
+        root.addLayout(show)
         self._rebuild()
 
     def selected(self) -> List[str]:
@@ -242,6 +256,15 @@ class MetricPicker(QWidget):
             chip = _Chip(mid, mid in self._selected)
             chip.clicked.connect(lambda _=False, m=mid: self._toggle(m))
             self._chip_lay.addWidget(chip, i // 3, i % 3)
+        # rebuild the "show on ROIs" combo, preserving the selection
+        self.show_combo.blockSignals(True)
+        self.show_combo.clear()
+        self.show_combo.addItem("— none —", "")
+        for mid in self._ids():
+            self.show_combo.addItem(metric_label(mid), mid)
+        idx = self.show_combo.findData(self._show)
+        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.show_combo.blockSignals(False)
 
     def _toggle(self, mid: str) -> None:
         if mid in self._selected:
@@ -250,12 +273,15 @@ class MetricPicker(QWidget):
             self._selected.append(mid)
         self.changed.emit(list(self._selected))
 
+    def _on_show(self, _i: int) -> None:
+        self._show = self.show_combo.currentData() or ""
+        self.show_changed.emit(self._show)
+
 
 # --------------------------------------------------------------------------- #
 # Control rail
 # --------------------------------------------------------------------------- #
 class RailPanel(QWidget):
-    scale_changed = Signal(float)
     group_add = Signal()
     group_pick = Signal(str)
     group_del = Signal(str)
@@ -267,6 +293,7 @@ class RailPanel(QWidget):
     grid_shape_changed = Signal(int, int)
     roi_del = Signal(int)
     metrics_changed = Signal(list)
+    show_metric_changed = Signal(str)
     open_analysis = Signal()
 
     def __init__(self, parent=None):
@@ -340,30 +367,9 @@ class RailPanel(QWidget):
         met = _card("Metrics", "per ROI")
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
+        self.metrics.show_changed.connect(self.show_metric_changed)
         met.layout().addWidget(self.metrics)
         root.addWidget(met)
-
-        # Pixel size (optional)
-        sc = _card("Pixel size", "optional")
-        srow = QHBoxLayout()
-        srow.setSpacing(8)
-        sl = QLabel("nm/px")
-        sl.setObjectName("Hint")
-        self.nm_spin = QDoubleSpinBox()
-        self.nm_spin.setRange(0.0, 100000.0)
-        self.nm_spin.setDecimals(3)
-        self.nm_spin.setSingleStep(0.1)
-        self.nm_spin.setMinimumHeight(30)
-        self.nm_spin.setSpecialValueText("—")
-        self.nm_spin.valueChanged.connect(self.scale_changed)
-        srow.addWidget(sl)
-        srow.addWidget(self.nm_spin, 1)
-        sc.layout().addLayout(srow)
-        sc_hint = QLabel("Adds a physical area column to the CSV export.")
-        sc_hint.setObjectName("Hint")
-        sc_hint.setWordWrap(True)
-        sc.layout().addWidget(sc_hint)
-        root.addWidget(sc)
 
         self.analysis_btn = QPushButton("Open analysis ⤢")
         self.analysis_btn.setObjectName("Primary")
@@ -375,7 +381,7 @@ class RailPanel(QWidget):
 
     # -- render --------------------------------------------------------- #
     def set_ready(self, has_image: bool) -> None:
-        for w in (self.nm_spin, self.grp_add_btn, self.grid_btn,
+        for w in (self.grp_add_btn, self.grid_btn,
                   self.clear_btn, self.analysis_btn):
             w.setEnabled(has_image)
 
@@ -451,7 +457,9 @@ class _ItemRow(QFrame):
         else:
             ed = QLineEdit(name)
             ed.setFrame(False)
-            ed.setStyleSheet("background:transparent; font-weight:600; padding:0;")
+            ed.setStyleSheet("QLineEdit{background:transparent; border:none; "
+                             "font-weight:600; padding:0;} "
+                             "QLineEdit:focus{border:none;}")
             ed.editingFinished.connect(lambda: on_rename(ed.text().strip() or name))
             self.lay.addWidget(ed)
         self.lay.addStretch(1)
