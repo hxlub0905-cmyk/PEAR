@@ -21,11 +21,10 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
 - **Group** — a *category* of features (e.g. "round holes", "square holes").
   Custom colour, rename inline. You create groups first.
 - **ROI** — a measurement rectangle that **belongs to a group**. A group holds
-  many ROIs. Pick a group, then:
-  - **drag** on the image to add one ROI,
-  - **Grid** — drag a box to fill it with a *row × col* grid of ROIs,
-  - **Per cell** — repeat the selected ROI in every lattice cell (needs a
-    detected period).
+  many ROIs. Pick a group, then add ROIs three ways:
+  - **click** the image to drop a default box, or **drag** to size one,
+  - **Grid** — click the top-left then bottom-right corner, set *row × col*
+    (live preview), and place the grid (Add grid / Enter).
 - **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
   Q75, std, min, max, plus any custom **Q*n***) and **SNR** — the e-beam
   definition **(mean_ROI − mean_background) / std_background**, measured against
@@ -45,8 +44,6 @@ ROI's metrics and a per-group summary.
 - Fully **offline** — no network, no telemetry, all computation local.
 - Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
   normalized to 8-bit grayscale on load (CJK-path safe IO).
-- Optional repeating-**period** detection `(px, py)` with a refine pass, drawn
-  as a light lattice grid and used by the *Per cell* multi-add.
 - Analysis runs **off the UI thread** (debounced), so placing many ROIs stays
   responsive.
 - Calm **light instrument theme** with a single amber accent and system-safe fonts.
@@ -107,8 +104,8 @@ their API.
 
 ## Scope (V1)
 
-In scope: single image, optional period detection, ROI groups, additive/editable
-ROIs (drag / grid / per-cell), GLV + SNR metrics, between-group and within-group
-distribution comparison in a separate window, CSV export, optional nm/px.
+In scope: single image, ROI groups, additive/editable ROIs (click / drag /
+grid), GLV + SNR metrics, between-group and within-group distribution comparison
+in a separate window, CSV export, optional nm/px.
 
 Out of scope: defect detection/decision, classification, ML; batch processing.

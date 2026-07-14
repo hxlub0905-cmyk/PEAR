@@ -1,8 +1,11 @@
 """Image stage: zoom/pan and place / move / resize ROIs.
 
-A hand-painted canvas. ROIs belong to groups and are drawn in their group's
-colour. Dragging on empty space draws a new ROI into the active group; in
-"grid" mode a drag defines the bounding box for a row×col grid of ROIs.
+ROIs belong to groups and are drawn in their group's colour.
+
+Adding ROIs (à la the sibling Perspective-Combination tool):
+  * **single** — click to drop a default box (or drag to size it).
+  * **grid**   — click the top-left, then the bottom-right anchor; a live
+                 row×col preview follows; press Enter / Add grid to commit.
 """
 
 from __future__ import annotations
@@ -11,21 +14,23 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import (QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap,
-                           QWheelEvent)
+from PySide6.QtGui import (QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPen,
+                           QPixmap, QWheelEvent)
 from PySide6.QtWidgets import QWidget
 
-from pear.core.analysis import ROI, Group, PeriodInfo
+from pear.core.analysis import ROI, Group, grid_rois
 from pear.ui import theme
 
 Rect = Tuple[int, int, int, int]
 _HANDLE = 8
 _MIN_ROI = 4
+_DEFAULT = 28          # default single-ROI size (px) for a plain click
 
 
 class ImageView(QWidget):
-    roi_created = Signal(object)            # rect  (single ROI into active group)
-    roi_grid_created = Signal(object)       # rect  (bounding box for a grid)
+    roi_created = Signal(object)            # rect (single ROI into active group)
+    grid_committed = Signal(object)         # bounds rect (for a row×col grid)
+    grid_ready = Signal(bool)               # both grid anchors placed
     roi_modified = Signal(int, object)      # rid, rect
     roi_selected = Signal(int)              # rid
     cursor_info = Signal(str)
@@ -42,12 +47,17 @@ class ImageView(QWidget):
         self._scale = 1.0
         self._offset = QPointF(0, 0)
 
-        self._period: Optional[PeriodInfo] = None
         self._groups: List[Group] = []
         self._active_gid: Optional[str] = None
         self._rois: List[ROI] = []
         self._active_rid: Optional[int] = None
+
         self._grid_mode = False
+        self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
+        self._grid_tl: Optional[QPointF] = None
+        self._grid_br: Optional[QPointF] = None
+        self._grid_rows, self._grid_cols = 3, 3
+        self._cursor_img = QPointF()
 
         self._interact: Optional[str] = None   # draw|move|resize|pan
         self._drag_start = QPointF()
@@ -64,12 +74,7 @@ class ImageView(QWidget):
         h, w = image.shape[:2]
         qimg = QImage(self._image.data, w, h, w, QImage.Format_Grayscale8)
         self._pixmap = QPixmap.fromImage(qimg.copy())
-        self._period = None
         self.fit()
-
-    def set_period(self, period: Optional[PeriodInfo]) -> None:
-        self._period = period
-        self.update()
 
     def set_groups(self, groups, active_gid) -> None:
         self._groups = groups
@@ -83,6 +88,24 @@ class ImageView(QWidget):
 
     def set_grid_mode(self, on: bool) -> None:
         self._grid_mode = bool(on)
+        self._reset_grid()
+        self.setFocus()
+        self.update()
+
+    def set_grid_shape(self, rows: int, cols: int) -> None:
+        self._grid_rows, self._grid_cols = max(1, rows), max(1, cols)
+        self.update()
+
+    def commit_grid(self) -> None:
+        if self._grid_stage == 2:
+            bounds = self._grid_bounds()
+            if bounds is not None:
+                self.grid_committed.emit(bounds)
+        self._reset_grid()
+        self.update()
+
+    def cancel_grid(self) -> None:
+        self._reset_grid()
         self.update()
 
     def has_image(self) -> bool:
@@ -161,30 +184,11 @@ class ImageView(QWidget):
                         self._pixmap.width() * self._scale,
                         self._pixmap.height() * self._scale)
         p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
-        self._paint_grid(p)
         self._paint_rois(p)
         self._paint_rubberband(p)
+        self._paint_grid_preview(p)
+        self._paint_hud(p)
         p.end()
-
-    def _paint_grid(self, p: QPainter) -> None:
-        if self._period is None or self._image is None:
-            return
-        px, py = self._period.px, self._period.py
-        if px < 1 or py < 1:
-            return
-        h, w = self._image.shape[:2]
-        ox, oy = self._period.origin
-        pen = QPen(QColor(*theme.GRID_RGBA), 1)
-        pen.setCosmetic(True)
-        p.setPen(pen)
-        x = ox
-        while x <= w:
-            p.drawLine(self._to_widget(x, 0), self._to_widget(x, h))
-            x += px
-        y = oy
-        while y <= h:
-            p.drawLine(self._to_widget(0, y), self._to_widget(w, y))
-            y += py
 
     def _paint_rois(self, p: QPainter) -> None:
         for roi in self._rois:
@@ -201,7 +205,7 @@ class ImageView(QWidget):
             p.setPen(pen)
             p.setBrush(fill)
             p.drawRect(r)
-            if selected:
+            if selected and not self._grid_mode:
                 self._paint_handles(p, r, color)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
@@ -214,8 +218,7 @@ class ImageView(QWidget):
     def _paint_rubberband(self, p: QPainter) -> None:
         if self._draw_rect is None:
             return
-        col = QColor(theme.INFO) if self._grid_mode else QColor(theme.AMBER)
-        pen = QPen(col, 2)
+        pen = QPen(QColor(theme.AMBER), 2)
         pen.setCosmetic(True)
         pen.setStyle(Qt.DashLine)
         p.setPen(pen)
@@ -224,6 +227,73 @@ class ImageView(QWidget):
         tl = self._to_widget(rn.left(), rn.top())
         p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
                           rn.height() * self._scale))
+
+    def _grid_bounds(self) -> Optional[Rect]:
+        if self._grid_tl is None:
+            return None
+        br = self._grid_br if self._grid_stage >= 2 else self._cursor_img
+        x0, y0 = self._grid_tl.x(), self._grid_tl.y()
+        x1, y1 = br.x(), br.y()
+        x, y = int(round(min(x0, x1))), int(round(min(y0, y1)))
+        w, h = int(round(abs(x1 - x0))), int(round(abs(y1 - y0)))
+        if w < _MIN_ROI or h < _MIN_ROI:
+            return None
+        return (x, y, w, h)
+
+    def _paint_grid_preview(self, p: QPainter) -> None:
+        if not self._grid_mode or self._grid_stage == 0:
+            return
+        bounds = self._grid_bounds()
+        if bounds is None:
+            return
+        color = self._gcolor(self._active_gid)
+        # bounding box
+        bpen = QPen(QColor(theme.INFO), 1.4)
+        bpen.setCosmetic(True)
+        bpen.setStyle(Qt.DashLine)
+        p.setPen(bpen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(self._rect_to_widget(bounds))
+        # preview cells
+        prev = QColor(color)
+        prev.setAlpha(70)
+        pen = QPen(color, 1.4)
+        pen.setCosmetic(True)
+        for rect in grid_rois(bounds, self._grid_rows, self._grid_cols):
+            r = self._rect_to_widget(rect)
+            p.setPen(pen)
+            p.setBrush(prev)
+            p.drawRect(r)
+
+    def _paint_hud(self, p: QPainter) -> None:
+        if self._grid_mode:
+            if self._grid_stage == 0:
+                msg = "▦ GRID — click the top-left corner"
+            elif self._grid_stage == 1:
+                msg = "▦ GRID — click the bottom-right corner"
+            else:
+                msg = (f"▦ GRID {self._grid_rows}×{self._grid_cols} — "
+                       "Enter / Add grid to place · Esc to cancel")
+            self._banner(p, msg, QColor(theme.INFO))
+            return
+        if not self._rois:
+            name = next((g.name for g in self._groups
+                         if g.gid == self._active_gid), None)
+            if name:
+                self._banner(p, f"Click on the image to add an ROI to “{name}”"
+                             " (or drag to size it)", QColor(theme.AMBER))
+
+    def _banner(self, p: QPainter, text: str, accent: QColor) -> None:
+        p.setFont(theme.display_font(10, weight=700))
+        fm = p.fontMetrics()
+        w = fm.horizontalAdvance(text) + 24
+        h = fm.height() + 10
+        x = (self.width() - w) / 2
+        p.setPen(QPen(accent, 1.5))
+        p.setBrush(QColor(17, 24, 39, 210))
+        p.drawRoundedRect(QRectF(x, 12, w, h), 8, 8)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(QRectF(x, 12, w, h), Qt.AlignCenter, text)
 
     # ------------------------------------------------------------------ #
     # hit testing
@@ -260,7 +330,7 @@ class ImageView(QWidget):
         return None
 
     # ------------------------------------------------------------------ #
-    # mouse / wheel
+    # mouse / key / wheel
     # ------------------------------------------------------------------ #
     def mousePressEvent(self, e: QMouseEvent) -> None:
         pos = QPointF(e.position())
@@ -272,32 +342,50 @@ class ImageView(QWidget):
             return
         if e.button() != Qt.LeftButton or self._image is None:
             return
-        if not self._grid_mode:
-            handle = self._handle_at(pos)
-            if handle is not None:
-                self._interact = "resize"
-                self._resize_handle = handle
-                self._roi_at_press = self._active_roi().rect
-                self._drag_start = pos
+        if self._grid_mode:
+            ip = self._to_image(pos)
+            if self._grid_stage == 0:
+                self._grid_tl = ip
+                self._grid_stage = 1
+            elif self._grid_stage == 1:
+                self._grid_br = ip
+                self._grid_stage = 2
+                self.grid_ready.emit(True)
+            else:
+                self.commit_grid()
+            self.update()
+            return
+        handle = self._handle_at(pos)
+        if handle is not None:
+            self._interact = "resize"
+            self._resize_handle = handle
+            self._roi_at_press = self._active_roi().rect
+            self._drag_start = pos
+            return
+        body = self._roi_body_at(pos)
+        if body is not None:
+            if body != self._active_rid:
+                self._active_rid = body
+                self.roi_selected.emit(body)
+                self.update()
                 return
-            body = self._roi_body_at(pos)
-            if body is not None:
-                if body != self._active_rid:
-                    self._active_rid = body
-                    self.roi_selected.emit(body)
-                    self.update()
-                    return
-                self._interact = "move"
-                self._roi_at_press = self._active_roi().rect
-                self._drag_start = pos
-                return
+            self._interact = "move"
+            self._roi_at_press = self._active_roi().rect
+            self._drag_start = pos
+            return
         ip = self._to_image(pos)
         self._interact = "draw"
+        self._drag_start = pos
         self._draw_rect = QRectF(ip, ip)
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         pos = QPointF(e.position())
+        self._cursor_img = self._to_image(pos)
         self._emit_cursor(pos)
+        if self._grid_mode:
+            if self._grid_stage == 1:
+                self.update()
+            return
         if self._interact == "pan":
             self._offset = self._pan_at_press + (pos - self._drag_start)
             self.update()
@@ -319,16 +407,15 @@ class ImageView(QWidget):
             self._interact = None
             self.unsetCursor()
             return
+        if self._grid_mode:
+            self._interact = None
+            return
         if self._interact == "draw" and self._draw_rect is not None:
             rect = self._finalize_draw()
-            grid = self._grid_mode
             self._draw_rect = None
             self._interact = None
             if rect is not None:
-                if grid:
-                    self.roi_grid_created.emit(rect)
-                else:
-                    self.roi_created.emit(rect)
+                self.roi_created.emit(rect)
             self.update()
             return
         if self._interact in ("move", "resize"):
@@ -338,6 +425,14 @@ class ImageView(QWidget):
             if roi is not None:
                 self.roi_modified.emit(roi.rid, roi.rect)
         self._interact = None
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if self._grid_mode and e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.commit_grid()
+        elif self._grid_mode and e.key() == Qt.Key_Escape:
+            self.cancel_grid()
+        else:
+            super().keyPressEvent(e)
 
     def wheelEvent(self, e: QWheelEvent) -> None:
         if self._image is None:
@@ -351,6 +446,12 @@ class ImageView(QWidget):
     # ------------------------------------------------------------------ #
     # helpers
     # ------------------------------------------------------------------ #
+    def _reset_grid(self) -> None:
+        self._grid_stage = 0
+        self._grid_tl = None
+        self._grid_br = None
+        self.grid_ready.emit(False)
+
     def _emit_cursor(self, pos: QPointF) -> None:
         if self._image is None:
             self.cursor_info.emit("")
@@ -396,11 +497,13 @@ class ImageView(QWidget):
 
     def _finalize_draw(self) -> Optional[Rect]:
         r = self._draw_rect.normalized()
-        x, y, w, h = (int(round(r.x())), int(round(r.y())),
-                      int(round(r.width())), int(round(r.height())))
+        w, h = int(round(r.width())), int(round(r.height()))
         if w < _MIN_ROI or h < _MIN_ROI:
-            return None
-        return self._clamp((x, y, w, h))
+            # plain click -> default-size box centred on the click
+            c = self._to_image(self._drag_start)
+            return self._clamp((int(round(c.x() - _DEFAULT / 2)),
+                                int(round(c.y() - _DEFAULT / 2)), _DEFAULT, _DEFAULT))
+        return self._clamp((int(round(r.x())), int(round(r.y())), w, h))
 
     def _clamp(self, roi: Rect) -> Rect:
         x, y, w, h = roi
@@ -417,9 +520,7 @@ class ImageView(QWidget):
         if self._image is None:
             self.unsetCursor()
             return
-        if self._grid_mode:
-            self.setCursor(Qt.CrossCursor)
-        elif self._handle_at(pos) is not None:
+        if self._handle_at(pos) is not None:
             self.setCursor(Qt.SizeFDiagCursor)
         elif self._roi_body_at(pos) is not None:
             self.setCursor(Qt.SizeAllCursor)

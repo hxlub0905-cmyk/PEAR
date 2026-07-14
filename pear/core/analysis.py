@@ -27,7 +27,6 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from pear.core import stacking
 from pear.core.attributes import SNR_ID, glv_value
 
 Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
@@ -60,16 +59,6 @@ class Group:
     color: str
 
 
-@dataclass
-class PeriodInfo:
-    px: int
-    py: int
-    axis_mode: str
-    confidence: float
-    origin: Tuple[int, int] = (0, 0)
-    golden_cell: Optional[np.ndarray] = None
-
-
 # --------------------------------------------------------------------------- #
 # Image IO (CJK-path safe)
 # --------------------------------------------------------------------------- #
@@ -89,23 +78,6 @@ def load_image(path: str) -> np.ndarray:
     if img.dtype != np.uint8:
         img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     return img
-
-
-# --------------------------------------------------------------------------- #
-# Lattice geometry (optional — for the grid overlay and per-cell multi-add)
-# --------------------------------------------------------------------------- #
-def grid_dims(shape: Tuple[int, ...], period: PeriodInfo) -> Tuple[int, int]:
-    h, w = shape[:2]
-    ox, oy = period.origin
-    px, py = period.px, period.py
-    if px < 1 or py < 1:
-        return 0, 0
-    return int(max(0, (h - oy) // py)), int(max(0, (w - ox) // px))
-
-
-def build_golden_cell(image: np.ndarray, px: int, py: int,
-                      origin: Tuple[int, int] = (0, 0)) -> np.ndarray:
-    return stacking.stack_cells(image, px, py, method="median", origin=origin)
 
 
 # --------------------------------------------------------------------------- #
@@ -189,21 +161,6 @@ def grid_rois(bounds: Rect, rows: int, cols: int, inset: float = 0.18) -> List[R
             out.append((int(round(x + c * cw + ix)), int(round(y + r * ch + iy)),
                         max(2, int(round(cw * (1 - 2 * inset)))),
                         max(2, int(round(ch * (1 - 2 * inset))))))
-    return out
-
-
-def replicate_across_cells(rect: Rect, period: PeriodInfo,
-                           shape: Tuple[int, ...]) -> List[Rect]:
-    """Place ``rect`` at the same in-cell offset in every complete cell."""
-    x, y, w, h = rect
-    px, py = period.px, period.py
-    ox, oy = period.origin
-    dx, dy = (x - ox) % px, (y - oy) % py
-    out: List[Rect] = []
-    for (cx, cy) in stacking.tile_coords(shape, px, py, (ox, oy)):
-        ix, iy = cx + dx, cy + dy
-        if ix + w <= shape[1] and iy + h <= shape[0]:
-            out.append((ix, iy, w, h))
     return out
 
 

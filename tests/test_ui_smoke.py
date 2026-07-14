@@ -33,12 +33,10 @@ def _two_groups(win):
     return gA, gB
 
 
-def test_boot_seeds_group_and_period(app):
+def test_boot_seeds_group(app):
     from pear.ui.main_window import MainWindow
     win = MainWindow()
     win.set_image(make_field(), "sample_field.png")
-    assert win._period is not None
-    assert win._period.px == CELL_W and win._period.py == CELL_H
     assert len(win._groups) == 1 and win._active_gid == "A"
     assert win._rois == []
 
@@ -46,10 +44,11 @@ def test_boot_seeds_group_and_period(app):
 def test_controls_disabled_before_image(app):
     from pear.ui.main_window import MainWindow
     win = MainWindow()
-    assert not win.rail.detect_btn.isEnabled()
     assert not win.rail.grp_add_btn.isEnabled()
+    assert not win.rail.grid_btn.isEnabled()
+    assert not win.rail.analysis_btn.isEnabled()
     win.set_image(make_field(), "f.png")
-    assert win.rail.detect_btn.isEnabled() and win.rail.grp_add_btn.isEnabled()
+    assert win.rail.grp_add_btn.isEnabled() and win.rail.grid_btn.isEnabled()
 
 
 def test_add_rois_to_groups(app):
@@ -69,19 +68,31 @@ def test_grid_multi_add(app):
     win.set_image(make_field(), "f.png")
     win.rail.grid_rows.setValue(2)
     win.rail.grid_cols.setValue(3)
-    win.on_roi_grid_created((20, 20, 200, 150))
+    win.on_grid_committed((20, 20, 200, 150))     # two-anchor bounds -> 2×3 grid
     assert len(group_rois(win._rois, win._active_gid)) == 6
 
 
-def test_per_cell_replicate(app):
+def test_grid_interaction_two_clicks(app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QMouseEvent
     from pear.ui.main_window import MainWindow
     win = MainWindow()
     win.set_image(make_field(), "f.png")
-    win.on_roi_created((22, 18, 20, 16))
-    win.select_roi(win._rois[0].rid)
-    win.roi_per_cell()
-    ncells = (make_field().shape[0] // CELL_H) * (make_field().shape[1] // CELL_W)
-    assert len(win._rois) == ncells
+    iv = win.image_view
+    iv.resize(500, 400)
+    win.set_grid_mode(True)
+    # two corner clicks define the bounds, then commit
+    p1 = iv._to_widget(30, 30)
+    p2 = iv._to_widget(200, 160)
+    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, p1,
+                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, p2,
+                                   Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert iv._grid_stage == 2
+    iv.commit_grid()
+    from pear.core.analysis import group_rois
+    assert len(group_rois(win._rois, win._active_gid)) == win.rail.grid_shape()[0] * \
+        win.rail.grid_shape()[1]
 
 
 def test_between_analysis_and_export(app, tmp_path):

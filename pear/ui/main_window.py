@@ -1,8 +1,8 @@
 """Main window: image stage + control rail. Analysis lives in its own window.
 
-Model: a Group is a category; ROIs belong to a group. Drag on the image to
-add an ROI to the active group; compare metric distributions between or
-within groups in the Analysis window.
+Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
+(click to drop, drag to size, or Grid via two corner clicks), then compare
+metric distributions between or within groups in the Analysis window.
 """
 
 from __future__ import annotations
@@ -17,14 +17,10 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMessageBox, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
-from pear.core import stacking
 from pear.core.analysis import (GROUP_PALETTE, SNR_MARGIN, ROI, Group,
-                                PeriodInfo, build_golden_cell, compute_analysis,
-                                grid_rois, group_rois, load_image,
-                                replicate_across_cells, roi_metric, snapshot,
-                                summarize)
+                                compute_analysis, grid_rois, group_rois,
+                                load_image, roi_metric, snapshot, summarize)
 from pear.core.attributes import metric_label
-from pear.core.period_core import estimate_period
 from pear.ui import theme
 from pear.ui.image_view import ImageView
 from pear.ui.widgets import AnalysisPanel, RailPanel
@@ -58,7 +54,6 @@ class MainWindow(QMainWindow):
         self.resize(1180, 820)
 
         self._image: Optional[np.ndarray] = None
-        self._period: Optional[PeriodInfo] = None
         self._nm_per_px: float = 0.0
         self._groups: List[Group] = []
         self._rois: List[ROI] = []
@@ -68,7 +63,6 @@ class MainWindow(QMainWindow):
         self._metrics: List[str] = ["glv_mean", "glv_median"]
         self._cmp_mode = "between"
         self._within_gid: Optional[str] = None
-        self._grid_mode = False
 
         self._pool = QThreadPool.globalInstance()
         self._sig = _AnalysisSignals()
@@ -84,7 +78,7 @@ class MainWindow(QMainWindow):
         self._build_status()
         self._build_analysis_window()
         self._wire()
-        self.rail.set_ready(False, False)
+        self.rail.set_ready(False)
 
     # ------------------------------------------------------------------ #
     def _build_topbar(self) -> None:
@@ -169,8 +163,6 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load)
-        self.rail.detect_requested.connect(self.detect_period)
-        self.rail.refine_requested.connect(self.refine_period)
         self.rail.scale_changed.connect(self.on_scale_changed)
         self.rail.group_add.connect(self.add_group)
         self.rail.group_pick.connect(self.select_group)
@@ -179,13 +171,15 @@ class MainWindow(QMainWindow):
         self.rail.group_rename.connect(self.rename_group)
         self.rail.group_clear.connect(self.clear_group)
         self.rail.grid_mode_toggled.connect(self.set_grid_mode)
-        self.rail.roi_percell.connect(self.roi_per_cell)
+        self.rail.grid_commit.connect(self.image_view.commit_grid)
+        self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.metrics_changed.connect(self.set_metrics)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
-        self.image_view.roi_grid_created.connect(self.on_roi_grid_created)
+        self.image_view.grid_committed.connect(self.on_grid_committed)
+        self.image_view.grid_ready.connect(self.rail.set_grid_ready)
         self.image_view.roi_modified.connect(self.on_roi_modified)
         self.image_view.roi_selected.connect(self.select_roi)
         self.image_view.cursor_info.connect(self.cursor_lbl.setText)
@@ -197,7 +191,7 @@ class MainWindow(QMainWindow):
         self.analysis.export_requested.connect(self.export_csv)
 
     # ------------------------------------------------------------------ #
-    # image / period
+    # image
     # ------------------------------------------------------------------ #
     def on_load(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Load image", "", _FILTER)
@@ -218,40 +212,14 @@ class MainWindow(QMainWindow):
         self._rois = []
         self._active_gid = None
         self._active_rid = None
-        self._period = None
         self._within_gid = None
         self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
         self.image_view.set_image(img)
-        self.add_group()          # start with one group so drawing has a target
-        self.detect_period()
-
-    def detect_period(self) -> None:
-        if self._image is None:
-            return
-        res = estimate_period(self._image)
-        if res.px is None or res.py is None:
-            self._period = None
-            self._refresh()
-            return
-        conf = (res.confidence_x + res.confidence_y) / 2.0
-        golden = build_golden_cell(self._image, res.px, res.py)
-        self._period = PeriodInfo(px=res.px, py=res.py, axis_mode=res.axis_mode,
-                                  confidence=conf, golden_cell=golden)
-        self._refresh()
-
-    def refine_period(self) -> None:
-        if self._image is None or self._period is None:
-            return
-        bpx, bpy, _lv = stacking.refine_period(
-            self._image, self._period.px, self._period.py, method="median")
-        golden = build_golden_cell(self._image, bpx, bpy)
-        self._period = PeriodInfo(px=bpx, py=bpy, axis_mode=self._period.axis_mode,
-                                  confidence=self._period.confidence, golden_cell=golden)
+        self.add_group()          # start with one group so adding ROIs works
         self._refresh()
 
     def on_scale_changed(self, nm: float) -> None:
         self._nm_per_px = float(nm)
-        self.rail.set_period(self._period, self._nm_per_px)
 
     # ------------------------------------------------------------------ #
     # groups
@@ -303,8 +271,10 @@ class MainWindow(QMainWindow):
     # rois
     # ------------------------------------------------------------------ #
     def set_grid_mode(self, on: bool) -> None:
-        self._grid_mode = on
         self.image_view.set_grid_mode(on)
+        if on:
+            self.statusBar().showMessage(
+                "Grid: click the top-left, then the bottom-right corner.", 6000)
 
     def _add_roi(self, rect, refresh=True) -> ROI:
         gid = self._active_gid or (self._groups[0].gid if self._groups else "A")
@@ -322,36 +292,14 @@ class MainWindow(QMainWindow):
             self.add_group()
         self._add_roi(rect)
 
-    def on_roi_grid_created(self, bounds) -> None:
+    def on_grid_committed(self, bounds) -> None:
         if not self._groups:
             self.add_group()
         rows, cols = self.rail.grid_shape()
         for rect in grid_rois(tuple(bounds), rows, cols):
             self._add_roi(rect, refresh=False)
-        # turn grid mode off after one grid
-        self.rail.grid_btn.setChecked(False)
-        self._refresh()
-
-    def roi_per_cell(self) -> None:
-        if self._period is None or self._image is None:
-            self.statusBar().showMessage("Detect a lattice first.", 3000)
-            return
-        roi = self._roi(self._active_rid)
-        if roi is None:
-            self.statusBar().showMessage("Select an ROI to repeat.", 3000)
-            return
-        existing = {r.rect for r in self._rois if r.gid == roi.gid}
-        added = 0
-        for rect in replicate_across_cells(roi.rect, self._period, self._image.shape):
-            if rect in existing:
-                continue
-            r = ROI(rid=self._next_rid, gid=roi.gid, rect=rect,
-                    label=f"ROI {self._next_rid}")
-            self._next_rid += 1
-            self._rois.append(r)
-            existing.add(rect)
-            added += 1
-        self.statusBar().showMessage(f"Added {added} ROIs across cells.", 3000)
+        self.rail.grid_btn.setChecked(False)     # exit grid mode
+        self.statusBar().showMessage(f"Added {rows * cols} ROIs.", 3000)
         self._refresh()
 
     def on_roi_modified(self, rid: int, rect) -> None:
@@ -399,13 +347,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     def _refresh(self) -> None:
         has_img = self._image is not None
-        has_per = self._period is not None
-        self.rail.set_ready(has_img, has_per)
-        self.rail.set_period(self._period, self._nm_per_px)
+        self.rail.set_ready(has_img)
         counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
         self.rail.set_groups(self._groups, self._active_gid, counts)
         self.rail.set_rois(group_rois(self._rois, self._active_gid), self._active_rid)
-        self.image_view.set_period(self._period)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
         if self._within_gid is None and self._groups:

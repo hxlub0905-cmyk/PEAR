@@ -10,19 +10,10 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
-from pear.core.analysis import (ROI, Group, PeriodInfo, build_golden_cell,
-                                compute_analysis, grid_rois, group_rois,
-                                group_values, replicate_across_cells,
-                                roi_metric, roi_patch, roi_snr, snapshot,
-                                summarize)
+from pear.core.analysis import (ROI, Group, compute_analysis, grid_rois,
+                                group_rois, group_values, roi_metric,
+                                roi_patch, roi_snr, snapshot, summarize)
 from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
-from pear.core.period_core import estimate_period
-
-
-def _period(img) -> PeriodInfo:
-    res = estimate_period(img)
-    return PeriodInfo(px=res.px, py=res.py, axis_mode=res.axis_mode,
-                      confidence=80.0, golden_cell=build_golden_cell(img, res.px, res.py))
 
 
 def _bright_dark(img):
@@ -39,26 +30,19 @@ def _bright_dark(img):
     return groups, rois
 
 
-def test_estimate_period_recovers_cell_size():
-    res = estimate_period(make_field())
-    assert res.px == CELL_W and res.py == CELL_H and res.axis_mode == "XY"
-
-
 def test_roi_patch_and_metrics():
     img = make_field()
     p = roi_patch(img, (22, 18, 20, 16))
     assert p is not None and p.shape == (16, 20)
     assert roi_patch(img, (-100, -100, 4, 4)) is None      # fully outside
-    assert abs(glv_value(p, "glv_mean") - roi_metric(img, ROI(1, "g", (22, 18, 20, 16)), "glv_mean")) < 1e-9
+    assert abs(glv_value(p, "glv_mean")
+               - roi_metric(img, ROI(1, "g", (22, 18, 20, 16)), "glv_mean")) < 1e-9
     assert quantile_of("glv_q90") == 90 and metric_label("glv_q90") == "GLV Q90"
 
 
 def test_roi_snr_signal_over_background():
     img = make_field()
-    # ROI over a bright feature; ring picks up darker background -> positive SNR
-    bright = roi_snr(img, (22, 18, 20, 16), margin=8)
-    assert bright > 0
-    # ROI over uniform region has near-zero contrast to its ring
+    assert roi_snr(img, (22, 18, 20, 16), margin=8) > 0            # bright feature
     assert abs(roi_snr(np.full((60, 60), 100, np.uint8), (20, 20, 10, 10))) < 0.5
 
 
@@ -70,15 +54,11 @@ def test_group_values_distributions_separate():
     assert b["mean"] - d["mean"] > 50 and b["n"] == 4 and d["n"] == 4
 
 
-def test_grid_and_replicate():
+def test_grid_rois():
     g = grid_rois((10, 10, 120, 90), 2, 3)
     assert len(g) == 6
     for (x, y, w, h) in g:
         assert w >= 2 and h >= 2 and 10 <= x <= 130
-    img = make_field()
-    period = _period(img)
-    rep = replicate_across_cells((22, 18, 20, 16), period, img.shape)
-    assert len(rep) == (img.shape[0] // CELL_H) * (img.shape[1] // CELL_W)
 
 
 def test_compute_analysis_between_and_within():

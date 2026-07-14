@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox, QFrame,
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
                                QWidget)
 
-from pear.core.analysis import Group, PeriodInfo
+from pear.core.analysis import Group
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
                                   metric_label)
 from pear.ui import theme
@@ -255,18 +255,17 @@ class MetricPicker(QWidget):
 # Control rail
 # --------------------------------------------------------------------------- #
 class RailPanel(QWidget):
-    detect_requested = Signal()
-    refine_requested = Signal()
     scale_changed = Signal(float)
     group_add = Signal()
     group_pick = Signal(str)
     group_del = Signal(str)
     group_color = Signal(str, str)
     group_rename = Signal(str, str)
-    grid_mode_toggled = Signal(bool)
-    roi_percell = Signal()
-    roi_del = Signal(int)
     group_clear = Signal(str)
+    grid_mode_toggled = Signal(bool)
+    grid_commit = Signal()
+    grid_shape_changed = Signal(int, int)
+    roi_del = Signal(int)
     metrics_changed = Signal(list)
     open_analysis = Signal()
 
@@ -276,53 +275,16 @@ class RailPanel(QWidget):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(12)
 
-        # Lattice
-        lat = _card("Lattice", "optional cell grid")
-        llay = lat.layout()
-        self.period_lbl = QLabel("period —")
-        self.period_lbl.setObjectName("Mono")
-        self.period_lbl.setFont(theme.mono_font(10))
-        llay.addWidget(self.period_lbl)
-        self.phys_lbl = QLabel("")
-        self.phys_lbl.setObjectName("Hint")
-        self.phys_lbl.setFont(theme.mono_font(9))
-        self.phys_lbl.setVisible(False)
-        llay.addWidget(self.phys_lbl)
-        row = QHBoxLayout()
-        self.detect_btn = QPushButton("Detect")
-        self.refine_btn = QPushButton("Refine")
-        self.detect_btn.clicked.connect(self.detect_requested)
-        self.refine_btn.clicked.connect(self.refine_requested)
-        row.addWidget(self.detect_btn)
-        row.addWidget(self.refine_btn)
-        llay.addLayout(row)
-        srow = QHBoxLayout()
-        srow.setSpacing(8)
-        sl = QLabel("nm/px")
-        sl.setObjectName("Hint")
-        sl.setFixedWidth(48)
-        self.nm_spin = QDoubleSpinBox()
-        self.nm_spin.setRange(0.0, 100000.0)
-        self.nm_spin.setDecimals(3)
-        self.nm_spin.setSingleStep(0.1)
-        self.nm_spin.setSpecialValueText("—")
-        self.nm_spin.valueChanged.connect(self.scale_changed)
-        srow.addWidget(sl)
-        srow.addWidget(self.nm_spin, 1)
-        llay.addLayout(srow)
-        root.addWidget(lat)
-
         # Groups
         grp = _card("Groups", "categories")
-        self.grp_add_btn = QPushButton("+ Add")
-        self.grp_add_btn.setFixedHeight(26)
-        self.grp_add_btn.clicked.connect(self.group_add)
-        grp._head.addWidget(self.grp_add_btn)          # type: ignore[attr-defined]
         glay = grp.layout()
+        self.grp_add_btn = QPushButton("+ Add group")
+        self.grp_add_btn.clicked.connect(self.group_add)
+        glay.addLayout(_button_row(self.grp_add_btn))
         self.grp_host = QVBoxLayout()
         self.grp_host.setSpacing(6)
         glay.addLayout(self.grp_host)
-        hint = QLabel("Pick a group, then drag on the image to add ROIs to it.")
+        hint = QLabel("Pick a group, then add ROIs to it on the image.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         glay.addWidget(hint)
@@ -331,42 +293,47 @@ class RailPanel(QWidget):
         # ROIs (of the active group)
         roi = _card("ROIs", "of active group")
         rlay = roi.layout()
-        self.grid_btn = QPushButton("Grid")
+        self.grid_btn = QPushButton("▦ Grid")
         self.grid_btn.setCheckable(True)
-        self.grid_btn.setFixedHeight(26)
+        self.grid_btn.setToolTip("Click the top-left then bottom-right corner "
+                                 "on the image; a row×col preview follows.")
         self.grid_btn.toggled.connect(self.grid_mode_toggled)
-        self.percell_btn = QPushButton("Per cell")
-        self.percell_btn.setFixedHeight(26)
-        self.percell_btn.clicked.connect(self.roi_percell)
-        roi._head.addWidget(self.grid_btn)             # type: ignore[attr-defined]
-        roi._head.addWidget(self.percell_btn)          # type: ignore[attr-defined]
+        self.add_grid_btn = QPushButton("✓ Add grid")
+        self.add_grid_btn.setToolTip("Place the previewed grid (or press Enter).")
+        self.add_grid_btn.setEnabled(False)
+        self.add_grid_btn.clicked.connect(self.grid_commit)
+        rlay.addLayout(_button_row(self.grid_btn, self.add_grid_btn))
         grow = QHBoxLayout()
         grow.setSpacing(8)
-        grow.addWidget(_hint("grid"))
+        gl = QLabel("grid")
+        gl.setObjectName("Hint")
+        grow.addWidget(gl)
         self.grid_rows = QSpinBox()
         self.grid_rows.setRange(1, 100)
         self.grid_rows.setValue(3)
         self.grid_cols = QSpinBox()
         self.grid_cols.setRange(1, 100)
         self.grid_cols.setValue(3)
-        grow.addWidget(self.grid_rows)
+        for sp in (self.grid_rows, self.grid_cols):
+            sp.setMinimumHeight(28)
+            sp.valueChanged.connect(
+                lambda _=0: self.grid_shape_changed.emit(*self.grid_shape()))
+        grow.addWidget(self.grid_rows, 1)
         grow.addWidget(QLabel("×"))
-        grow.addWidget(self.grid_cols)
-        grow.addStretch(1)
+        grow.addWidget(self.grid_cols, 1)
         rlay.addLayout(grow)
         self.roi_host = QVBoxLayout()
         self.roi_host.setSpacing(4)
         rlay.addLayout(self.roi_host)
-        self.roi_hint = QLabel("Drag on the image to add an ROI. "
-                               "Grid = drag a box for a row×col grid. "
-                               "Per cell = repeat the selected ROI in every cell.")
+        self.roi_hint = QLabel(
+            "• Click the image → drop an ROI · drag → size it\n"
+            "• Grid → click two corners, set row×col, Add grid")
         self.roi_hint.setObjectName("Hint")
         self.roi_hint.setWordWrap(True)
         rlay.addWidget(self.roi_hint)
-        self.clear_btn = QPushButton("Clear group's ROIs")
-        self.clear_btn.setFixedHeight(28)
+        self.clear_btn = QPushButton("Clear group’s ROIs")
         self.clear_btn.clicked.connect(self._clear_active)
-        rlay.addWidget(self.clear_btn)
+        rlay.addLayout(_button_row(self.clear_btn))
         root.addWidget(roi)
 
         # Metrics
@@ -376,40 +343,44 @@ class RailPanel(QWidget):
         met.layout().addWidget(self.metrics)
         root.addWidget(met)
 
+        # Pixel size (optional)
+        sc = _card("Pixel size", "optional")
+        srow = QHBoxLayout()
+        srow.setSpacing(8)
+        sl = QLabel("nm/px")
+        sl.setObjectName("Hint")
+        self.nm_spin = QDoubleSpinBox()
+        self.nm_spin.setRange(0.0, 100000.0)
+        self.nm_spin.setDecimals(3)
+        self.nm_spin.setSingleStep(0.1)
+        self.nm_spin.setMinimumHeight(30)
+        self.nm_spin.setSpecialValueText("—")
+        self.nm_spin.valueChanged.connect(self.scale_changed)
+        srow.addWidget(sl)
+        srow.addWidget(self.nm_spin, 1)
+        sc.layout().addLayout(srow)
+        sc_hint = QLabel("Adds a physical area column to the CSV export.")
+        sc_hint.setObjectName("Hint")
+        sc_hint.setWordWrap(True)
+        sc.layout().addWidget(sc_hint)
+        root.addWidget(sc)
+
         self.analysis_btn = QPushButton("Open analysis ⤢")
         self.analysis_btn.setObjectName("Primary")
-        self.analysis_btn.setMinimumHeight(36)
         self.analysis_btn.clicked.connect(self.open_analysis)
-        root.addWidget(self.analysis_btn)
+        root.addLayout(_button_row(self.analysis_btn))
         root.addStretch(1)
 
         self._active_gid: Optional[str] = None
 
     # -- render --------------------------------------------------------- #
-    def set_ready(self, has_image: bool, has_period: bool) -> None:
-        self.detect_btn.setEnabled(has_image)
-        self.refine_btn.setEnabled(has_period)
-        self.nm_spin.setEnabled(has_image)
-        self.grp_add_btn.setEnabled(has_image)
-        self.grid_btn.setEnabled(has_image)
-        self.percell_btn.setEnabled(has_period)
-        self.clear_btn.setEnabled(has_image)
-        self.analysis_btn.setEnabled(has_image)
+    def set_ready(self, has_image: bool) -> None:
+        for w in (self.nm_spin, self.grp_add_btn, self.grid_btn,
+                  self.clear_btn, self.analysis_btn):
+            w.setEnabled(has_image)
 
-    def set_period(self, period: Optional[PeriodInfo], nm_per_px: float = 0.0) -> None:
-        if period is None:
-            self.period_lbl.setText("period —")
-            self.phys_lbl.setVisible(False)
-            return
-        self.period_lbl.setText(
-            f"period {period.px} × {period.py} px · {period.axis_mode} · "
-            f"{period.confidence:.0f}%")
-        if nm_per_px > 0:
-            self.phys_lbl.setText(
-                f"{period.px * nm_per_px:.1f} × {period.py * nm_per_px:.1f} nm")
-            self.phys_lbl.setVisible(True)
-        else:
-            self.phys_lbl.setVisible(False)
+    def set_grid_ready(self, on: bool) -> None:
+        self.add_grid_btn.setEnabled(on)
 
     def set_groups(self, groups: List[Group], active_gid, counts: dict) -> None:
         self._active_gid = active_gid
@@ -447,10 +418,14 @@ class RailPanel(QWidget):
             self.group_clear.emit(self._active_gid)
 
 
-def _hint(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setObjectName("Hint")
-    return lbl
+def _button_row(*buttons):
+    """A full-width row of equal-stretch buttons — responsive, no cramming."""
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    for b in buttons:
+        b.setMinimumHeight(32)
+        row.addWidget(b, 1)
+    return row
 
 
 class _ItemRow(QFrame):
