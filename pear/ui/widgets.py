@@ -1,9 +1,8 @@
 """Workspace widgets: the control rail (Lattice / Groups / ROIs / Metrics),
-a clean box-and-strip distribution chart, and the Analysis panel.
+a box-and-strip distribution chart, and the Analysis panel (hosted in its own
+window).
 
-No charting dependency — every plot is hand-painted with QPainter. The
-distribution chart uses a box + jittered strip (robust for the small,
-well-separated samples this tool produces) instead of a histogram.
+No charting dependency — every plot is hand-painted with QPainter.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox, QFrame,
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
                                QWidget)
 
-from pear.core.analysis import ROI, Group, PeriodInfo, REFERENCE, TARGET
+from pear.core.analysis import Group, PeriodInfo
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
                                   metric_label)
 from pear.ui import theme
@@ -63,41 +62,21 @@ def _swatch(color: str, on_pick: Callable[[str], None]) -> QPushButton:
     return b
 
 
-def _tr_toggle(role: str, on_set: Callable[[str], None]) -> QWidget:
-    w = QWidget()
-    lay = QHBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(3)
-    for letter, this_role, col in (("T", TARGET, theme.TARGET),
-                                   ("R", REFERENCE, theme.REFERENCE)):
-        b = QPushButton(letter)
-        b.setFixedSize(22, 20)
-        b.setCursor(Qt.PointingHandCursor)
-        b.setStyleSheet(_tr_style(col, role == this_role))
-        b.clicked.connect(lambda _=False, rr=this_role: on_set(rr))
-        lay.addWidget(b)
-    return w
-
-
-def _tr_style(color: str, on: bool) -> str:
-    if on:
-        return (f"QPushButton{{background:{color}; color:#fff; border:1px solid {color};"
-                " border-radius:5px; padding:0; font-weight:800; font-size:11px;}")
-    return (f"QPushButton{{background:{theme.PANEL}; color:{theme.INK3};"
-            f" border:1px solid {theme.LINE}; border-radius:5px; padding:0;"
-            " font-weight:800; font-size:11px;}")
+def _clear(layout) -> None:
+    while layout.count():
+        it = layout.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
 
 
 # --------------------------------------------------------------------------- #
 # Distribution chart (box + jittered strip)
 # --------------------------------------------------------------------------- #
 class DistributionChart(QWidget):
-    """One metric, several series (groups or ROIs) as stacked box+strip lanes."""
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self._title = ""
-        self._series: List[dict] = []      # {label,color,values}
+        self._series: List[dict] = []
         self.setMinimumHeight(96)
 
     def set_data(self, title: str, series: List[dict]) -> None:
@@ -144,15 +123,14 @@ class DistributionChart(QWidget):
         def X(v):
             return L + (v - lo) / (hi - lo) * W
 
-        # vertical gridlines + axis ticks
         p.setFont(theme.mono_font(8))
         for t in range(5):
             gx = L + W * t / 4.0
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(int(gx), top - 4, int(gx), int(plot_bottom + 2))
             p.setPen(QColor(theme.INK3))
-            val = lo + (hi - lo) * t / 4.0
-            p.drawText(int(gx) - 14, int(plot_bottom + 14), _fmt(val))
+            p.drawText(int(gx) - 14, int(plot_bottom + 14),
+                       _fmt(lo + (hi - lo) * t / 4.0))
 
         for i, s in enumerate(self._series):
             v = s["values"]
@@ -161,14 +139,12 @@ class DistributionChart(QWidget):
             q25, med, q75 = (float(np.percentile(v, 25)),
                              float(np.median(v)), float(np.percentile(v, 75)))
             bh = laneH * 0.52
-            # box Q25..Q75
             box = QColor(col)
             box.setAlpha(48)
             p.setPen(QPen(col, 1))
             p.setBrush(box)
             p.drawRect(int(X(q25)), int(yc - bh / 2),
                        max(2, int(X(q75) - X(q25))), int(bh))
-            # jittered dots
             dot = QColor(col)
             dot.setAlpha(190)
             p.setPen(Qt.NoPen)
@@ -177,11 +153,9 @@ class DistributionChart(QWidget):
             for k, val in enumerate(v):
                 jitter = ((k % 7) / 6.0 - 0.5) * rngj
                 p.drawEllipse(int(X(val)) - 3, int(yc + jitter) - 3, 6, 6)
-            # median tick
             p.setPen(QPen(col, 2.4))
             p.drawLine(int(X(med)), int(yc - bh / 2 - 2),
                        int(X(med)), int(yc + bh / 2 + 2))
-            # left label + right mean value
             p.setPen(QColor(theme.INK2))
             p.setFont(theme.mono_font(8))
             p.drawText(int(L + 3), int(yc - bh / 2 - 5), f"{s['label']} · n={v.size}")
@@ -212,15 +186,12 @@ class _Chip(QPushButton):
 
 
 class MetricPicker(QWidget):
-    """GLV stat chips + custom Qn + SNR (SNR shown only when T/R split is on)."""
-
     changed = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected: List[str] = ["glv_mean", "glv_median"]
         self._custom: List[str] = []
-        self._split = False
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
@@ -247,13 +218,6 @@ class MetricPicker(QWidget):
         root.addLayout(qn)
         self._rebuild()
 
-    def set_split(self, on: bool) -> None:
-        self._split = on
-        if not on and SNR_ID in self._selected:
-            self._selected.remove(SNR_ID)
-            self.changed.emit(list(self._selected))
-        self._rebuild()
-
     def selected(self) -> List[str]:
         return list(self._selected)
 
@@ -267,10 +231,7 @@ class MetricPicker(QWidget):
         self.changed.emit(list(self._selected))
 
     def _ids(self) -> List[str]:
-        ids = list(GLV_STATS.keys()) + self._custom
-        if self._split:
-            ids.append(SNR_ID)
-        return ids
+        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
 
     def _rebuild(self) -> None:
         while self._chip_lay.count():
@@ -296,23 +257,18 @@ class MetricPicker(QWidget):
 class RailPanel(QWidget):
     detect_requested = Signal()
     refine_requested = Signal()
-    manual_changed = Signal(int, int, float)
+    scale_changed = Signal(float)
     group_add = Signal()
     group_pick = Signal(str)
     group_del = Signal(str)
-    group_role = Signal(str, str)
     group_color = Signal(str, str)
     group_rename = Signal(str, str)
-    roi_add = Signal()
-    roi_grid = Signal()
-    roi_pick = Signal(int)
+    grid_mode_toggled = Signal(bool)
+    roi_percell = Signal()
     roi_del = Signal(int)
-    roi_role = Signal(int, str)
-    roi_color = Signal(int, str)
-    split_toggled = Signal(bool)
+    group_clear = Signal(str)
     metrics_changed = Signal(list)
-    mode_changed = Signal(str)              # "group" | "roi"
-    scale_changed = Signal(float)           # nm per pixel (0 = unset)
+    open_analysis = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -321,7 +277,7 @@ class RailPanel(QWidget):
         root.setSpacing(12)
 
         # Lattice
-        lat = _card("Lattice", "cell grid")
+        lat = _card("Lattice", "optional cell grid")
         llay = lat.layout()
         self.period_lbl = QLabel("period —")
         self.period_lbl.setObjectName("Mono")
@@ -334,15 +290,14 @@ class RailPanel(QWidget):
         llay.addWidget(self.phys_lbl)
         row = QHBoxLayout()
         self.detect_btn = QPushButton("Detect")
-        self.detect_btn.setObjectName("Primary")
         self.refine_btn = QPushButton("Refine")
         self.detect_btn.clicked.connect(self.detect_requested)
         self.refine_btn.clicked.connect(self.refine_requested)
         row.addWidget(self.detect_btn)
         row.addWidget(self.refine_btn)
         llay.addLayout(row)
-        scale_row = QHBoxLayout()
-        scale_row.setSpacing(8)
+        srow = QHBoxLayout()
+        srow.setSpacing(8)
         sl = QLabel("nm/px")
         sl.setObjectName("Hint")
         sl.setFixedWidth(48)
@@ -350,72 +305,96 @@ class RailPanel(QWidget):
         self.nm_spin.setRange(0.0, 100000.0)
         self.nm_spin.setDecimals(3)
         self.nm_spin.setSingleStep(0.1)
-        self.nm_spin.setSpecialValueText("—")       # 0 → shown as "—" (unset)
+        self.nm_spin.setSpecialValueText("—")
         self.nm_spin.valueChanged.connect(self.scale_changed)
-        scale_row.addWidget(sl)
-        scale_row.addWidget(self.nm_spin, 1)
-        llay.addLayout(scale_row)
+        srow.addWidget(sl)
+        srow.addWidget(self.nm_spin, 1)
+        llay.addLayout(srow)
         root.addWidget(lat)
 
         # Groups
-        grp = _card("Groups", "sets of cells")
+        grp = _card("Groups", "categories")
         self.grp_add_btn = QPushButton("+ Add")
         self.grp_add_btn.setFixedHeight(26)
         self.grp_add_btn.clicked.connect(self.group_add)
-        grp._head.addWidget(self.grp_add_btn)      # type: ignore[attr-defined]
+        grp._head.addWidget(self.grp_add_btn)          # type: ignore[attr-defined]
         glay = grp.layout()
         self.grp_host = QVBoxLayout()
         self.grp_host.setSpacing(6)
         glay.addLayout(self.grp_host)
-        hint = QLabel("Paint mode: click / drag cells into the active group.")
+        hint = QLabel("Pick a group, then drag on the image to add ROIs to it.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         glay.addWidget(hint)
         root.addWidget(grp)
 
-        # ROIs
-        roi = _card("ROIs", "measure window")
-        self.roi_add_btn = QPushButton("+ Add")
-        self.roi_grid_btn = QPushButton("Grid")
-        for b in (self.roi_add_btn, self.roi_grid_btn):
-            b.setFixedHeight(26)
-        self.roi_add_btn.clicked.connect(self.roi_add)
-        self.roi_grid_btn.clicked.connect(self.roi_grid)
-        roi._head.addWidget(self.roi_add_btn)      # type: ignore[attr-defined]
-        roi._head.addWidget(self.roi_grid_btn)     # type: ignore[attr-defined]
+        # ROIs (of the active group)
+        roi = _card("ROIs", "of active group")
         rlay = roi.layout()
-        from PySide6.QtWidgets import QCheckBox
-        self.split_chk = QCheckBox("Split into Target / Reference (enables SNR)")
-        self.split_chk.toggled.connect(self.split_toggled)
-        rlay.addWidget(self.split_chk)
+        self.grid_btn = QPushButton("Grid")
+        self.grid_btn.setCheckable(True)
+        self.grid_btn.setFixedHeight(26)
+        self.grid_btn.toggled.connect(self.grid_mode_toggled)
+        self.percell_btn = QPushButton("Per cell")
+        self.percell_btn.setFixedHeight(26)
+        self.percell_btn.clicked.connect(self.roi_percell)
+        roi._head.addWidget(self.grid_btn)             # type: ignore[attr-defined]
+        roi._head.addWidget(self.percell_btn)          # type: ignore[attr-defined]
+        grow = QHBoxLayout()
+        grow.setSpacing(8)
+        grow.addWidget(_hint("grid"))
+        self.grid_rows = QSpinBox()
+        self.grid_rows.setRange(1, 100)
+        self.grid_rows.setValue(3)
+        self.grid_cols = QSpinBox()
+        self.grid_cols.setRange(1, 100)
+        self.grid_cols.setValue(3)
+        grow.addWidget(self.grid_rows)
+        grow.addWidget(QLabel("×"))
+        grow.addWidget(self.grid_cols)
+        grow.addStretch(1)
+        rlay.addLayout(grow)
         self.roi_host = QVBoxLayout()
-        self.roi_host.setSpacing(6)
+        self.roi_host.setSpacing(4)
         rlay.addLayout(self.roi_host)
-        rhint = QLabel("Draw ROI mode: drag on the image. Each ROI repeats in "
-                       "every cell.")
-        rhint.setObjectName("Hint")
-        rhint.setWordWrap(True)
-        rlay.addWidget(rhint)
+        self.roi_hint = QLabel("Drag on the image to add an ROI. "
+                               "Grid = drag a box for a row×col grid. "
+                               "Per cell = repeat the selected ROI in every cell.")
+        self.roi_hint.setObjectName("Hint")
+        self.roi_hint.setWordWrap(True)
+        rlay.addWidget(self.roi_hint)
+        self.clear_btn = QPushButton("Clear group's ROIs")
+        self.clear_btn.setFixedHeight(28)
+        self.clear_btn.clicked.connect(self._clear_active)
+        rlay.addWidget(self.clear_btn)
         root.addWidget(roi)
 
         # Metrics
-        met = _card("Metrics", "per cell · per ROI")
+        met = _card("Metrics", "per ROI")
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
         met.layout().addWidget(self.metrics)
         root.addWidget(met)
+
+        self.analysis_btn = QPushButton("Open analysis ⤢")
+        self.analysis_btn.setObjectName("Primary")
+        self.analysis_btn.setMinimumHeight(36)
+        self.analysis_btn.clicked.connect(self.open_analysis)
+        root.addWidget(self.analysis_btn)
         root.addStretch(1)
+
+        self._active_gid: Optional[str] = None
 
     # -- render --------------------------------------------------------- #
     def set_ready(self, has_image: bool, has_period: bool) -> None:
-        """Enable controls only once their prerequisites exist."""
         self.detect_btn.setEnabled(has_image)
         self.refine_btn.setEnabled(has_period)
-        self.grp_add_btn.setEnabled(has_period)
-        self.roi_add_btn.setEnabled(has_period)
-        self.roi_grid_btn.setEnabled(has_period)
-        self.split_chk.setEnabled(has_period)
-        self.nm_spin.setEnabled(has_period)
+        self.nm_spin.setEnabled(has_image)
+        self.grp_add_btn.setEnabled(has_image)
+        self.grid_btn.setEnabled(has_image)
+        self.percell_btn.setEnabled(has_period)
+        self.clear_btn.setEnabled(has_image)
+        self.analysis_btn.setEnabled(has_image)
 
     def set_period(self, period: Optional[PeriodInfo], nm_per_px: float = 0.0) -> None:
         if period is None:
@@ -432,40 +411,50 @@ class RailPanel(QWidget):
         else:
             self.phys_lbl.setVisible(False)
 
-    def set_groups(self, groups: List[Group], active_gid, split: bool) -> None:
+    def set_groups(self, groups: List[Group], active_gid, counts: dict) -> None:
+        self._active_gid = active_gid
         _clear(self.grp_host)
         for g in groups:
-            self.grp_host.addWidget(self._group_row(g, g.gid == active_gid, split))
+            self.grp_host.addWidget(
+                self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 
-    def set_rois(self, rois: List[ROI], active_rid, split: bool) -> None:
+    def set_rois(self, active_group_rois, active_rid) -> None:
         _clear(self.roi_host)
-        for r in rois:
-            self.roi_host.addWidget(self._roi_row(r, r.rid == active_rid, split))
+        for r in active_group_rois:
+            self.roi_host.addWidget(self._roi_row(r, r.rid == active_rid))
 
-    def _group_row(self, g: Group, active: bool, split: bool) -> QWidget:
+    def grid_shape(self):
+        return int(self.grid_rows.value()), int(self.grid_cols.value())
+
+    def _group_row(self, g: Group, active: bool, count: int) -> QWidget:
         row = _ItemRow(active)
         row.add_swatch(g.color, lambda c: self.group_color.emit(g.gid, c))
         row.add_name(g.name, lambda t: self.group_rename.emit(g.gid, t))
-        row.add_count(str(len(g.cells)))
-        if split:
-            row.add_tr(g.role, lambda role: self.group_role.emit(g.gid, role))
+        row.add_count(f"{count}")
         row.add_delete(lambda: self.group_del.emit(g.gid))
         row.clicked = lambda: self.group_pick.emit(g.gid)
         return row
 
-    def _roi_row(self, r: ROI, active: bool, split: bool) -> QWidget:
-        row = _ItemRow(active)
-        row.add_swatch(r.color, lambda c: self.roi_color.emit(r.rid, c))
-        row.add_name(r.label, None)
-        if split:
-            row.add_tr(r.role, lambda role: self.roi_role.emit(r.rid, role))
+    def _roi_row(self, r, active: bool) -> QWidget:
+        row = _ItemRow(active, compact=True)
+        row.add_name(r.label or f"ROI {r.rid}", None)
+        row.add_count(f"{r.rect[2]}×{r.rect[3]}")
         row.add_delete(lambda: self.roi_del.emit(r.rid))
-        row.clicked = lambda: self.roi_pick.emit(r.rid)
         return row
+
+    def _clear_active(self) -> None:
+        if self._active_gid is not None:
+            self.group_clear.emit(self._active_gid)
+
+
+def _hint(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("Hint")
+    return lbl
 
 
 class _ItemRow(QFrame):
-    def __init__(self, active: bool):
+    def __init__(self, active: bool, compact: bool = False):
         super().__init__()
         self.clicked: Optional[Callable] = None
         self.setStyleSheet(
@@ -473,7 +462,7 @@ class _ItemRow(QFrame):
             f"border:1px solid {theme.AMBER if active else theme.LINE};"
             "border-radius:9px;")
         self.lay = QHBoxLayout(self)
-        self.lay.setContentsMargins(8, 5, 8, 5)
+        self.lay.setContentsMargins(8, 3 if compact else 5, 8, 3 if compact else 5)
         self.lay.setSpacing(8)
 
     def add_swatch(self, color, on_pick):
@@ -495,11 +484,8 @@ class _ItemRow(QFrame):
     def add_count(self, text):
         c = QLabel(text)
         c.setStyleSheet(f"color:{theme.INK2};")
-        c.setFont(theme.mono_font(10))
+        c.setFont(theme.mono_font(9))
         self.lay.addWidget(c)
-
-    def add_tr(self, role, on_set):
-        self.lay.addWidget(_tr_toggle(role, on_set))
 
     def add_delete(self, on_del):
         b = QPushButton("×")
@@ -509,27 +495,16 @@ class _ItemRow(QFrame):
         self.lay.addWidget(b)
 
     def mousePressEvent(self, e):
-        # ignore clicks on child controls (they handle their own)
-        if self.clicked and self.childAt(e.position().toPoint()) in (None,):
+        if self.clicked and self.childAt(e.position().toPoint()) is None:
             self.clicked()
         super().mousePressEvent(e)
 
 
-def _clear(layout) -> None:
-    while layout.count():
-        it = layout.takeAt(0)
-        if it.widget():
-            it.widget().deleteLater()
-
-
 # --------------------------------------------------------------------------- #
-# Analysis panel (bottom dock / floatable window)
+# Analysis panel (hosted in its own window)
 # --------------------------------------------------------------------------- #
 class AnalysisPanel(QWidget):
-    """Between-groups and within-group comparison with box+strip charts."""
-
-    mode_changed = Signal(str)          # "between" | "within"
-    between_roi_changed = Signal(int)
+    mode_changed = Signal(str)              # "between" | "within"
     within_group_changed = Signal(str)
     export_requested = Signal()
 
@@ -573,12 +548,6 @@ class AnalysisPanel(QWidget):
         head.addWidget(self.export_btn)
         root.addLayout(head)
 
-        self.snr_lbl = QLabel("")
-        self.snr_lbl.setObjectName("Measured")
-        self.snr_lbl.setFont(theme.mono_font(10))
-        self.snr_lbl.setVisible(False)
-        root.addWidget(self.snr_lbl)
-
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
@@ -590,11 +559,8 @@ class AnalysisPanel(QWidget):
         root.addWidget(self.scroll, 1)
 
         self._mode = "between"
-        self._between_rid: Optional[int] = None
-        self._within_gid: Optional[str] = None
         self._suppress = False
 
-    # -- controls ------------------------------------------------------- #
     def _pick_mode(self, mode: str) -> None:
         self._mode = mode
         self.between_btn.setChecked(mode == "between")
@@ -605,46 +571,32 @@ class AnalysisPanel(QWidget):
         if self._suppress:
             return
         data = self.selector.currentData()
-        if data is None:
-            return
-        if self._mode == "between":
-            self.between_roi_changed.emit(int(data))
-        else:
+        if data is not None and self._mode == "within":
             self.within_group_changed.emit(str(data))
 
-    # -- controls (sync, cheap) ---------------------------------------- #
-    def set_controls(self, mode, rois, groups, between_rid, within_gid,
-                     split, enabled) -> None:
+    def set_controls(self, mode, groups, within_gid, enabled) -> None:
         self._mode = mode
         self.between_btn.setChecked(mode == "between")
         self.within_btn.setChecked(mode == "within")
         self._suppress = True
         self.selector.clear()
-        if mode == "between":
-            self.selector_lbl.setText("ROI")
-            for r in rois:
-                tag = " (T)" if r.role == TARGET else \
-                    " (R)" if (split and r.role == REFERENCE) else ""
-                self.selector.addItem(r.label + tag, r.rid)
-            self.selector.setCurrentIndex(_index_of(rois, between_rid))
-        else:
+        if mode == "within":
             self.selector_lbl.setText("Group")
+            self.selector.setVisible(True)
             for g in groups:
                 self.selector.addItem(g.name, g.gid)
             self.selector.setCurrentIndex(_gindex_of(groups, within_gid))
+        else:
+            self.selector_lbl.setText("")
+            self.selector.setVisible(False)
         self._suppress = False
         self.export_btn.setEnabled(bool(enabled))
 
     def set_computing(self, on: bool) -> None:
-        """Subtle indicator while a background compute is in flight."""
         self.busy.setText("· working…" if on else "")
 
-    # -- body (render a pre-computed result) --------------------------- #
     def show_result(self, result) -> None:
         _clear(self.body_lay)
-        self.snr_lbl.setVisible(bool(result.snr_text))
-        if result.snr_text:
-            self.snr_lbl.setText(result.snr_text)
         self.sub.setText(result.subtitle)
         if result.empty:
             self._empty(result.empty)
@@ -664,7 +616,7 @@ class AnalysisPanel(QWidget):
         for i, (title, series) in enumerate(charts):
             chart = DistributionChart()
             chart.set_data(title, series)
-            grid.addWidget(chart, i // 3, i % 3)
+            grid.addWidget(chart, i // 2, i % 2)
         self.body_lay.addWidget(grid_host)
 
     def _table(self, headers, rows) -> None:
@@ -692,16 +644,8 @@ class AnalysisPanel(QWidget):
         lbl = QLabel(text)
         lbl.setObjectName("Hint")
         lbl.setAlignment(Qt.AlignCenter)
-        lbl.setMinimumHeight(120)
+        lbl.setMinimumHeight(160)
         self.body_lay.addWidget(lbl)
-
-
-# small lookup helpers
-def _index_of(rois, rid):
-    for i, r in enumerate(rois):
-        if r.rid == rid:
-            return i
-    return 0
 
 
 def _gindex_of(groups, gid):

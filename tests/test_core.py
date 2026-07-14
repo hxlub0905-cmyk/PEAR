@@ -9,14 +9,13 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from examples.make_sample import (CELL_H, CELL_W, N_COLS, N_ROWS, OUTLIERS,
-                                  make_field)
-from pear.core.analysis import (ROI, REFERENCE, TARGET, Group, PeriodInfo,
-                                all_cells, build_golden_cell, cell_at_point,
-                                cell_patch, find_role, grid_dims,
-                                group_metric_values, set_role, summarize)
-from pear.core.attributes import (GLV_STATS, SNR_ID, glv_value, metric_label,
-                                  quantile_of, snr)
+from examples.make_sample import CELL_H, CELL_W, make_field
+from pear.core.analysis import (ROI, Group, PeriodInfo, build_golden_cell,
+                                compute_analysis, grid_rois, group_rois,
+                                group_values, replicate_across_cells,
+                                roi_metric, roi_patch, roi_snr, snapshot,
+                                summarize)
+from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
 from pear.core.period_core import estimate_period
 
 
@@ -26,139 +25,85 @@ def _period(img) -> PeriodInfo:
                       confidence=80.0, golden_cell=build_golden_cell(img, res.px, res.py))
 
 
+def _bright_dark(img):
+    """Group 'bright' on feature centers, 'dark' on background corners."""
+    rid = 1
+    rois = []
+    for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)]:
+        rois.append(ROI(rid, "bright", (c * CELL_W + 22, r * CELL_H + 18, 20, 16)))
+        rid += 1
+    for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)]:
+        rois.append(ROI(rid, "dark", (c * CELL_W + 3, r * CELL_H + 3, 10, 8)))
+        rid += 1
+    groups = [Group("bright", "Bright", "#F59E0B"), Group("dark", "Dark", "#2563EB")]
+    return groups, rois
+
+
 def test_estimate_period_recovers_cell_size():
-    img = make_field()
-    res = estimate_period(img)
+    res = estimate_period(make_field())
     assert res.px == CELL_W and res.py == CELL_H and res.axis_mode == "XY"
 
 
-def test_grid_and_cell_geometry():
+def test_roi_patch_and_metrics():
+    img = make_field()
+    p = roi_patch(img, (22, 18, 20, 16))
+    assert p is not None and p.shape == (16, 20)
+    assert roi_patch(img, (-100, -100, 4, 4)) is None      # fully outside
+    assert abs(glv_value(p, "glv_mean") - roi_metric(img, ROI(1, "g", (22, 18, 20, 16)), "glv_mean")) < 1e-9
+    assert quantile_of("glv_q90") == 90 and metric_label("glv_q90") == "GLV Q90"
+
+
+def test_roi_snr_signal_over_background():
+    img = make_field()
+    # ROI over a bright feature; ring picks up darker background -> positive SNR
+    bright = roi_snr(img, (22, 18, 20, 16), margin=8)
+    assert bright > 0
+    # ROI over uniform region has near-zero contrast to its ring
+    assert abs(roi_snr(np.full((60, 60), 100, np.uint8), (20, 20, 10, 10))) < 0.5
+
+
+def test_group_values_distributions_separate():
+    img = make_field()
+    groups, rois = _bright_dark(img)
+    b = summarize(group_values(img, group_rois(rois, "bright"), "glv_mean"))
+    d = summarize(group_values(img, group_rois(rois, "dark"), "glv_mean"))
+    assert b["mean"] - d["mean"] > 50 and b["n"] == 4 and d["n"] == 4
+
+
+def test_grid_and_replicate():
+    g = grid_rois((10, 10, 120, 90), 2, 3)
+    assert len(g) == 6
+    for (x, y, w, h) in g:
+        assert w >= 2 and h >= 2 and 10 <= x <= 130
     img = make_field()
     period = _period(img)
-    assert grid_dims(img.shape, period) == (N_ROWS, N_COLS)
-    assert len(all_cells(img.shape, period)) == N_ROWS * N_COLS
-    # cell hit-test lands in the right cell
-    assert cell_at_point(period, CELL_W + 3, CELL_H + 3, img.shape) == (1, 1)
-    patch = cell_patch(img, (16, 13, 20, 18), period, 0, 0)
-    assert patch is not None and patch.shape == (18, 20)
+    rep = replicate_across_cells((22, 18, 20, 16), period, img.shape)
+    assert len(rep) == (img.shape[0] // CELL_H) * (img.shape[1] // CELL_W)
 
 
-def test_glv_metrics_and_custom_quantile():
-    patch = np.array([[10, 20, 30, 40, 50]], dtype=np.uint8)
-    assert abs(glv_value(patch, "glv_mean") - 30.0) < 1e-9
-    assert glv_value(patch, "glv_min") == 10.0 and glv_value(patch, "glv_max") == 50.0
-    assert quantile_of("glv_q90") == 90 and quantile_of("glv_median") is None
-    assert metric_label("glv_q90") == "GLV Q90"
-    # custom quantile computes a percentile
-    assert abs(glv_value(patch, "glv_q50") - 30.0) < 1e-9
-
-
-def test_snr_definition():
-    # target brighter than reference, low reference noise -> high SNR
-    tgt = np.full((8, 8), 150.0)
-    ref = np.random.default_rng(0).normal(70, 5, (8, 8))
-    assert snr(tgt, ref) > 5.0
-    # zero-variance reference guarded
-    assert snr(tgt, np.full((4, 4), 70.0)) == 0.0
-
-
-def test_group_metric_between_separates_outliers():
+def test_compute_analysis_between_and_within():
     img = make_field()
-    period = _period(img)
-    roi = ROI(1, "Center", "#F59E0B", (16, 13, 30, 26))
-    outset = set(OUTLIERS)
-    gA, gB = Group("A", "A", "#F59E0B"), Group("B", "B", "#2563EB")
-    for (r, c) in all_cells(img.shape, period):
-        (gB if (c, r) in outset else gA).cells.add((r, c))
-    assert len(gB.cells) == len(OUTLIERS)
-    mA = summarize(group_metric_values(img, gA, roi, period, "glv_mean"))
-    mB = summarize(group_metric_values(img, gB, roi, period, "glv_mean"))
-    # outlier group is clearly dimmer and well separated
-    assert mA["mean"] - mB["mean"] > 30.0
-    assert mA["n"] == N_ROWS * N_COLS - len(OUTLIERS)
-
-
-def test_within_group_snr_target_vs_reference():
-    img = make_field()
-    period = _period(img)
-    center = ROI(1, "Center", "#DC2626", (16, 13, 30, 26), role=TARGET)
-    bg = ROI(2, "Background", "#0891B2", (2, 2, 12, 12), role=REFERENCE)
-    outset = set(OUTLIERS)
-    gB = Group("B", "B", "#2563EB")
-    gA = Group("A", "A", "#F59E0B")
-    for (r, c) in all_cells(img.shape, period):
-        (gB if (c, r) in outset else gA).cells.add((r, c))
-    snrA = group_metric_values(img, gA, center, period, SNR_ID,
-                               target_roi=center, reference_roi=bg)
-    snrB = group_metric_values(img, gB, center, period, SNR_ID,
-                               target_roi=center, reference_roi=bg)
-    # normal cells have a stronger feature-vs-background SNR than outliers
-    assert snrA.mean() > snrB.mean() > 0
-
-
-def test_set_role_one_holder_per_role():
-    from pear.core.analysis import NONE
-    rois = [ROI(1, "a", "#000", (0, 0, 4, 4)),
-            ROI(2, "b", "#000", (0, 0, 4, 4)),
-            ROI(3, "c", "#000", (0, 0, 4, 4))]
-    set_role(rois, rois[0], TARGET)
-    set_role(rois, rois[1], REFERENCE)
-    # retagging c as target must clear the old target (not demote it to a
-    # second reference) and must leave the reference untouched
-    set_role(rois, rois[2], TARGET)
-    assert rois[2].role == TARGET
-    assert rois[0].role == NONE
-    assert rois[1].role == REFERENCE
-    assert find_role(rois, TARGET) is rois[2]
-    assert find_role(rois, REFERENCE) is rois[1]
-
-
-def test_metric_labels_complete():
-    for mid in GLV_STATS:
-        assert metric_label(mid)
-    assert metric_label(SNR_ID) == "SNR"
-
-
-def _two_groups(img, period):
-    from pear.core.analysis import all_cells
-    outset = set(OUTLIERS)
-    gA, gB = Group("A", "Group A", "#F59E0B"), Group("B", "Group B", "#2563EB")
-    for (r, c) in all_cells(img.shape, period):
-        (gB if (c, r) in outset else gA).cells.add((r, c))
-    return gA, gB
-
-
-def test_compute_analysis_between_and_delta():
-    from pear.core.analysis import compute_analysis
-    img = make_field()
-    period = _period(img)
-    roi = ROI(1, "Center", "#F59E0B", (16, 13, 30, 26))
-    gA, gB = _two_groups(img, period)
-    gA.role, gB.role = TARGET, REFERENCE
-    res = compute_analysis(img, period, [gA, gB], [roi], ["glv_mean"],
-                           "between", roi.rid, gA.gid, False)
+    groups, rois = _bright_dark(img)
+    res = compute_analysis(img, groups, rois, ["glv_mean", SNR_ID], "between", None)
     assert res.empty is None
-    assert len(res.charts) == 1 and len(res.charts[0].series) == 2
-    # a Target−Reference delta row is present when groups are tagged T/R
-    assert any(r[0].startswith("Δ") for r in res.table_rows)
+    assert len(res.charts) == 2 and len(res.charts[0].series) == 2
+    assert len(res.table_rows) == 2
+    within = compute_analysis(img, groups, rois, ["glv_mean"], "within", "bright")
+    assert within.empty is None and len(within.charts[0].series) == 1
 
 
-def test_compute_analysis_within_snr_and_empty_paths():
-    from pear.core.analysis import compute_analysis
+def test_compute_analysis_empty_paths():
     img = make_field()
-    period = _period(img)
-    tgt = ROI(1, "Center", "#DC2626", (16, 13, 30, 26), role=TARGET)
-    ref = ROI(2, "Bg", "#0891B2", (2, 2, 12, 12), role=REFERENCE)
-    gA, gB = _two_groups(img, period)
-    res = compute_analysis(img, period, [gA, gB], [tgt, ref], ["glv_mean", SNR_ID],
-                           "within", tgt.rid, gB.gid, True)
-    assert res.snr_text and "SNR" in res.snr_text
-    # empty when fewer than two non-empty groups in between mode
-    empty = compute_analysis(img, period, [gA], [tgt], ["glv_mean"],
-                             "between", tgt.rid, gA.gid, False)
-    assert empty.empty is not None
-    # snapshot isolates the worker from later mutation
-    from pear.core.analysis import snapshot
-    gs, rs = snapshot([gA, gB], [tgt, ref])
-    gA.cells.clear()
-    assert gs[0].cells      # snapshot retained the cells
+    groups, rois = _bright_dark(img)
+    only_one = [r for r in rois if r.gid == "bright"]
+    assert compute_analysis(img, groups, only_one, ["glv_mean"], "between", None).empty
+    assert compute_analysis(None, groups, rois, ["glv_mean"], "between", None).empty
+    assert compute_analysis(img, groups, rois, [], "between", None).empty
+
+
+def test_snapshot_isolates_from_mutation():
+    groups, rois = _bright_dark(make_field())
+    gs, rs = snapshot(groups, rois)
+    rois[0].rect = (0, 0, 1, 1)
+    groups[0].name = "changed"
+    assert rs[0].rect != (0, 0, 1, 1) and gs[0].name == "Bright"

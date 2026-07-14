@@ -1,13 +1,8 @@
-"""Image stage: zoom/pan, paint cells into groups, draw/move/resize ROIs.
+"""Image stage: zoom/pan and place / move / resize ROIs.
 
-A hand-painted canvas. It owns no analysis logic; it emits intent signals
-and renders whatever groups, ROIs, period grid, and mode it is given.
-
-Two interaction modes:
-  * ``"group"`` — click / drag cells to paint them into the active group.
-  * ``"roi"``   — drag on empty space to draw an ROI; drag a handle to
-                  resize; drag the body to move. ROIs are drawn crisply in
-                  their home cell and faintly echoed in every other cell.
+A hand-painted canvas. ROIs belong to groups and are drawn in their group's
+colour. Dragging on empty space draws a new ROI into the active group; in
+"grid" mode a drag defines the bounding box for a row×col grid of ROIs.
 """
 
 from __future__ import annotations
@@ -20,21 +15,17 @@ from PySide6.QtGui import (QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap,
                            QWheelEvent)
 from PySide6.QtWidgets import QWidget
 
-from pear.core.analysis import (ROI, Group, PeriodInfo, TARGET, cell_at_point,
-                                grid_dims)
+from pear.core.analysis import ROI, Group, PeriodInfo
 from pear.ui import theme
 
 Rect = Tuple[int, int, int, int]
-
 _HANDLE = 8
 _MIN_ROI = 4
 
 
 class ImageView(QWidget):
-    """Interactive SEM image stage."""
-
-    cell_paint = Signal(int, int, bool)     # row, col, is_drag
-    roi_created = Signal(object)            # rect
+    roi_created = Signal(object)            # rect  (single ROI into active group)
+    roi_grid_created = Signal(object)       # rect  (bounding box for a grid)
     roi_modified = Signal(int, object)      # rid, rect
     roi_selected = Signal(int)              # rid
     cursor_info = Signal(str)
@@ -56,17 +47,14 @@ class ImageView(QWidget):
         self._active_gid: Optional[str] = None
         self._rois: List[ROI] = []
         self._active_rid: Optional[int] = None
-        self._mode = "group"        # "group" | "roi"
-        self._split_tr = False
+        self._grid_mode = False
 
-        self._hover_cell: Optional[Tuple[int, int]] = None
-        self._interact: Optional[str] = None    # draw|move|resize|pan|paint
+        self._interact: Optional[str] = None   # draw|move|resize|pan
         self._drag_start = QPointF()
         self._draw_rect: Optional[QRectF] = None
         self._resize_handle: Optional[int] = None
         self._roi_at_press: Optional[Rect] = None
         self._pan_at_press = QPointF()
-        self._last_paint: Optional[Tuple[int, int]] = None
 
     # ------------------------------------------------------------------ #
     # public API
@@ -93,12 +81,8 @@ class ImageView(QWidget):
         self._active_rid = active_rid
         self.update()
 
-    def set_mode(self, mode: str) -> None:
-        self._mode = mode
-        self.update()
-
-    def set_split_tr(self, on: bool) -> None:
-        self._split_tr = bool(on)
+    def set_grid_mode(self, on: bool) -> None:
+        self._grid_mode = bool(on)
         self.update()
 
     def has_image(self) -> bool:
@@ -154,6 +138,12 @@ class ImageView(QWidget):
         tl = self._to_widget(x, y)
         return QRectF(tl.x(), tl.y(), w * self._scale, h * self._scale)
 
+    def _gcolor(self, gid: str) -> QColor:
+        for g in self._groups:
+            if g.gid == gid:
+                return QColor(g.color)
+        return QColor(theme.INK3)
+
     # ------------------------------------------------------------------ #
     # painting
     # ------------------------------------------------------------------ #
@@ -172,9 +162,7 @@ class ImageView(QWidget):
                         self._pixmap.height() * self._scale)
         p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
         self._paint_grid(p)
-        self._paint_groups(p)
         self._paint_rois(p)
-        self._paint_hover(p)
         self._paint_rubberband(p)
         p.end()
 
@@ -191,100 +179,30 @@ class ImageView(QWidget):
         p.setPen(pen)
         x = ox
         while x <= w:
-            a, b = self._to_widget(x, 0), self._to_widget(x, h)
-            p.drawLine(a, b)
+            p.drawLine(self._to_widget(x, 0), self._to_widget(x, h))
             x += px
         y = oy
         while y <= h:
-            a, b = self._to_widget(0, y), self._to_widget(w, y)
-            p.drawLine(a, b)
+            p.drawLine(self._to_widget(0, y), self._to_widget(w, y))
             y += py
 
-    def _paint_groups(self, p: QPainter) -> None:
-        if self._period is None:
-            return
-        px, py = self._period.px, self._period.py
-        ox, oy = self._period.origin
-        for g in self._groups:
-            active = g.gid == self._active_gid
-            base = QColor(g.color)
-            fill = QColor(base)
-            fill.setAlpha(60 if active else 34)
-            stroke = QColor(base)
-            stroke.setAlpha(255 if active else 150)
-            pen = QPen(stroke, 2 if active else 1.4)
-            pen.setCosmetic(True)
-            for (r, c) in g.cells:
-                rect = self._rect_to_widget((ox + c * px, oy + r * py, px, py))
-                p.setPen(Qt.NoPen)
-                p.setBrush(fill)
-                p.drawRect(rect.adjusted(1, 1, -1, -1))
-                p.setPen(pen)
-                p.setBrush(Qt.NoBrush)
-                p.drawRect(rect.adjusted(1, 1, -1, -1))
-            # badge on the first (top-left) painted cell
-            if g.cells:
-                r0, c0 = min(g.cells)
-                br = self._rect_to_widget((ox + c0 * px, oy + r0 * py, px, py))
-                self._badge(p, br.topLeft(), g.gid, base)
-
-    def _badge(self, p: QPainter, tl: QPointF, text: str, color: QColor) -> None:
-        box = QRectF(tl.x() + 2, tl.y() + 2, 15, 13)
-        p.setPen(Qt.NoPen)
-        p.setBrush(color)
-        p.drawRect(box)
-        p.setPen(QColor("#FFFFFF"))
-        p.setFont(theme.mono_font(7, weight=700))
-        p.drawText(box, Qt.AlignCenter, text)
-
-    def _roi_home(self, roi: ROI) -> Tuple[int, int, int, int, int, int]:
-        """(dx, dy, w, h, home_col, home_row) for an ROI's reference rect."""
-        px, py = self._period.px, self._period.py
-        ox, oy = self._period.origin
-        x, y, w, h = roi.rect
-        dx, dy = (x - ox) % px, (y - oy) % py
-        return dx, dy, w, h, (x - ox) // px, (y - oy) // py
-
     def _paint_rois(self, p: QPainter) -> None:
-        if self._period is None or self._image is None:
-            return
-        px, py = self._period.px, self._period.py
-        ox, oy = self._period.origin
-        rows, cols = grid_dims(self._image.shape, self._period)
         for roi in self._rois:
-            color = self._roi_color(roi)
-            active = roi.rid == self._active_rid
-            # Faint echoes only for the ACTIVE ROI — keeps the stage readable
-            # and the paint cheap when there are many ROIs / cells.
-            if active and rows * cols <= 1500:
-                dx, dy, w, h, hc, hr = self._roi_home(roi)
-                echo = QColor(color)
-                echo.setAlpha(52)
-                epen = QPen(echo, 1)
-                epen.setCosmetic(True)
-                p.setPen(epen)
-                p.setBrush(Qt.NoBrush)
-                for r in range(rows):
-                    for c in range(cols):
-                        if r == hr and c == hc:
-                            continue
-                        p.drawRect(self._rect_to_widget(
-                            (ox + c * px + dx, oy + r * py + dy, w, h)))
-            # crisp home rect
-            home = self._rect_to_widget(roi.rect)
-            pen = QPen(color, 2.4 if active else 1.6)
+            active_grp = roi.gid == self._active_gid
+            selected = roi.rid == self._active_rid
+            color = self._gcolor(roi.gid)
+            r = self._rect_to_widget(roi.rect)
+            fill = QColor(color)
+            fill.setAlpha(64 if active_grp else 26)
+            stroke = QColor(color)
+            stroke.setAlpha(255 if active_grp else 130)
+            pen = QPen(stroke, 2.4 if selected else (1.8 if active_grp else 1.2))
             pen.setCosmetic(True)
             p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(home)
-            if self._split_tr and roi.role in (TARGET, "reference"):
-                self._badge(p, home.topLeft(),
-                            "T" if roi.role == TARGET else "R", color)
-            if self._mode == "roi" and active:
-                self._paint_handles(p, home, color)
-
-    def _roi_color(self, roi: ROI) -> QColor:
-        return QColor(roi.color)
+            p.setBrush(fill)
+            p.drawRect(r)
+            if selected:
+                self._paint_handles(p, r, color)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
         p.setPen(QPen(QColor("#FFFFFF"), 1.4))
@@ -293,31 +211,19 @@ class ImageView(QWidget):
             p.drawRect(QRectF(c.x() - _HANDLE / 2, c.y() - _HANDLE / 2,
                               _HANDLE, _HANDLE))
 
-    def _paint_hover(self, p: QPainter) -> None:
-        if self._hover_cell is None or self._period is None:
-            return
-        r, c = self._hover_cell
-        px, py = self._period.px, self._period.py
-        ox, oy = self._period.origin
-        rect = self._rect_to_widget((ox + c * px, oy + r * py, px, py))
-        pen = QPen(QColor(255, 255, 255, 200), 1.4)
-        pen.setCosmetic(True)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawRect(rect.adjusted(1, 1, -1, -1))
-
     def _paint_rubberband(self, p: QPainter) -> None:
         if self._draw_rect is None:
             return
-        pen = QPen(QColor(theme.AMBER), 2)
+        col = QColor(theme.INFO) if self._grid_mode else QColor(theme.AMBER)
+        pen = QPen(col, 2)
         pen.setCosmetic(True)
         pen.setStyle(Qt.DashLine)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        r = self._draw_rect.normalized()
-        tl = self._to_widget(r.left(), r.top())
-        p.drawRect(QRectF(tl.x(), tl.y(), r.width() * self._scale,
-                          r.height() * self._scale))
+        rn = self._draw_rect.normalized()
+        tl = self._to_widget(rn.left(), rn.top())
+        p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+                          rn.height() * self._scale))
 
     # ------------------------------------------------------------------ #
     # hit testing
@@ -346,18 +252,12 @@ class ImageView(QWidget):
         return None
 
     def _roi_body_at(self, pos: QPointF) -> Optional[int]:
-        ordered = sorted(self._rois, key=lambda r: r.rid != self._active_rid)
+        ordered = sorted(self._rois, key=lambda r: (r.rid != self._active_rid,
+                                                    r.gid != self._active_gid))
         for r in ordered:
             if self._rect_to_widget(r.rect).contains(pos):
                 return r.rid
         return None
-
-    def _cell_at(self, pos: QPointF) -> Optional[Tuple[int, int]]:
-        if self._period is None or self._image is None:
-            return None
-        ip = self._to_image(pos)
-        return cell_at_point(self._period, int(np.floor(ip.x())),
-                             int(np.floor(ip.y())), self._image.shape)
 
     # ------------------------------------------------------------------ #
     # mouse / wheel
@@ -372,35 +272,25 @@ class ImageView(QWidget):
             return
         if e.button() != Qt.LeftButton or self._image is None:
             return
-
-        if self._mode == "group":
-            cell = self._cell_at(pos)
-            if cell is not None:
-                self._interact = "paint"
-                self._last_paint = cell
-                self.cell_paint.emit(cell[0], cell[1], False)
-            return
-
-        # ROI mode
-        handle = self._handle_at(pos)
-        if handle is not None:
-            roi = self._active_roi()
-            self._interact = "resize"
-            self._resize_handle = handle
-            self._roi_at_press = roi.rect
-            self._drag_start = pos
-            return
-        body = self._roi_body_at(pos)
-        if body is not None:
-            if body != self._active_rid:
-                self._active_rid = body
-                self.roi_selected.emit(body)
-                self.update()
+        if not self._grid_mode:
+            handle = self._handle_at(pos)
+            if handle is not None:
+                self._interact = "resize"
+                self._resize_handle = handle
+                self._roi_at_press = self._active_roi().rect
+                self._drag_start = pos
                 return
-            self._interact = "move"
-            self._roi_at_press = self._active_roi().rect
-            self._drag_start = pos
-            return
+            body = self._roi_body_at(pos)
+            if body is not None:
+                if body != self._active_rid:
+                    self._active_rid = body
+                    self.roi_selected.emit(body)
+                    self.update()
+                    return
+                self._interact = "move"
+                self._roi_at_press = self._active_roi().rect
+                self._drag_start = pos
+                return
         ip = self._to_image(pos)
         self._interact = "draw"
         self._draw_rect = QRectF(ip, ip)
@@ -412,12 +302,6 @@ class ImageView(QWidget):
             self._offset = self._pan_at_press + (pos - self._drag_start)
             self.update()
             return
-        if self._interact == "paint":
-            cell = self._cell_at(pos)
-            if cell is not None and cell != self._last_paint:
-                self._last_paint = cell
-                self.cell_paint.emit(cell[0], cell[1], True)
-            return
         if self._interact == "draw" and self._draw_rect is not None:
             self._draw_rect.setBottomRight(self._to_image(pos))
             self.update()
@@ -428,26 +312,23 @@ class ImageView(QWidget):
         if self._interact == "resize":
             self._do_resize(pos)
             return
-        # idle hover
-        self._hover_cell = self._cell_at(pos)
         self._update_cursor(pos)
-        self.update()
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         if self._interact == "pan":
             self._interact = None
             self.unsetCursor()
             return
-        if self._interact == "paint":
-            self._interact = None
-            self._last_paint = None
-            return
         if self._interact == "draw" and self._draw_rect is not None:
-            roi = self._finalize_draw()
+            rect = self._finalize_draw()
+            grid = self._grid_mode
             self._draw_rect = None
             self._interact = None
-            if roi is not None:
-                self.roi_created.emit(roi)
+            if rect is not None:
+                if grid:
+                    self.roi_grid_created.emit(rect)
+                else:
+                    self.roi_created.emit(rect)
             self.update()
             return
         if self._interact in ("move", "resize"):
@@ -465,9 +346,7 @@ class ImageView(QWidget):
         self.zoom_by(factor, QPointF(e.position()))
 
     def leaveEvent(self, _e) -> None:
-        self._hover_cell = None
         self.cursor_info.emit("")
-        self.update()
 
     # ------------------------------------------------------------------ #
     # helpers
@@ -480,11 +359,7 @@ class ImageView(QWidget):
         x, y = int(np.floor(ip.x())), int(np.floor(ip.y()))
         h, w = self._image.shape[:2]
         if 0 <= x < w and 0 <= y < h:
-            s = f"x {x}  y {y}  ·  gray {int(self._image[y, x])}"
-            cell = self._cell_at(pos)
-            if cell is not None:
-                s += f"  ·  cell (r{cell[0]}, c{cell[1]})"
-            self.cursor_info.emit(s)
+            self.cursor_info.emit(f"x {x}  y {y}  ·  gray {int(self._image[y, x])}")
         else:
             self.cursor_info.emit("")
 
@@ -532,9 +407,8 @@ class ImageView(QWidget):
         if self._image is None:
             return roi
         ih, iw = self._image.shape[:2]
-        cpx, cpy = (self._period.px, self._period.py) if self._period else (iw, ih)
-        w = max(_MIN_ROI, min(w, cpx, iw))
-        h = max(_MIN_ROI, min(h, cpy, ih))
+        w = max(_MIN_ROI, min(w, iw))
+        h = max(_MIN_ROI, min(h, ih))
         x = max(0, min(x, iw - w))
         y = max(0, min(y, ih - h))
         return (x, y, w, h)
@@ -543,11 +417,9 @@ class ImageView(QWidget):
         if self._image is None:
             self.unsetCursor()
             return
-        if self._mode == "group":
-            self.setCursor(Qt.PointingHandCursor
-                           if self._cell_at(pos) is not None else Qt.ArrowCursor)
-            return
-        if self._handle_at(pos) is not None:
+        if self._grid_mode:
+            self.setCursor(Qt.CrossCursor)
+        elif self._handle_at(pos) is not None:
             self.setCursor(Qt.SizeFDiagCursor)
         elif self._roi_body_at(pos) is not None:
             self.setCursor(Qt.SizeAllCursor)

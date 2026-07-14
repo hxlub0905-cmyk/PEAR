@@ -1,65 +1,63 @@
 """Data model, geometry, and analysis orchestration.
 
-Pure NumPy/OpenCV — no Qt. The model has two orthogonal concepts:
+Pure NumPy/OpenCV — no Qt.
 
-* **Group** — a user-painted set of *cells* (the populations to compare).
-* **ROI** — a measurement rectangle *inside a cell*, phase-invariant so it
-  repeats in every cell. When target/reference splitting is on, one ROI is
-  the *target* and one is the *reference*, which enables SNR.
+Model
+-----
+* **Group** — a *category* of features (e.g. "round holes", "square holes").
+* **ROI**   — a rectangle placed on the image that belongs to one group. A
+  group holds many ROIs. Each ROI is measured independently.
 
-Analysis is on demand: only the selected metric(s) for the chosen ROI(s)
-are computed, and only over the cells that belong to a group.
+Analysis compares the distribution of a metric across every ROI in a group,
+either *between* groups or *within* a single group.
+
+Metrics
+-------
+GLV statistics come from the ROI patch. SNR follows the e-beam definition
+``(mean_roi - mean_background) / std_background`` where the background is the
+ring around the ROI (a self-contained per-ROI measurement, no separate
+reference ROI needed).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from pear.core import stacking
-from pear.core.attributes import SNR_ID, glv_value, snr
+from pear.core.attributes import SNR_ID, glv_value
 
 Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
-Cell = Tuple[int, int]                # (row, col)
 
-# Categorical palette for groups (cycles). Distinct hues that read on the
-# black stage and on the light panels.
+# Categorical palette for groups (cycles).
 GROUP_PALETTE: List[str] = [
     "#F59E0B", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
     "#0891B2", "#EA580C", "#4B5563",
 ]
-# Target / reference default colours (used when T/R splitting is on).
-TARGET_COLOR = "#DC2626"
-REFERENCE_COLOR = "#0891B2"
 
-TARGET = "target"
-REFERENCE = "reference"
-NONE = "none"
+SNR_MARGIN = 8          # default background ring width (px) for ROI SNR
 
 
 @dataclass
 class ROI:
-    """A measurement rectangle defined in one cell, repeated in every cell."""
+    """A measurement rectangle belonging to one group."""
 
     rid: int
-    label: str
-    color: str
-    rect: Rect                       # reference rect in image pixels
-    role: str = NONE                 # "target" | "reference" | "none"
+    gid: str
+    rect: Rect
+    label: str = ""
 
 
 @dataclass
 class Group:
-    """A user-painted set of cells."""
+    """A category of ROIs."""
 
     gid: str
     name: str
     color: str
-    cells: Set[Cell] = field(default_factory=set)
-    role: str = NONE                 # "target" | "reference" | "none"
 
 
 @dataclass
@@ -94,131 +92,123 @@ def load_image(path: str) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# Geometry
+# Lattice geometry (optional — for the grid overlay and per-cell multi-add)
 # --------------------------------------------------------------------------- #
 def grid_dims(shape: Tuple[int, ...], period: PeriodInfo) -> Tuple[int, int]:
-    """Number of complete ``(rows, cols)`` in the lattice."""
     h, w = shape[:2]
     ox, oy = period.origin
     px, py = period.px, period.py
     if px < 1 or py < 1:
         return 0, 0
-    cols = max(0, (w - ox) // px)
-    rows = max(0, (h - oy) // py)
-    return int(rows), int(cols)
-
-
-def all_cells(shape: Tuple[int, ...], period: PeriodInfo) -> List[Cell]:
-    rows, cols = grid_dims(shape, period)
-    return [(r, c) for r in range(rows) for c in range(cols)]
-
-
-def cell_rect(period: PeriodInfo, row: int, col: int) -> Rect:
-    """Full footprint rect of one cell."""
-    ox, oy = period.origin
-    return (ox + col * period.px, oy + row * period.py, period.px, period.py)
-
-
-def cell_patch(image: np.ndarray, roi_rect: Rect, period: PeriodInfo,
-               row: int, col: int) -> Optional[np.ndarray]:
-    """The ROI sub-patch for one cell (phase-invariant), or None if it would
-    fall outside the image."""
-    px, py = period.px, period.py
-    x, y, w, h = roi_rect
-    ox, oy = period.origin
-    dx, dy = (x - ox) % px, (y - oy) % py
-    ix = ox + col * px + dx
-    iy = oy + row * py + dy
-    ih, iw = image.shape[:2]
-    if ix < 0 or iy < 0 or ix + w > iw or iy + h > ih:
-        return None
-    return image[iy:iy + h, ix:ix + w]
-
-
-def cell_at_point(period: PeriodInfo, x: int, y: int,
-                  shape: Tuple[int, ...]) -> Optional[Cell]:
-    """Which cell contains image point ``(x, y)`` (or None)."""
-    ox, oy = period.origin
-    px, py = period.px, period.py
-    if px < 1 or py < 1 or x < ox or y < oy:
-        return None
-    col = (x - ox) // px
-    row = (y - oy) // py
-    rows, cols = grid_dims(shape, period)
-    if 0 <= row < rows and 0 <= col < cols:
-        return (int(row), int(col))
-    return None
+    return int(max(0, (h - oy) // py)), int(max(0, (w - ox) // px))
 
 
 def build_golden_cell(image: np.ndarray, px: int, py: int,
                       origin: Tuple[int, int] = (0, 0)) -> np.ndarray:
-    """Median-stacked reference cell ``(py, px)``."""
     return stacking.stack_cells(image, px, py, method="median", origin=origin)
 
 
 # --------------------------------------------------------------------------- #
-# Metric collection
+# ROI patch + metrics
 # --------------------------------------------------------------------------- #
-def group_metric_values(image: np.ndarray, group: Group, roi: ROI,
-                        period: PeriodInfo, mid: str,
-                        target_roi: Optional[ROI] = None,
-                        reference_roi: Optional[ROI] = None) -> np.ndarray:
-    """Per-cell metric values over a group's cells.
-
-    For SNR, ``target_roi`` and ``reference_roi`` are required; otherwise the
-    metric is read from ``roi``.
-    """
-    vals: List[float] = []
-    for (r, c) in sorted(group.cells):
-        if mid == SNR_ID:
-            if target_roi is None or reference_roi is None:
-                continue
-            t = cell_patch(image, target_roi.rect, period, r, c)
-            ref = cell_patch(image, reference_roi.rect, period, r, c)
-            if t is None or ref is None:
-                continue
-            vals.append(snr(t, ref))
-        else:
-            p = cell_patch(image, roi.rect, period, r, c)
-            if p is None:
-                continue
-            vals.append(glv_value(p, mid))
-    return np.asarray(vals, dtype=np.float64)
+def roi_patch(image: np.ndarray, rect: Rect) -> Optional[np.ndarray]:
+    """Clipped ROI patch, or None if it lies fully outside the image."""
+    x, y, w, h = rect
+    ih, iw = image.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(iw, x + w), min(ih, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return image[y0:y1, x0:x1]
 
 
-def roi_metric_values(image: np.ndarray, group: Group, roi: ROI,
-                      period: PeriodInfo, mid: str) -> np.ndarray:
-    """Per-cell values of a single ROI's GLV metric over a group's cells."""
-    vals: List[float] = []
-    for (r, c) in sorted(group.cells):
-        p = cell_patch(image, roi.rect, period, r, c)
-        if p is None:
-            continue
-        vals.append(glv_value(p, mid))
-    return np.asarray(vals, dtype=np.float64)
+def roi_snr(image: np.ndarray, rect: Rect, margin: int = SNR_MARGIN) -> float:
+    """E-beam SNR: (mean_roi - mean_bg) / std_bg over a background ring."""
+    sig = roi_patch(image, rect)
+    if sig is None or sig.size == 0:
+        return 0.0
+    x, y, w, h = rect
+    ih, iw = image.shape[:2]
+    ex0, ey0 = max(0, x - margin), max(0, y - margin)
+    ex1, ey1 = min(iw, x + w + margin), min(ih, y + h + margin)
+    outer = image[ey0:ey1, ex0:ex1].astype(np.float64)
+    mask = np.ones(outer.shape, dtype=bool)
+    iy0, ix0 = y - ey0, x - ex0
+    mask[max(0, iy0):max(0, iy0) + h, max(0, ix0):max(0, ix0) + w] = False
+    bg = outer[mask]
+    if bg.size == 0:
+        return 0.0
+    sd = float(bg.std())
+    if sd < 1e-9:
+        return 0.0
+    return (float(sig.astype(np.float64).mean()) - float(bg.mean())) / sd
+
+
+def roi_metric(image: np.ndarray, roi: ROI, mid: str,
+               margin: int = SNR_MARGIN) -> float:
+    if mid == SNR_ID:
+        return roi_snr(image, roi.rect, margin)
+    p = roi_patch(image, roi.rect)
+    return glv_value(p, mid) if p is not None else 0.0
+
+
+def group_rois(rois: List[ROI], gid: str) -> List[ROI]:
+    return [r for r in rois if r.gid == gid]
+
+
+def group_values(image: np.ndarray, rois: List[ROI], mid: str,
+                 margin: int = SNR_MARGIN) -> np.ndarray:
+    return np.asarray([roi_metric(image, r, mid, margin) for r in rois],
+                      dtype=np.float64)
 
 
 def summarize(values: np.ndarray) -> Dict[str, float]:
-    """n / mean / std / median / q25 / q75 / min / max of a value array."""
     v = np.asarray(values, dtype=np.float64)
     v = v[np.isfinite(v)]
     if v.size == 0:
         return {"n": 0, "mean": 0.0, "std": 0.0, "median": 0.0,
                 "q25": 0.0, "q75": 0.0, "min": 0.0, "max": 0.0}
-    return {
-        "n": int(v.size),
-        "mean": float(v.mean()),
-        "std": float(v.std()),
-        "median": float(np.median(v)),
-        "q25": float(np.percentile(v, 25)),
-        "q75": float(np.percentile(v, 75)),
-        "min": float(v.min()),
-        "max": float(v.max()),
-    }
+    return {"n": int(v.size), "mean": float(v.mean()), "std": float(v.std()),
+            "median": float(np.median(v)), "q25": float(np.percentile(v, 25)),
+            "q75": float(np.percentile(v, 75)), "min": float(v.min()),
+            "max": float(v.max())}
 
 
 # --------------------------------------------------------------------------- #
-# Comparison — a pure, cached compute step (headless-testable, thread-safe)
+# Multi-add helpers
+# --------------------------------------------------------------------------- #
+def grid_rois(bounds: Rect, rows: int, cols: int, inset: float = 0.18) -> List[Rect]:
+    """Tile ``bounds`` into ``rows × cols`` rectangles (each slightly inset)."""
+    x, y, w, h = bounds
+    rows, cols = max(1, int(rows)), max(1, int(cols))
+    cw, ch = w / cols, h / rows
+    ix, iy = cw * inset, ch * inset
+    out: List[Rect] = []
+    for r in range(rows):
+        for c in range(cols):
+            out.append((int(round(x + c * cw + ix)), int(round(y + r * ch + iy)),
+                        max(2, int(round(cw * (1 - 2 * inset)))),
+                        max(2, int(round(ch * (1 - 2 * inset))))))
+    return out
+
+
+def replicate_across_cells(rect: Rect, period: PeriodInfo,
+                           shape: Tuple[int, ...]) -> List[Rect]:
+    """Place ``rect`` at the same in-cell offset in every complete cell."""
+    x, y, w, h = rect
+    px, py = period.px, period.py
+    ox, oy = period.origin
+    dx, dy = (x - ox) % px, (y - oy) % py
+    out: List[Rect] = []
+    for (cx, cy) in stacking.tile_coords(shape, px, py, (ox, oy)):
+        ix, iy = cx + dx, cy + dy
+        if ix + w <= shape[1] and iy + h <= shape[0]:
+            out.append((ix, iy, w, h))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Comparison — pure, cached, thread-safe
 # --------------------------------------------------------------------------- #
 @dataclass
 class Series:
@@ -239,14 +229,13 @@ class AnalysisResult:
     empty: Optional[str] = None
     charts: List["Chart"] = field(default_factory=list)
     table_headers: List[str] = field(default_factory=list)
-    table_rows: List[tuple] = field(default_factory=list)   # (name, color, [str])
-    snr_text: Optional[str] = None
+    table_rows: List[tuple] = field(default_factory=list)
 
 
 def snapshot(groups: List[Group], rois: List[ROI]):
-    """Deep-ish copy of the mutable model for safe use on a worker thread."""
-    gs = [Group(g.gid, g.name, g.color, set(g.cells), g.role) for g in groups]
-    rs = [ROI(r.rid, r.label, r.color, tuple(r.rect), r.role) for r in rois]
+    """Copy the mutable model for safe use on a worker thread."""
+    gs = [Group(g.gid, g.name, g.color) for g in groups]
+    rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
     return gs, rs
 
 
@@ -254,131 +243,61 @@ def _cell(mean: float, std: float) -> str:
     return f"{mean:.3g} ±{std:.2g}"
 
 
-def compute_analysis(image, period, groups: List[Group], rois: List[ROI],
-                     metrics: List[str], mode: str, between_rid, within_gid,
-                     split: bool) -> AnalysisResult:
-    """Compute the comparison for the Analysis panel. Pure; no Qt.
+def compute_analysis(image, groups: List[Group], rois: List[ROI],
+                     metrics: List[str], mode: str, within_gid,
+                     margin: int = SNR_MARGIN) -> AnalysisResult:
+    from pear.core.attributes import metric_label
 
-    ``mode`` is ``"between"`` or ``"within"``. Values are cached per
-    (group, roi, metric) so a metric is never measured twice per call.
-    """
-    from pear.core.attributes import metric_label   # local: avoid cycle churn
+    if image is None or not metrics:
+        return AnalysisResult(empty="Load an image and add ROIs to some groups.")
 
-    if image is None or period is None or not metrics:
-        return AnalysisResult(empty="Load an image, detect the lattice, then paint groups.")
-
-    tgt = find_role(rois, TARGET) if split else None
-    ref = find_role(rois, REFERENCE) if split else None
     cache: Dict[tuple, np.ndarray] = {}
 
-    def vals(group: Group, roi: Optional[ROI], mid: str) -> np.ndarray:
-        rid = None if mid == SNR_ID else (roi.rid if roi else None)
-        key = (group.gid, rid, mid)
+    def vals(g: Group, mid: str) -> np.ndarray:
+        key = (g.gid, mid)
         if key not in cache:
-            cache[key] = group_metric_values(
-                image, group, roi, period, mid, target_roi=tgt, reference_roi=ref)
+            cache[key] = group_values(image, group_rois(rois, g.gid), mid, margin)
         return cache[key]
 
     if mode == "between":
-        used = [g for g in groups if g.cells]
+        used = [g for g in groups if group_rois(rois, g.gid)]
         if len(used) < 2:
-            return AnalysisResult(empty="Assign cells to two or more groups (Paint mode).")
-        roi = _by_rid(rois, between_rid) or (rois[0] if rois else None)
-        if roi is None:
-            return AnalysisResult(empty="Add an ROI to measure.")
-        res = AnalysisResult(subtitle=f"{len(used)} groups · ROI {roi.label}")
+            return AnalysisResult(
+                empty="Add ROIs to two or more groups to compare.")
+        res = AnalysisResult(subtitle=f"{len(used)} groups")
         for mid in metrics:
             res.charts.append(Chart(metric_label(mid), [
-                Series(g.name, g.color, vals(g, roi, mid)) for g in used]))
-        res.table_headers = ["Group", "n"] + [metric_label(m) for m in metrics]
+                Series(g.name, g.color, vals(g, mid)) for g in used]))
+        res.table_headers = ["Group", "ROIs"] + [metric_label(m) for m in metrics]
         for g in used:
-            row_vals = [_summ_cell(vals(g, roi, m)) for m in metrics]
-            res.table_rows.append((g.name, g.color, [str(len(g.cells))] + row_vals))
-        # Target − Reference delta row (group-level T/R), when tagged.
-        gt = find_role(used, TARGET)
-        gr = find_role(used, REFERENCE)
-        if gt is not None and gr is not None:
-            deltas = []
-            for m in metrics:
-                dt = float(vals(gt, roi, m).mean()) if vals(gt, roi, m).size else 0.0
-                dr = float(vals(gr, roi, m).mean()) if vals(gr, roi, m).size else 0.0
-                deltas.append(f"{dt - dr:+.3g}")
-            res.table_rows.append(("Δ (T − R)", None, [""] + deltas))
+            n = len(group_rois(rois, g.gid))
+            cells = [_summ(vals(g, m)) for m in metrics]
+            res.table_rows.append((g.name, g.color, [str(n)] + cells))
         return res
 
     # within a group
     g = _by_gid(groups, within_gid) or (groups[0] if groups else None)
-    if g is None or not g.cells:
-        return AnalysisResult(empty="Paint cells into a group first.")
-    if split:
-        if tgt is None or ref is None:
-            return AnalysisResult(empty="Tag one ROI as T and one as R (ROIs card).")
-        snr_v = vals(g, tgt, SNR_ID)
-        s = summarize(snr_v)
-        tm = summarize(vals(g, tgt, "glv_mean"))
-        rm = summarize(vals(g, ref, "glv_mean"))
-        res = AnalysisResult(
-            subtitle=f"{g.name} · {len(g.cells)} cells · {tgt.label} (T) vs {ref.label} (R)",
-            snr_text=(f"SNR = (μT − μR)/σR   →   μT {tm['mean']:.1f} · "
-                      f"μR {rm['mean']:.1f}   ⇒   SNR {s['mean']:.2f} ± {s['std']:.2f} "
-                      f"over {s['n']} cells"))
-        for mid in metrics:
-            if mid == SNR_ID:
-                continue
-            res.charts.append(Chart(metric_label(mid), [
-                Series(tgt.label, tgt.color, vals(g, tgt, mid)),
-                Series(ref.label, ref.color, vals(g, ref, mid))]))
-        return res
-    roi = _by_rid(rois, between_rid) or (rois[0] if rois else None)
-    if roi is None:
-        return AnalysisResult(empty="Add an ROI to measure.")
-    res = AnalysisResult(subtitle=f"{g.name} · {len(g.cells)} cells · ROI {roi.label}")
+    if g is None or not group_rois(rois, g.gid):
+        return AnalysisResult(empty="Add ROIs to this group first.")
+    res = AnalysisResult(
+        subtitle=f"{g.name} · {len(group_rois(rois, g.gid))} ROIs")
     for mid in metrics:
-        if mid == SNR_ID:
-            continue
-        res.charts.append(Chart(metric_label(mid), [
-            Series(g.name, g.color, vals(g, roi, mid))]))
+        res.charts.append(Chart(metric_label(mid),
+                                [Series(g.name, g.color, vals(g, mid))]))
+    res.table_headers = ["", "ROIs"] + [metric_label(m) for m in metrics]
+    res.table_rows.append((g.name, g.color,
+                           [str(len(group_rois(rois, g.gid)))]
+                           + [_summ(vals(g, m)) for m in metrics]))
     return res
 
 
-def _summ_cell(values: np.ndarray) -> str:
+def _summ(values: np.ndarray) -> str:
     s = summarize(values)
     return _cell(s["mean"], s["std"])
-
-
-def _by_rid(rois, rid):
-    for r in rois:
-        if r.rid == rid:
-            return r
-    return None
 
 
 def _by_gid(groups, gid):
     for g in groups:
         if g.gid == gid:
             return g
-    return None
-
-
-# --------------------------------------------------------------------------- #
-# Role helpers (target / reference)
-# --------------------------------------------------------------------------- #
-def set_role(items: List, item, role: str) -> None:
-    """Set ``item.role``, enforcing at most one holder of each role.
-
-    Assigning ``target`` or ``reference`` clears that same role from every
-    other item (to ``none``) so ``find_role`` is never ambiguous and the SNR
-    target/reference can't silently switch when an unrelated item is retagged.
-    """
-    if role in (TARGET, REFERENCE):
-        for other in items:
-            if other is not item and other.role == role:
-                other.role = NONE
-    item.role = role
-
-
-def find_role(items: List, role: str):
-    for it in items:
-        if it.role == role:
-            return it
     return None
