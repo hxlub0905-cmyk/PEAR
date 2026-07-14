@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Callable, List, Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QRectF, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (QColorDialog, QComboBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -72,14 +72,18 @@ def _clear(layout) -> None:
 # Distribution chart (box + jittered strip)
 # --------------------------------------------------------------------------- #
 class DistributionChart(QWidget):
+    """Vertical box-and-strip plot, or an overlaid histogram (toggle)."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._title = ""
         self._series: List[dict] = []
-        self.setMinimumHeight(96)
+        self._ctype = "box"
+        self.setMinimumHeight(212)
 
-    def set_data(self, title: str, series: List[dict]) -> None:
+    def set_data(self, title: str, series: List[dict], ctype: str = "box") -> None:
         self._title = title
+        self._ctype = ctype
         clean = []
         for s in series:
             v = np.asarray(s["values"], dtype=np.float64)
@@ -87,8 +91,7 @@ class DistributionChart(QWidget):
             if v.size:
                 clean.append({"label": s["label"], "color": s["color"], "values": v})
         self._series = clean
-        n = max(1, len(self._series))
-        self.setMinimumHeight(30 + n * 30 + 22)
+        self.setMinimumHeight(212)
         self.update()
 
     def paintEvent(self, _e) -> None:
@@ -104,64 +107,145 @@ class DistributionChart(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "no data")
             p.end()
             return
+        if self._ctype == "hist":
+            self._paint_hist(p)
+        else:
+            self._paint_box(p)
+        p.end()
 
+    def _range(self):
         allv = np.concatenate([s["values"] for s in self._series])
         lo, hi = float(allv.min()), float(allv.max())
         if hi - lo < 1e-9:
             lo -= 0.5
             hi += 0.5
-        pad = (hi - lo) * 0.06
-        lo -= pad
-        hi += pad
-        L, R, top = 12, 62, 24
-        W = max(10, self.width() - L - R)
-        laneH = 30
-        n = len(self._series)
-        plot_bottom = top + n * laneH
+        pad = (hi - lo) * 0.08
+        return lo - pad, hi + pad
 
-        def X(v):
-            return L + (v - lo) / (hi - lo) * W
+    # -- vertical box + jittered strip -------------------------------- #
+    def _paint_box(self, p: QPainter) -> None:
+        lo, hi = self._range()
+        top, left = 34, 46
+        bottom = self.height() - 30
+        right = self.width() - 12
+        H = max(10, bottom - top)
+        W = max(10, right - left)
+        n = len(self._series)
+
+        def Y(v):
+            return bottom - (v - lo) / (hi - lo) * H
 
         p.setFont(theme.mono_font(8))
         for t in range(5):
-            gx = L + W * t / 4.0
+            gy = top + H * t / 4.0
             p.setPen(QPen(QColor(theme.LINE2), 1))
-            p.drawLine(int(gx), top - 4, int(gx), int(plot_bottom + 2))
+            p.drawLine(left, int(gy), right, int(gy))
             p.setPen(QColor(theme.INK3))
-            p.drawText(int(gx) - 14, int(plot_bottom + 14),
-                       _fmt(lo + (hi - lo) * t / 4.0))
+            p.drawText(4, int(gy) + 3, _fmt(hi - (hi - lo) * t / 4.0))
 
+        lane = W / n
         for i, s in enumerate(self._series):
             v = s["values"]
             col = QColor(s["color"])
-            yc = top + i * laneH + laneH / 2
+            cx = left + lane * (i + 0.5)
+            bw = min(48.0, lane * 0.5)
             q25, med, q75 = (float(np.percentile(v, 25)),
                              float(np.median(v)), float(np.percentile(v, 75)))
-            bh = laneH * 0.52
+            vmin, vmax = float(v.min()), float(v.max())
+            # whisker (min–max) with caps
+            p.setPen(QPen(col, 1))
+            p.drawLine(int(cx), int(Y(vmax)), int(cx), int(Y(vmin)))
+            for yy in (vmin, vmax):
+                p.drawLine(int(cx - bw * 0.22), int(Y(yy)),
+                           int(cx + bw * 0.22), int(Y(yy)))
+            # IQR box
             box = QColor(col)
             box.setAlpha(48)
-            p.setPen(QPen(col, 1))
             p.setBrush(box)
-            p.drawRect(int(X(q25)), int(yc - bh / 2),
-                       max(2, int(X(q75) - X(q25))), int(bh))
+            p.setPen(QPen(col, 1))
+            p.drawRect(int(cx - bw / 2), int(Y(q75)),
+                       int(bw), max(2, int(Y(q25) - Y(q75))))
+            # jittered strip
             dot = QColor(col)
             dot.setAlpha(190)
             p.setPen(Qt.NoPen)
             p.setBrush(dot)
-            rngj = laneH * 0.34
             for k, val in enumerate(v):
-                jitter = ((k % 7) / 6.0 - 0.5) * rngj
-                p.drawEllipse(int(X(val)) - 3, int(yc + jitter) - 3, 6, 6)
+                jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
+                p.drawEllipse(int(cx + jitter) - 3, int(Y(val)) - 3, 6, 6)
+            # median
             p.setPen(QPen(col, 2.4))
-            p.drawLine(int(X(med)), int(yc - bh / 2 - 2),
-                       int(X(med)), int(yc + bh / 2 + 2))
+            p.drawLine(int(cx - bw / 2), int(Y(med)), int(cx + bw / 2), int(Y(med)))
+            # mean value, placed just above the column's own data
+            p.setPen(col)
+            p.setFont(theme.mono_font(8, weight=700))
+            my = max(top - 15, Y(vmax) - 16)
+            p.drawText(QRectF(cx - lane / 2, my, lane, 13),
+                       Qt.AlignHCenter | Qt.AlignVCenter, _fmt(float(v.mean())))
+            # label below the column
             p.setPen(QColor(theme.INK2))
             p.setFont(theme.mono_font(8))
-            p.drawText(int(L + 3), int(yc - bh / 2 - 5), f"{s['label']} · n={v.size}")
-            p.setPen(col)
-            p.setFont(theme.mono_font(9, weight=700))
-            p.drawText(self.width() - R + 5, int(yc + 4), _fmt(float(v.mean())))
-        p.end()
+            lab = p.fontMetrics().elidedText(
+                f"{s['label']} · n={v.size}", Qt.ElideRight, int(lane))
+            p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
+                       Qt.AlignHCenter | Qt.AlignVCenter, lab)
+
+    # -- overlaid histogram ------------------------------------------- #
+    def _paint_hist(self, p: QPainter) -> None:
+        lo, hi = self._range()
+        allv = np.concatenate([s["values"] for s in self._series])
+        nbins = int(np.clip(int(np.sqrt(allv.size)) + 1, 6, 22))
+        edges = np.linspace(lo, hi, nbins + 1)
+        counts = [np.histogram(s["values"], bins=edges)[0] for s in self._series]
+        max_c = max(1, max(int(c.max()) for c in counts))
+        top, left = 36, 40
+        bottom = self.height() - 28
+        right = self.width() - 12
+        H = max(10, bottom - top)
+        W = max(10, right - left)
+
+        def X(v):
+            return left + (v - lo) / (hi - lo) * W
+
+        def Yc(c):
+            return bottom - c / max_c * H
+
+        p.setPen(QPen(QColor(theme.LINE2), 1))
+        p.drawLine(left, bottom, right, bottom)
+        p.setFont(theme.mono_font(8))
+        p.setPen(QColor(theme.INK3))
+        for t in range(5):
+            gx = left + W * t / 4.0
+            p.drawText(int(gx) - 14, bottom + 14, _fmt(lo + (hi - lo) * t / 4.0))
+        for t in range(3):                      # count-axis ticks (left)
+            gy = bottom - H * t / 2.0
+            p.drawText(4, int(gy) + 3, str(int(round(max_c * t / 2.0))))
+
+        for s, c in zip(self._series, counts):  # overlaid bars
+            col = QColor(s["color"])
+            fill = QColor(col)
+            fill.setAlpha(90)
+            p.setBrush(fill)
+            p.setPen(QPen(col, 1.2))
+            for b in range(nbins):
+                if c[b] == 0:
+                    continue
+                x0, x1 = X(edges[b]), X(edges[b + 1])
+                y = Yc(int(c[b]))
+                p.drawRect(int(x0) + 1, int(y),
+                           max(1, int(x1 - x0) - 2), int(bottom - y))
+
+        lx = left                               # legend
+        p.setFont(theme.mono_font(8, weight=700))
+        fm = p.fontMetrics()
+        for s in self._series:
+            col = QColor(s["color"])
+            p.setBrush(col)
+            p.setPen(Qt.NoPen)
+            p.drawRect(int(lx), 25, 8, 8)
+            p.setPen(QColor(theme.INK2))
+            p.drawText(int(lx) + 12, 33, s["label"])
+            lx += 12 + fm.horizontalAdvance(s["label"]) + 14
 
 
 def _fmt(v: float) -> str:
@@ -585,6 +669,16 @@ class AnalysisPanel(QWidget):
             b.clicked.connect(lambda _=False, mm=m: self._pick_mode(mm))
             head.addWidget(b)
         self.between_btn.setChecked(True)
+        head.addSpacing(10)
+        self.box_btn = QPushButton("◫ Box")
+        self.hist_btn = QPushButton("▭ Histogram")
+        for b, t in ((self.box_btn, "box"), (self.hist_btn, "hist")):
+            b.setCheckable(True)
+            b.setFixedHeight(28)
+            b.setToolTip("Switch every chart between box-and-strip and histogram.")
+            b.clicked.connect(lambda _=False, tt=t: self._pick_ctype(tt))
+            head.addWidget(b)
+        self.box_btn.setChecked(True)
         self.selector_lbl = QLabel("")
         self.selector_lbl.setObjectName("Hint")
         head.addWidget(self.selector_lbl)
@@ -614,6 +708,8 @@ class AnalysisPanel(QWidget):
         root.addWidget(self.scroll, 1)
 
         self._mode = "between"
+        self._chart_type = "box"
+        self._last_result = None
         self._suppress = False
 
     def _pick_mode(self, mode: str) -> None:
@@ -621,6 +717,13 @@ class AnalysisPanel(QWidget):
         self.between_btn.setChecked(mode == "between")
         self.within_btn.setChecked(mode == "within")
         self.mode_changed.emit(mode)
+
+    def _pick_ctype(self, t: str) -> None:
+        self._chart_type = t
+        self.box_btn.setChecked(t == "box")
+        self.hist_btn.setChecked(t == "hist")
+        if self._last_result is not None:
+            self._render_body(self._last_result)   # re-render, no recompute
 
     def _selector_changed(self, _i: int) -> None:
         if self._suppress:
@@ -651,6 +754,10 @@ class AnalysisPanel(QWidget):
         self.busy.setText("· working…" if on else "")
 
     def show_result(self, result) -> None:
+        self._last_result = result
+        self._render_body(result)
+
+    def _render_body(self, result) -> None:
         _clear(self.body_lay)
         self.sub.setText(result.subtitle)
         if result.empty:
@@ -670,7 +777,7 @@ class AnalysisPanel(QWidget):
         grid.setSpacing(10)
         for i, (title, series) in enumerate(charts):
             chart = DistributionChart()
-            chart.set_data(title, series)
+            chart.set_data(title, series, self._chart_type)
             grid.addWidget(chart, i // 2, i % 2)
         self.body_lay.addWidget(grid_host)
 
