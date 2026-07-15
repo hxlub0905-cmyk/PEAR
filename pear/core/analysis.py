@@ -180,6 +180,49 @@ def group_outliers(image: np.ndarray, rois: List[ROI], mid: str,
     return out
 
 
+def cohens_d(a, b) -> Optional[float]:
+    """Standardized mean difference (a − b) / pooled_sd. None if degenerate."""
+    a = np.asarray(a, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    b = np.asarray(b, dtype=np.float64)
+    b = b[np.isfinite(b)]
+    if a.size < 2 or b.size < 2:
+        return None
+    na, nb = a.size, b.size
+    sp2 = ((na - 1) * a.var(ddof=1) + (nb - 1) * b.var(ddof=1)) / (na + nb - 2)
+    sp = float(np.sqrt(sp2))
+    if sp < 1e-12:
+        return None
+    return float((a.mean() - b.mean()) / sp)
+
+
+def attribute_separability(groups_vals) -> Optional[float]:
+    """η² (variance of a metric explained by group) in [0, 1]; higher = better
+    separation between groups. Needs 2+ non-empty groups with spread."""
+    arrs = [np.asarray(v, dtype=np.float64) for v in groups_vals]
+    arrs = [a[np.isfinite(a)] for a in arrs]
+    arrs = [a for a in arrs if a.size]
+    if len(arrs) < 2:
+        return None
+    allv = np.concatenate(arrs)
+    if allv.size < 2:
+        return None
+    grand = float(allv.mean())
+    ss_total = float(((allv - grand) ** 2).sum())
+    if ss_total < 1e-12:
+        return 0.0
+    ss_between = float(sum(a.size * (float(a.mean()) - grand) ** 2 for a in arrs))
+    return max(0.0, min(1.0, ss_between / ss_total))
+
+
+def pixel_hist(patch, bins: int = 32):
+    """Grey-level histogram of a patch over the full 0–255 range."""
+    p = np.asarray(patch).ravel()
+    if p.size == 0:
+        return np.zeros(bins, dtype=int), np.linspace(0, 255, bins + 1)
+    return np.histogram(p, bins=bins, range=(0, 255))
+
+
 def summarize(values: np.ndarray) -> Dict[str, float]:
     v = np.asarray(values, dtype=np.float64)
     v = v[np.isfinite(v)]
@@ -242,6 +285,9 @@ class AnalysisResult:
     charts: List["Chart"] = field(default_factory=list)
     table_headers: List[str] = field(default_factory=list)
     table_rows: List[tuple] = field(default_factory=list)
+    # between-mode extras
+    ranking: List[tuple] = field(default_factory=list)   # (label, η², cohen_d)
+    heat: Optional[dict] = None                          # group × metric matrix
 
 
 def snapshot(groups: List[Group], rois: List[ROI]):
@@ -313,6 +359,23 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
             n = len(group_rois(rois, g.gid))
             cells = [_summ(vals(g, m)) for m in metrics]
             res.table_rows.append((g.name, g.color, [str(n)] + cells))
+        # group × metric heatmap + attribute ranking (GLV metrics only)
+        res.heat = {
+            "groups": [g.name for g in used],
+            "colors": [g.color for g in used],
+            "metrics": [metric_label(m) for m in metrics],
+            "values": [[_mean_or_nan(vals(g, m)) for m in metrics] for g in used],
+        }
+        ranking = []
+        for mid in metrics:
+            if mid == SNR_ID:
+                continue
+            eta = attribute_separability([vals(g, mid) for g in used])
+            d = (cohens_d(vals(used[0], mid), vals(used[1], mid))
+                 if len(used) == 2 else None)
+            ranking.append((metric_label(mid), eta, d))
+        ranking.sort(key=lambda r: (r[1] is None, -(r[1] or 0.0)))
+        res.ranking = ranking
         return res
 
     # within a group
@@ -338,6 +401,12 @@ def _summ(values: np.ndarray) -> str:
     if s["n"] == 1:
         return f"{s['mean']:.3g}"
     return _cell(s["mean"], s["std"])
+
+
+def _mean_or_nan(v) -> float:
+    v = np.asarray(v, dtype=np.float64)
+    v = v[np.isfinite(v)]
+    return float(v.mean()) if v.size else float("nan")
 
 
 def _by_gid(groups, gid):

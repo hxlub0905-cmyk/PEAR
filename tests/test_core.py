@@ -10,11 +10,13 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
-from pear.core.analysis import (ROI, Group, compute_analysis, grid_between,
-                                group_outliers, group_rois, group_snr,
-                                group_values, groups_from_json, groups_to_json,
-                                heat_color, roi_metric, roi_patch, rois_from_json,
-                                rois_to_json, snapshot, summarize)
+from pear.core.analysis import (ROI, Group, attribute_separability, cohens_d,
+                                compute_analysis, grid_between, group_outliers,
+                                group_rois, group_snr, group_values,
+                                groups_from_json, groups_to_json, heat_color,
+                                pixel_hist, roi_metric, roi_patch,
+                                rois_from_json, rois_to_json, snapshot,
+                                summarize)
 from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
 
 
@@ -122,6 +124,42 @@ def test_heat_color_ramp_and_clamp():
     assert heat_color(0.5) == "#F59E0B"       # amber middle
     assert heat_color(1.0) == "#DC2626"       # warm end
     assert heat_color(-5) == "#2563EB" and heat_color(9) == "#DC2626"  # clamped
+
+
+def test_separability_and_cohens_d():
+    # well-separated groups → high η² and large |d|
+    a = np.array([10.0, 11, 9, 10, 12])
+    b = np.array([50.0, 51, 49, 52, 48])
+    eta = attribute_separability([a, b])
+    assert eta is not None and eta > 0.9
+    assert abs(cohens_d(a, b)) > 5
+    # identical groups → ~0 separability, d ≈ 0
+    assert attribute_separability([a, a.copy()]) < 0.05
+    assert abs(cohens_d(a, a.copy())) < 1e-9
+    # degenerate inputs
+    assert attribute_separability([a]) is None
+    assert cohens_d([1.0], [2.0, 3.0]) is None
+
+
+def test_pixel_hist_shape_and_counts():
+    counts, edges = pixel_hist(np.full((4, 5), 100, np.uint8), bins=16)
+    assert counts.sum() == 20 and len(edges) == 17
+    assert counts[np.digitize(100, edges) - 1] == 20      # all in one bin
+
+
+def test_compute_analysis_ranking_and_heat():
+    img = make_field()
+    groups, rois = _bright_dark(img)
+    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std", SNR_ID],
+                           "between", None)
+    # heatmap: 2 groups × 3 metrics
+    assert res.heat is not None
+    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 3
+    # ranking excludes SNR and is sorted by η² desc
+    labels = [r[0] for r in res.ranking]
+    assert "SNR" not in labels and len(res.ranking) == 2
+    etas = [r[1] for r in res.ranking if r[1] is not None]
+    assert etas == sorted(etas, reverse=True)
 
 
 def test_project_model_roundtrip():

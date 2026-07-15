@@ -10,14 +10,14 @@ from __future__ import annotations
 from typing import Callable, List, Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, QRectF, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
                                QWidget)
 
-from pear.core.analysis import Group
+from pear.core.analysis import Group, heat_color, pixel_hist
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
                                   metric_label)
 from pear.ui import theme
@@ -277,6 +277,34 @@ def _fmt(v: float) -> str:
     return f"{v:.3g}"
 
 
+def _is_dark(hexcol) -> bool:
+    c = QColor(hexcol)
+    return (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) < 140
+
+
+class _Bar(QWidget):
+    """A slim horizontal bar showing a fraction in [0, 1] (attribute ranking)."""
+
+    def __init__(self, frac):
+        super().__init__()
+        self._f = max(0.0, min(1.0, float(frac)))
+        self.setMinimumHeight(14)
+        self.setMinimumWidth(70)
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(0, self.height() / 2 - 4, self.width() - 1, 8)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.LINE2))
+        p.drawRoundedRect(r, 4, 4)
+        if self._f > 0:
+            fr = QRectF(r.left(), r.top(), r.width() * self._f, r.height())
+            p.setBrush(QColor(theme.AMBER))
+            p.drawRoundedRect(fr, 4, 4)
+        p.end()
+
+
 # --------------------------------------------------------------------------- #
 # Metric chips
 # --------------------------------------------------------------------------- #
@@ -528,6 +556,7 @@ class RailPanel(QWidget):
             "• Click → drop a size-W×H ROI · drag → custom size\n"
             "• Grid → two corners, set row×col, Add grid\n"
             "• Shift+drag → box-select · Del removes them\n"
+            "• Double-click an ROI → pixel inspector\n"
             "• T → pick the group’s SNR target (rest are reference)")
         self.roi_hint.setObjectName("Hint")
         self.roi_hint.setWordWrap(True)
@@ -879,8 +908,103 @@ class AnalysisPanel(QWidget):
                               "values": s.values} for s in c.series])
                   for c in result.charts]
         self._chart_grid(charts)
+        if result.ranking:
+            self._ranking_card(result.ranking)
+        if result.heat:
+            self._heatmap_card(result.heat)
         if result.table_rows:
             self._table(result.table_headers, result.table_rows)
+
+    def _ranking_card(self, ranking) -> None:
+        host = QFrame()
+        host.setObjectName("Card")
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setSpacing(8)
+        head = QLabel("Attribute ranking")
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(13, weight=700))
+        lay.addWidget(head)
+        hint = QLabel("How well each metric separates the groups "
+                      "(η² = share of variance explained; d = Cohen's d).")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+        for i, (label, eta, d) in enumerate(ranking):
+            rk = QLabel(f"{i + 1}")
+            rk.setFont(theme.mono_font(9, weight=700))
+            rk.setStyleSheet(f"color:{theme.INK3};")
+            nm = QLabel(label)
+            nm.setStyleSheet("font-weight:600;")
+            bar = _Bar(eta or 0.0)
+            txt = ("—" if eta is None else f"η²={eta:.2f}"
+                   + (f" · d={d:.2f}" if d is not None else ""))
+            val = QLabel(txt)
+            val.setFont(theme.mono_font(8))
+            val.setStyleSheet(f"color:{theme.INK2};")
+            grid.addWidget(rk, i, 0)
+            grid.addWidget(nm, i, 1)
+            grid.addWidget(bar, i, 2)
+            grid.addWidget(val, i, 3)
+        grid.setColumnStretch(2, 1)
+        lay.addLayout(grid)
+        self.body_lay.addWidget(host)
+
+    def _heatmap_card(self, heat) -> None:
+        host = QFrame()
+        host.setObjectName("Card")
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setSpacing(8)
+        head = QLabel("Group × metric heatmap")
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(13, weight=700))
+        lay.addWidget(head)
+        hint = QLabel("Group mean per metric, colour-normalised down each column.")
+        hint.setObjectName("Hint")
+        lay.addWidget(hint)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(4)
+        grid.setVerticalSpacing(4)
+        metrics, groups = heat["metrics"], heat["groups"]
+        colors, values = heat["colors"], heat["values"]
+        for c, m in enumerate(metrics):
+            h = QLabel(m)
+            h.setFont(theme.mono_font(8))
+            h.setStyleSheet(f"color:{theme.INK3}; font-weight:600;")
+            h.setAlignment(Qt.AlignCenter)
+            grid.addWidget(h, 0, c + 1)
+        arr = np.asarray(values, dtype=np.float64)
+        for c in range(len(metrics)):
+            col = arr[:, c] if arr.size else np.array([])
+            fin = col[np.isfinite(col)]
+            lo, hi = (float(fin.min()), float(fin.max())) if fin.size else (0.0, 1.0)
+            for r in range(len(groups)):
+                if c == 0:
+                    gl = QLabel("■ " + groups[r])
+                    gl.setFont(theme.mono_font(8))
+                    gl.setStyleSheet(f"color:{colors[r]}; font-weight:600;")
+                    grid.addWidget(gl, r + 1, 0)
+                v = float(arr[r, c])
+                cell = QLabel("—" if not np.isfinite(v) else _fmt(v))
+                cell.setAlignment(Qt.AlignCenter)
+                cell.setFont(theme.mono_font(8, weight=700))
+                cell.setMinimumWidth(64)
+                if not np.isfinite(v):
+                    cell.setStyleSheet(f"background:{theme.LINE2}; color:{theme.INK3};"
+                                       "border-radius:4px; padding:5px;")
+                else:
+                    t = 0.5 if hi <= lo else (v - lo) / (hi - lo)
+                    bg = heat_color(t)
+                    fg = "#FFFFFF" if _is_dark(bg) else theme.INK
+                    cell.setStyleSheet(f"background:{bg}; color:{fg};"
+                                       "border-radius:4px; padding:5px;")
+                grid.addWidget(cell, r + 1, c + 1)
+        lay.addLayout(grid)
+        self.body_lay.addWidget(host)
 
     def _chart_grid(self, charts) -> None:
         grid_host = QWidget()
@@ -929,3 +1053,153 @@ def _gindex_of(groups, gid):
         if g.gid == gid:
             return i
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# ROI pixel inspector (hosted in its own window)
+# --------------------------------------------------------------------------- #
+_HEAT_LUT = None
+
+
+def _heat_lut():
+    global _HEAT_LUT
+    if _HEAT_LUT is None:
+        lut = np.zeros((256, 3), dtype=np.uint8)
+        for i in range(256):
+            c = QColor(heat_color(i / 255.0))
+            lut[i] = (c.red(), c.green(), c.blue())
+        _HEAT_LUT = lut
+    return _HEAT_LUT
+
+
+class RoiInspector(QWidget):
+    """Pixel-level view of one ROI: false-colour heatmap, grey-level histogram,
+    and horizontal / vertical intensity profiles."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._patch = None
+        self._title = ""
+        self.setMinimumSize(560, 420)
+
+    def set_roi(self, patch, title: str) -> None:
+        self._patch = None if patch is None else np.asarray(patch)
+        self._title = title
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.fillRect(self.rect(), QColor(theme.WINDOW))
+        p.setPen(QColor(theme.INK))
+        p.setFont(theme.display_font(13, weight=700))
+        p.drawText(16, 24, self._title or "ROI inspector")
+        patch = self._patch
+        if patch is None or patch.size == 0:
+            p.setPen(QColor(theme.INK3))
+            p.setFont(theme.mono_font(9))
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "Double-click an ROI on the image to inspect its pixels.")
+            p.end()
+            return
+        pad, top = 16, 44
+        heat_w = min(240.0, (self.width() - 3 * pad) * 0.44)
+        heat = QRectF(pad, top, heat_w, heat_w * 0.82)
+        hist = QRectF(heat.right() + pad, top,
+                      self.width() - heat.right() - 2 * pad, heat.height())
+        prof = QRectF(pad, heat.bottom() + 30, self.width() - 2 * pad,
+                      self.height() - heat.bottom() - 30 - pad)
+        self._paint_heat(p, patch, heat)
+        self._paint_hist(p, patch, hist)
+        self._paint_profiles(p, patch, prof)
+        p.end()
+
+    def _cap(self, p, rect, text, color=None):
+        p.setPen(QColor(color or theme.INK3))
+        p.setFont(theme.mono_font(8, weight=700))
+        p.drawText(int(rect.left()), int(rect.top() - 6), text)
+
+    def _paint_heat(self, p, patch, rect):
+        self._cap(p, rect, "false-colour pixels")
+        h, w = patch.shape
+        rgb = np.ascontiguousarray(_heat_lut()[patch.astype(np.uint8)])
+        img = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        scaled = img.scaled(int(rect.width()), int(rect.height()),
+                            Qt.KeepAspectRatio, Qt.FastTransformation)
+        x = rect.left() + (rect.width() - scaled.width()) / 2
+        y = rect.top() + (rect.height() - scaled.height()) / 2
+        p.drawImage(int(x), int(y), scaled)
+        p.setPen(QPen(QColor(theme.LINE), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(x, y, scaled.width(), scaled.height()))
+
+    def _paint_hist(self, p, patch, rect):
+        self._cap(p, rect, "grey-level histogram")
+        counts, _edges = pixel_hist(patch, 32)
+        mx = max(1, int(counts.max()))
+        bw = rect.width() / len(counts)
+        base = rect.bottom()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.AMBER))
+        for i, c in enumerate(counts):
+            bh = (c / mx) * (rect.height() - 4)
+            p.drawRect(QRectF(rect.left() + i * bw + 1, base - bh,
+                              max(1.0, bw - 2), bh))
+        p.setPen(QPen(QColor(theme.LINE2), 1))
+        p.drawLine(int(rect.left()), int(base), int(rect.right()), int(base))
+        p.setPen(QColor(theme.INK3))
+        p.setFont(theme.mono_font(8))
+        p.drawText(QRectF(rect.left(), base + 2, rect.width(), 12), Qt.AlignLeft, "0")
+        p.drawText(QRectF(rect.left(), base + 2, rect.width(), 12),
+                   Qt.AlignRight, "255")
+        m = float(patch.mean())
+        mxx = rect.left() + (m / 255.0) * rect.width()
+        p.setPen(QPen(QColor(theme.INFO), 1.5))
+        p.drawLine(int(mxx), int(rect.top()), int(mxx), int(base))
+        p.setPen(QColor(theme.INFO))
+        p.setFont(theme.mono_font(8, weight=700))
+        p.drawText(int(mxx) + 3, int(rect.top() + 10), f"μ={m:.0f}")
+
+    def _paint_profiles(self, p, patch, rect):
+        p.setFont(theme.mono_font(8, weight=700))
+        fm = p.fontMetrics()
+        p.setPen(QColor(theme.INK3))
+        p.drawText(int(rect.left()), int(rect.top() - 6), "intensity profile")
+        x = rect.left() + fm.horizontalAdvance("intensity profile") + 14
+        p.setPen(QColor(theme.AMBER))
+        p.drawText(int(x), int(rect.top() - 6), "— cols")
+        x += fm.horizontalAdvance("— cols") + 10
+        p.setPen(QColor(theme.INFO))
+        p.drawText(int(x), int(rect.top() - 6), "— rows")
+        col = patch.mean(axis=0).astype(float)
+        row = patch.mean(axis=1).astype(float)
+        vals = np.concatenate([col, row])
+        lo, hi = float(vals.min()), float(vals.max())
+        if hi - lo < 1e-6:
+            lo -= 1.0
+            hi += 1.0
+        base, H = rect.bottom(), rect.height() - 4
+
+        def Y(v):
+            return base - (v - lo) / (hi - lo) * H
+
+        p.setPen(QPen(QColor(theme.LINE2), 1))
+        p.drawLine(int(rect.left()), int(base), int(rect.right()), int(base))
+
+        def plot(series, color):
+            if len(series) < 2:
+                return
+            pen = QPen(QColor(color), 1.8)
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            pts = [QPointF(rect.left() + i / (len(series) - 1) * rect.width(), Y(v))
+                   for i, v in enumerate(series)]
+            for a, b in zip(pts, pts[1:]):
+                p.drawLine(a, b)
+
+        plot(col, theme.AMBER)
+        plot(row, theme.INFO)
+        p.setPen(QColor(theme.INK3))
+        p.setFont(theme.mono_font(8))
+        p.drawText(int(rect.left()), int(rect.top() + 8), f"{hi:.0f}")
+        p.drawText(int(rect.left()), int(base), f"{lo:.0f}")

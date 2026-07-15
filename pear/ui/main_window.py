@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
 from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
                                 group_outliers, group_rois, group_snr,
                                 groups_from_json, groups_to_json, heat_color,
-                                load_image, roi_metric, rois_from_json,
-                                rois_to_json, snapshot, summarize)
+                                load_image, roi_metric, roi_patch,
+                                rois_from_json, rois_to_json, snapshot,
+                                summarize)
 from pear.core.attributes import SNR_ID, metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
-from pear.ui.widgets import AnalysisPanel, RailPanel
+from pear.ui.widgets import AnalysisPanel, RailPanel, RoiInspector
 
 _FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self._build_docks()
         self._build_status()
         self._build_analysis_window()
+        self._build_inspector_window()
         self._wire()
         self.rail.set_ready(False)
 
@@ -177,6 +179,15 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.analysis)
 
+    def _build_inspector_window(self) -> None:
+        self.inspector = RoiInspector()
+        self.inspector_window = QWidget()
+        self.inspector_window.setWindowTitle("PEAR — ROI inspector")
+        self.inspector_window.resize(600, 440)
+        lay = QVBoxLayout(self.inspector_window)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.inspector)
+
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load)
         self.analysis_btn_top.clicked.connect(self.open_analysis)
@@ -210,6 +221,7 @@ class MainWindow(QMainWindow):
         self.image_view.rois_delete_requested.connect(self.delete_rois)
         self.image_view.roi_hovered.connect(self.rail.set_hovered_roi)
         self.image_view.roi_duplicate_requested.connect(self.duplicate_roi)
+        self.image_view.roi_inspect_requested.connect(self.open_inspector)
         self.image_view.group_index_requested.connect(self.select_group_by_index)
         self.image_view.cursor_info.connect(self.cursor_lbl.setText)
         self.image_view.zoom_changed.connect(
@@ -487,6 +499,26 @@ class MainWindow(QMainWindow):
         self.analysis_window.activateWindow()
         self._render_analysis()
 
+    def open_inspector(self, rid: int) -> None:
+        self.select_roi(rid)
+        self.inspector_window.show()
+        self.inspector_window.raise_()
+        self.inspector_window.activateWindow()
+        self._update_inspector()
+
+    def _update_inspector(self) -> None:
+        if not self.inspector_window.isVisible():
+            return
+        roi = self._roi(self._active_rid)
+        if roi is None or self._image is None:
+            self.inspector.set_roi(None, "")
+            return
+        g = self._group(roi.gid)
+        title = (f"{roi.label or ('ROI ' + str(roi.rid))} · "
+                 f"{roi.rect[2]}×{roi.rect[3]}"
+                 + (f" · {g.name}" if g is not None else ""))
+        self.inspector.set_roi(roi_patch(self._image, roi.rect), title)
+
     # ------------------------------------------------------------------ #
     # refresh
     # ------------------------------------------------------------------ #
@@ -517,6 +549,7 @@ class MainWindow(QMainWindow):
         self.image_view.set_outliers(self._outlier_rids)
         self._update_roi_values()
         self._update_heatmap()
+        self._update_inspector()
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
         self._render_analysis()

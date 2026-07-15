@@ -45,8 +45,15 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
 - **Within a group** — the distribution across one group's ROIs.
 
 Charts render as **vertical box-and-strip** plots (toggle **whiskers** / strip
-**points**) or an overlaid **histogram**, with labelled axes; plus a summary
-table. **CSV export** carries every ROI's metrics and a per-group summary.
+**points**) or an overlaid **histogram**, with labelled axes. Between-group mode
+also gives an **attribute-ranking** table — which metric best separates the
+groups, scored by η² (variance explained) and Cohen's d — and a **group ×
+metric heatmap** for an at-a-glance overview, plus a summary table. **CSV
+export** carries every ROI's metrics and a per-group summary.
+
+**Double-click any ROI** for a **pixel inspector** in its own window: a
+false-colour view of the patch, its grey-level histogram, and horizontal /
+vertical intensity profiles.
 
 ## Highlights
 
@@ -89,11 +96,13 @@ pytest                              # headless core + offscreen UI smoke
 ```
 
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
-  grid interpolation, outlier detection, heat colormap, project (de)serialize,
-  between/within comparison, snapshot isolation.
+  grid interpolation, outlier detection, heat colormap, attribute separability /
+  ranking, pixel histogram, project (de)serialize, between/within comparison,
+  snapshot isolation.
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
   select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
-  shortcuts, chart toggles, project save/open, CSV export.
+  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
+  save/open, CSV export.
 
 ## Repository layout
 
@@ -112,7 +121,8 @@ pear/
 
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
-flagging, between-group and within-group distribution comparison (box or
-histogram) in a separate window, project save/open, CSV export.
+flagging, attribute ranking + group×metric heatmap, per-ROI pixel inspector,
+between-group and within-group distribution comparison (box or histogram) in a
+separate window, project save/open, CSV export.
 
 Out of scope: defect detection/decision, classification, ML; batch processing.

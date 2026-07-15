@@ -38,6 +38,7 @@ class ImageView(QWidget):
     rois_delete_requested = Signal(object)  # list[rid] (Delete on a selection)
     roi_hovered = Signal(int)               # rid under the cursor (-1 = none)
     roi_duplicate_requested = Signal(int)   # rid (Ctrl+D)
+    roi_inspect_requested = Signal(int)     # rid (double-click → pixel inspector)
     group_index_requested = Signal(int)     # switch active group by index (1–9)
     cursor_info = Signal(str)
     zoom_changed = Signal(float)
@@ -656,6 +657,16 @@ class ImageView(QWidget):
         roi.rect = self._clamp((x + dx, y + dy, w, h))
         self.roi_modified.emit(roi.rid, roi.rect)
         self.update()
+
+    def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
+        if self._image is None or e.button() != Qt.LeftButton or self._grid_mode:
+            return
+        rid = self._roi_body_at(QPointF(e.position()))
+        if rid is not None:
+            if rid != self._active_rid:
+                self._active_rid = rid
+                self.roi_selected.emit(rid)
+            self.roi_inspect_requested.emit(rid)
 
     def wheelEvent(self, e: QWheelEvent) -> None:
         if self._image is None:

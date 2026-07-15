@@ -344,6 +344,33 @@ def test_chart_option_toggles(app):
     assert any(c._opts == {"points": False, "whiskers": False} for c in charts)
 
 
+def test_ranking_and_heatmap_render(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean", "glv_std"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    res = win.analysis._last_result
+    assert res.ranking and res.heat is not None
+    assert len(res.heat["values"]) == 2
+
+
+def test_roi_inspector_shows_patch(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.on_roi_created((22, 18, 20, 16))
+    win.open_inspector(win._active_rid)
+    assert win.inspector_window.isVisible()
+    assert win.inspector._patch is not None
+    assert win.inspector._patch.shape == (16, 20)
+    win.on_roi_created((3, 3, 10, 8))                 # inspector tracks active ROI
+    win.select_roi(win._active_rid)
+    assert win.inspector._patch.shape == (8, 10)
+
+
 def test_project_save_open_roundtrip(app, tmp_path):
     import cv2
     from pear.core.analysis import group_rois
