@@ -1,8 +1,21 @@
 """Data model, geometry, and analysis orchestration.
 
-Pure NumPy/OpenCV — no Qt. This module ties the vendored period core,
-the attribute bank, and the outlier ranking together into per-region
-analysis.
+Pure NumPy/OpenCV — no Qt.
+
+Model
+-----
+* **Group** — a *category* of features (e.g. "round holes", "square holes").
+* **ROI**   — a rectangle placed on the image that belongs to one group. A
+  group holds many ROIs. Each ROI is measured independently.
+
+Analysis compares the distribution of a metric across every ROI in a group,
+either *between* groups or *within* a single group.
+
+Metrics
+-------
+GLV statistics come from each ROI patch. SNR is a *within-group* measurement:
+one ROI in the group is tagged the *target* (T) and the remaining ROIs are the
+*reference* (R); SNR = ``(mean_target - mean_reference) / std_reference``.
 """
 
 from __future__ import annotations
@@ -13,62 +26,61 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from pear.core import stacking
-from pear.core.attributes import (ATTR_LABELS, SIZE_ATTRS, compute_attributes)
-from pear.core.separability import (AttrOutlierScore, AttrSeparabilityScore,
-                                    rank_outlier_attributes,
-                                    rank_separability_attributes)
+from pear.core.attributes import SNR_ID, glv_value
 
-Rect = Tuple[int, int, int, int]  # (x, y, w, h) in image pixels
+Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
 
-# A fixed palette for regions; cycles when exhausted. Bright, saturated
-# hues that pop on the dark stage. Amber and red are reserved (markers /
-# Swiss accent), so they are excluded here.
-REGION_PALETTE: List[str] = [
-    "#2DD4BF", "#60A5FA", "#C084FC", "#F472B6",
-    "#34D399", "#38BDF8", "#A3E635", "#818CF8",
+# Categorical palette for groups (cycles).
+GROUP_PALETTE: List[str] = [
+    "#F59E0B", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
+    "#0891B2", "#EA580C", "#4B5563",
 ]
 
+# Sequential ramp for the metric heatmap: cool → amber → warm.
+_HEAT_STOPS = [(0.0, (37, 99, 235)), (0.5, (245, 158, 11)), (1.0, (220, 38, 38))]
+
+
+def heat_color(t: float) -> str:
+    """Map ``t`` in [0, 1] to a hex colour on the blue → amber → red ramp."""
+    if not np.isfinite(t):
+        return "#4B5563"
+    t = 0.0 if t < 0 else (1.0 if t > 1 else float(t))
+    for i in range(len(_HEAT_STOPS) - 1):
+        t0, c0 = _HEAT_STOPS[i]
+        t1, c1 = _HEAT_STOPS[i + 1]
+        if t <= t1:
+            f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            r, g, b = (round(a + (b - a) * f) for a, b in zip(c0, c1))
+            return f"#{r:02X}{g:02X}{b:02X}"
+    return "#DC2626"
+
 
 @dataclass
-class Region:
-    """A reference ROI drawn in one cell, expanded to every complete cell."""
+class ROI:
+    """A measurement rectangle belonging to one group."""
 
     rid: int
-    name: str
-    color: str
-    roi: Rect
-    instances: List[Rect] = field(default_factory=list)
-    records: List[dict] = field(default_factory=list)
-    # Unsupervised outlier ranking.
-    ranking: List[AttrOutlierScore] = field(default_factory=list)
-    sel_attr: Optional[str] = None
-    # Labelled compare: instance indices tagged as "target" (the rest are
-    # reference), and the resulting separability ranking.
-    target_idx: set = field(default_factory=set)
-    sep_ranking: List[AttrSeparabilityScore] = field(default_factory=list)
-    sep_sel_attr: Optional[str] = None
+    gid: str
+    rect: Rect
+    label: str = ""
 
 
 @dataclass
-class PeriodInfo:
-    px: int
-    py: int
-    axis_mode: str
-    confidence: float
-    origin: Tuple[int, int] = (0, 0)
-    golden_cell: Optional[np.ndarray] = None
+class Group:
+    """A category of ROIs. One ROI may be tagged the SNR *target*; the rest
+    of the group's ROIs are the SNR *reference*."""
+
+    gid: str
+    name: str
+    color: str
+    target_rid: Optional[int] = None
 
 
 # --------------------------------------------------------------------------- #
 # Image IO (CJK-path safe)
 # --------------------------------------------------------------------------- #
 def load_image(path: str) -> np.ndarray:
-    """Load an image as 8-bit single-channel grayscale.
-
-    Uses ``cv2.imdecode`` on raw bytes (safe for CJK paths). 16-bit / RGB
-    inputs are normalized to 8-bit grayscale.
-    """
+    """Load an image as 8-bit single-channel grayscale (CJK-path safe)."""
     data = np.fromfile(path, dtype=np.uint8)
     if data.size == 0:
         raise IOError(f"could not read file: {path}")
@@ -86,146 +98,319 @@ def load_image(path: str) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# Geometry
+# ROI patch + metrics
 # --------------------------------------------------------------------------- #
-def expand_reference_roi(roi: Rect, px: int, py: int,
-                         shape: Tuple[int, ...],
-                         origin: Tuple[int, int] = (0, 0)) -> List[Rect]:
-    """Expand a reference ROI to one Rect per complete cell.
+def roi_patch(image: np.ndarray, rect: Rect) -> Optional[np.ndarray]:
+    """Clipped ROI patch, or None if it lies fully outside the image."""
+    x, y, w, h = rect
+    ih, iw = image.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(iw, x + w), min(ih, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return image[y0:y1, x0:x1]
 
-    Phase-invariant: the reference offset and every target cell share the
-    same origin, so the origin cancels. Cells whose instance would fall
-    outside the image are dropped.
+
+def roi_metric(image: np.ndarray, roi: ROI, mid: str) -> float:
+    """A per-ROI GLV statistic (SNR is a per-group metric, not per ROI)."""
+    p = roi_patch(image, roi.rect)
+    return glv_value(p, mid) if p is not None else 0.0
+
+
+def group_snr(image: np.ndarray, rois: List[ROI],
+              target_rid: Optional[int]) -> Optional[float]:
+    """Within-group SNR = (mean_target - mean_reference) / std_reference.
+
+    ``target_rid`` selects the target ROI; every other ROI in the group is
+    the reference (their pixels are pooled). Returns None when there is no
+    target, no reference, or the reference has no spread.
     """
-    x, y, w, h = roi
-    ox, oy = origin
-    dx, dy = (x - ox) % px, (y - oy) % py
-    out: List[Rect] = []
-    for (cx, cy) in stacking.tile_coords(shape, px, py, origin):
-        ix, iy = cx + dx, cy + dy
-        if ix >= 0 and iy >= 0 and ix + w <= shape[1] and iy + h <= shape[0]:
-            out.append((ix, iy, w, h))
+    tgt = next((r for r in rois if r.rid == target_rid), None)
+    refs = [r for r in rois if r.rid != target_rid]
+    if tgt is None or not refs:
+        return None
+    tp = roi_patch(image, tgt.rect)
+    if tp is None or tp.size == 0:
+        return None
+    ref_pix = [roi_patch(image, r.rect).astype(np.float64).ravel()
+               for r in refs if roi_patch(image, r.rect) is not None]
+    ref_pix = [a for a in ref_pix if a.size]
+    if not ref_pix:
+        return None
+    ref = np.concatenate(ref_pix)
+    sd = float(ref.std())
+    if sd < 1e-9:
+        return None
+    return (float(tp.astype(np.float64).mean()) - float(ref.mean())) / sd
+
+
+def group_rois(rois: List[ROI], gid: str) -> List[ROI]:
+    return [r for r in rois if r.gid == gid]
+
+
+def group_values(image: np.ndarray, rois: List[ROI], mid: str) -> np.ndarray:
+    return np.asarray([roi_metric(image, r, mid) for r in rois],
+                      dtype=np.float64)
+
+
+def group_outliers(image: np.ndarray, rois: List[ROI], mid: str,
+                   k: float = 1.5) -> set:
+    """rids that are Tukey outliers of ``mid`` *within their own group*.
+
+    A value outside ``[Q1 − k·IQR, Q3 + k·IQR]`` is an outlier. Groups with
+    fewer than 4 ROIs (too few for a stable IQR) are skipped.
+    """
+    out: set = set()
+    by_gid: Dict[str, List[ROI]] = {}
+    for r in rois:
+        by_gid.setdefault(r.gid, []).append(r)
+    for grs in by_gid.values():
+        if len(grs) < 4:
+            continue
+        vals = np.array([roi_metric(image, r, mid) for r in grs],
+                        dtype=np.float64)
+        q1, q3 = float(np.percentile(vals, 25)), float(np.percentile(vals, 75))
+        iqr = q3 - q1
+        if iqr <= 1e-12:
+            continue
+        lo, hi = q1 - k * iqr, q3 + k * iqr
+        for r, v in zip(grs, vals):
+            if v < lo or v > hi:
+                out.add(r.rid)
     return out
 
 
-def golden_subcell(golden: Optional[np.ndarray], roi: Rect,
-                   px: int, py: int) -> Optional[np.ndarray]:
-    """The Golden-Cell sub-region matching a region's ROI offset.
-
-    Returns ``None`` (degrade gracefully) if no golden cell exists or the
-    sub-region would fall outside the cell.
-    """
-    if golden is None:
+def cohens_d(a, b) -> Optional[float]:
+    """Standardized mean difference (a − b) / pooled_sd. None if degenerate."""
+    a = np.asarray(a, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    b = np.asarray(b, dtype=np.float64)
+    b = b[np.isfinite(b)]
+    if a.size < 2 or b.size < 2:
         return None
-    x, y, w, h = roi
-    dx, dy = x % px, y % py
-    if dx + w > golden.shape[1] or dy + h > golden.shape[0]:
+    na, nb = a.size, b.size
+    sp2 = ((na - 1) * a.var(ddof=1) + (nb - 1) * b.var(ddof=1)) / (na + nb - 2)
+    sp = float(np.sqrt(sp2))
+    if sp < 1e-12:
         return None
-    return golden[dy:dy + h, dx:dx + w]
+    return float((a.mean() - b.mean()) / sp)
 
 
-def build_golden_cell(image: np.ndarray, px: int, py: int,
-                      origin: Tuple[int, int] = (0, 0)) -> np.ndarray:
-    """Median-stacked reference cell ``(py, px)``."""
-    return stacking.stack_cells(image, px, py, method="median", origin=origin)
+def attribute_separability(groups_vals) -> Optional[float]:
+    """η² (variance of a metric explained by group) in [0, 1]; higher = better
+    separation between groups. Needs 2+ non-empty groups with spread."""
+    arrs = [np.asarray(v, dtype=np.float64) for v in groups_vals]
+    arrs = [a[np.isfinite(a)] for a in arrs]
+    arrs = [a for a in arrs if a.size]
+    if len(arrs) < 2:
+        return None
+    allv = np.concatenate(arrs)
+    if allv.size < 2:
+        return None
+    grand = float(allv.mean())
+    ss_total = float(((allv - grand) ** 2).sum())
+    if ss_total < 1e-12:
+        return 0.0
+    ss_between = float(sum(a.size * (float(a.mean()) - grand) ** 2 for a in arrs))
+    return max(0.0, min(1.0, ss_between / ss_total))
+
+
+def pixel_hist(patch, bins: int = 32):
+    """Grey-level histogram of a patch over the full 0–255 range."""
+    p = np.asarray(patch).ravel()
+    if p.size == 0:
+        return np.zeros(bins, dtype=int), np.linspace(0, 255, bins + 1)
+    return np.histogram(p, bins=bins, range=(0, 255))
+
+
+def summarize(values: np.ndarray) -> Dict[str, float]:
+    v = np.asarray(values, dtype=np.float64)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return {"n": 0, "mean": 0.0, "std": 0.0, "median": 0.0,
+                "q25": 0.0, "q75": 0.0, "min": 0.0, "max": 0.0}
+    return {"n": int(v.size), "mean": float(v.mean()), "std": float(v.std()),
+            "median": float(np.median(v)), "q25": float(np.percentile(v, 25)),
+            "q75": float(np.percentile(v, 75)), "min": float(v.min()),
+            "max": float(v.max())}
 
 
 # --------------------------------------------------------------------------- #
-# Orchestration
+# Multi-add helpers
 # --------------------------------------------------------------------------- #
-def run_region_analysis(image: np.ndarray, region: Region, period: PeriodInfo,
-                        nm_per_px: Optional[float] = None,
-                        k_sigma: float = 3.5) -> Region:
-    """Compute attributes for every instance of a region and rank them.
+def grid_between(tl_center: Tuple[float, float], br_center: Tuple[float, float],
+                 rows: int, cols: int, w: int, h: int) -> List[Rect]:
+    """Grid of same-size ROIs whose *centers* interpolate between two anchors.
 
-    Mutates and returns ``region`` (records, ranking, sel_attr). Re-expanding
-    invalidates any target tags (instance indices change), so they are
-    cleared.
+    ``tl_center`` is the centre of the top-left corner ROI (grid[0,0]) and
+    ``br_center`` the centre of the bottom-right one (grid[rows-1,cols-1]);
+    the ``rows × cols`` centres are spaced evenly between them (matching the
+    sibling tool's ``generate_grid``). Every ROI is ``w × h``.
     """
-    px, py = period.px, period.py
-    region.instances = expand_reference_roi(
-        region.roi, px, py, image.shape, period.origin)
-    region.target_idx = set()
-    region.sep_ranking = []
-    region.sep_sel_attr = None
-
-    g_sub = golden_subcell(period.golden_cell, region.roi, px, py)
-
-    records: List[dict] = []
-    for (ix, iy, w, h) in region.instances:
-        patch = image[iy:iy + h, ix:ix + w]
-        attrs = compute_attributes(patch, golden_sub=g_sub, nm_per_px=nm_per_px)
-        col = ix // px
-        row = iy // py
-        rec = {"row": int(row), "col": int(col),
-               "x": int(ix), "y": int(iy), "w": int(w), "h": int(h)}
-        rec.update(attrs)
-        records.append(rec)
-    region.records = records
-
-    table = attribute_table(records)
-    region.ranking = rank_outlier_attributes(table, k_sigma=k_sigma, skip=SIZE_ATTRS)
-    if region.ranking:
-        region.sel_attr = region.ranking[0].attr
-    else:
-        region.sel_attr = None
-    return region
+    tlx, tly = tl_center
+    brx, bry = br_center
+    rows, cols = max(1, int(rows)), max(1, int(cols))
+    step_x = (brx - tlx) / (cols - 1) if cols > 1 else 0.0
+    step_y = (bry - tly) / (rows - 1) if rows > 1 else 0.0
+    out: List[Rect] = []
+    for i in range(rows):
+        for j in range(cols):
+            cx = tlx + j * step_x
+            cy = tly + i * step_y
+            out.append((int(round(cx - w / 2)), int(round(cy - h / 2)),
+                        int(w), int(h)))
+    return out
 
 
-def run_region_separability(region: Region) -> Region:
-    """Rank attributes by how well they separate tagged target cells from
-    the reference cells. Mutates and returns ``region`` (sep_ranking,
-    sep_sel_attr). Needs at least one target and one reference instance.
-    """
-    n = len(region.instances)
-    mask = np.zeros(n, dtype=bool)
-    for i in region.target_idx:
-        if 0 <= i < n:
-            mask[i] = True
-    table = attribute_table(region.records)
-    region.sep_ranking = rank_separability_attributes(
-        table, mask, skip=SIZE_ATTRS)
-    region.sep_sel_attr = region.sep_ranking[0].attr if region.sep_ranking else None
-    return region
+# --------------------------------------------------------------------------- #
+# Comparison — pure, cached, thread-safe
+# --------------------------------------------------------------------------- #
+@dataclass
+class Series:
+    label: str
+    color: str
+    values: np.ndarray
 
 
-def toggle_target(region: Region, idx: int) -> None:
-    """Toggle whether instance ``idx`` is tagged as a target cell."""
-    if idx in region.target_idx:
-        region.target_idx.discard(idx)
-    else:
-        region.target_idx.add(idx)
+@dataclass
+class Chart:
+    title: str
+    series: List["Series"] = field(default_factory=list)
 
 
-def target_mask(region: Region) -> np.ndarray:
-    """Boolean array over instances: True where tagged as target."""
-    n = len(region.instances)
-    mask = np.zeros(n, dtype=bool)
-    for i in region.target_idx:
-        if 0 <= i < n:
-            mask[i] = True
-    return mask
+@dataclass
+class AnalysisResult:
+    subtitle: str = ""
+    empty: Optional[str] = None
+    charts: List["Chart"] = field(default_factory=list)
+    table_headers: List[str] = field(default_factory=list)
+    table_rows: List[tuple] = field(default_factory=list)
+    # between-mode extras
+    ranking: List[tuple] = field(default_factory=list)   # (label, η², cohen_d)
+    heat: Optional[dict] = None                          # group × metric matrix
 
 
-def attribute_table(records: List[dict]) -> Dict[str, np.ndarray]:
-    """Pivot per-instance records into ``{attr_id: values_per_instance}``.
-
-    Only keys present in ``ATTR_LABELS`` (and present in every record) are
-    included.
-    """
-    if not records:
-        return {}
-    keys = [k for k in ATTR_LABELS if all(k in r for r in records)]
-    return {k: np.array([r[k] for r in records], dtype=np.float64) for k in keys}
+def snapshot(groups: List[Group], rois: List[ROI]):
+    """Copy the mutable model for safe use on a worker thread."""
+    gs = [Group(g.gid, g.name, g.color, g.target_rid) for g in groups]
+    rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
+    return gs, rs
 
 
-def outlier_instances(region: Region, attr: Optional[str] = None) -> List[Rect]:
-    """Instance Rects flagged as outliers for the given (or selected) attribute."""
-    attr = attr or region.sel_attr
-    if attr is None:
-        return []
-    for score in region.ranking:
-        if score.attr == attr:
-            return [region.instances[i] for i in score.outlier_indices
-                    if 0 <= i < len(region.instances)]
-    return []
+# --------------------------------------------------------------------------- #
+# Project (de)serialization — plain JSON-friendly dicts
+# --------------------------------------------------------------------------- #
+def groups_to_json(groups: List[Group]) -> List[dict]:
+    return [{"gid": g.gid, "name": g.name, "color": g.color,
+             "target_rid": g.target_rid} for g in groups]
+
+
+def rois_to_json(rois: List[ROI]) -> List[dict]:
+    return [{"rid": r.rid, "gid": r.gid, "rect": list(r.rect),
+             "label": r.label} for r in rois]
+
+
+def groups_from_json(items) -> List[Group]:
+    return [Group(g["gid"], g["name"], g["color"], g.get("target_rid"))
+            for g in (items or [])]
+
+
+def rois_from_json(items) -> List[ROI]:
+    return [ROI(r["rid"], r["gid"], tuple(r["rect"]), r.get("label", ""))
+            for r in (items or [])]
+
+
+def _cell(mean: float, std: float) -> str:
+    return f"{mean:.3g} ±{std:.2g}"
+
+
+def compute_analysis(image, groups: List[Group], rois: List[ROI],
+                     metrics: List[str], mode: str, within_gid) -> AnalysisResult:
+    from pear.core.attributes import metric_label
+
+    if image is None or not metrics:
+        return AnalysisResult(empty="Load an image and add ROIs to some groups.")
+
+    cache: Dict[tuple, np.ndarray] = {}
+
+    def vals(g: Group, mid: str) -> np.ndarray:
+        key = (g.gid, mid)
+        if key not in cache:
+            grois = group_rois(rois, g.gid)
+            if mid == SNR_ID:
+                s = group_snr(image, grois, g.target_rid)
+                cache[key] = np.asarray(
+                    [] if s is None else [s], dtype=np.float64)
+            else:
+                cache[key] = group_values(image, grois, mid)
+        return cache[key]
+
+    if mode == "between":
+        used = [g for g in groups if group_rois(rois, g.gid)]
+        if len(used) < 2:
+            return AnalysisResult(
+                empty="Add ROIs to two or more groups to compare.")
+        res = AnalysisResult(subtitle=f"{len(used)} groups")
+        for mid in metrics:
+            res.charts.append(Chart(metric_label(mid), [
+                Series(g.name, g.color, vals(g, mid)) for g in used]))
+        res.table_headers = ["Group", "ROIs"] + [metric_label(m) for m in metrics]
+        for g in used:
+            n = len(group_rois(rois, g.gid))
+            cells = [_summ(vals(g, m)) for m in metrics]
+            res.table_rows.append((g.name, g.color, [str(n)] + cells))
+        # group × metric heatmap + attribute ranking (GLV metrics only)
+        res.heat = {
+            "groups": [g.name for g in used],
+            "colors": [g.color for g in used],
+            "metrics": [metric_label(m) for m in metrics],
+            "values": [[_mean_or_nan(vals(g, m)) for m in metrics] for g in used],
+        }
+        ranking = []
+        for mid in metrics:
+            if mid == SNR_ID:
+                continue
+            eta = attribute_separability([vals(g, mid) for g in used])
+            d = (cohens_d(vals(used[0], mid), vals(used[1], mid))
+                 if len(used) == 2 else None)
+            ranking.append((metric_label(mid), eta, d))
+        ranking.sort(key=lambda r: (r[1] is None, -(r[1] or 0.0)))
+        res.ranking = ranking
+        return res
+
+    # within a group
+    g = _by_gid(groups, within_gid) or (groups[0] if groups else None)
+    if g is None or not group_rois(rois, g.gid):
+        return AnalysisResult(empty="Add ROIs to this group first.")
+    res = AnalysisResult(
+        subtitle=f"{g.name} · {len(group_rois(rois, g.gid))} ROIs")
+    for mid in metrics:
+        res.charts.append(Chart(metric_label(mid),
+                                [Series(g.name, g.color, vals(g, mid))]))
+    res.table_headers = ["", "ROIs"] + [metric_label(m) for m in metrics]
+    res.table_rows.append((g.name, g.color,
+                           [str(len(group_rois(rois, g.gid)))]
+                           + [_summ(vals(g, m)) for m in metrics]))
+    return res
+
+
+def _summ(values: np.ndarray) -> str:
+    s = summarize(values)
+    if s["n"] == 0:
+        return "—"
+    if s["n"] == 1:
+        return f"{s['mean']:.3g}"
+    return _cell(s["mean"], s["std"])
+
+
+def _mean_or_nan(v) -> float:
+    v = np.asarray(v, dtype=np.float64)
+    v = v[np.isfinite(v)]
+    return float(v.mean()) if v.size else float("nan")
+
+
+def _by_gid(groups, gid):
+    for g in groups:
+        if g.gid == gid:
+            return g
+    return None
