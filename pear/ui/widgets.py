@@ -595,6 +595,7 @@ class DistributionChart(QWidget):
         vspan = 1.0 if flat else hi - lo
 
         cells = bool(self._opts.get("cells", True))
+        equal = bool(self._opts.get("equal_cells", True))
         show_val = bool(self._opts.get("map_values", False))
         xc, xe = cell_edges(allx)
         yc, ye = cell_edges(ally)
@@ -649,21 +650,39 @@ class DistributionChart(QWidget):
         p.setFont(theme.mono_font(8))
         p.setPen(QColor(theme.INK3))
         nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
-        for t in range(nx):             # X ticks
-            gx = left + W * t / (nx - 1.0)
-            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
-        for t in range(ny):             # Y ticks (top = small y, like the image)
-            gy = top + H * t / (ny - 1.0)
-            p.drawText(QRectF(6, gy - 6, left - 10, 12),
-                       Qt.AlignRight | Qt.AlignVCenter,
-                       f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
+        grid_mode = cells and equal and xc.size > 0 and yc.size > 0
+        if grid_mode:
+            # every column is one slot wide, so the tick belongs to the slot,
+            # not to a linear axis — label the ones that fit
+            for t in range(min(nx, int(xc.size))):
+                i = int(round(t * (xc.size - 1) / max(1, min(nx, xc.size) - 1)))
+                gx = left + W * (i + 0.5) / xc.size
+                p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+                           f"{xc[i]:.0f}")
+            for t in range(min(ny, int(yc.size))):
+                j = int(round(t * (yc.size - 1) / max(1, min(ny, yc.size) - 1)))
+                gy = top + H * (j + 0.5) / yc.size
+                p.drawText(QRectF(6, gy - 6, left - 10, 12),
+                           Qt.AlignRight | Qt.AlignVCenter, f"{yc[j]:.0f}")
+        else:
+            for t in range(nx):         # X ticks
+                gx = left + W * t / (nx - 1.0)
+                p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+                           f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
+            for t in range(ny):         # Y ticks (top = small y, like the image)
+                gy = top + H * t / (ny - 1.0)
+                p.drawText(QRectF(6, gy - 6, left - 10, 12),
+                           Qt.AlignRight | Qt.AlignVCenter,
+                           f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
         p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
                    str(self._st("xlabel", "ROI centre X (px)")))
         self._ytitle(p, self._st("ylabel", "ROI centre Y (px)"))
 
         ring = len(series) > 1        # only needed to tell groups apart
-        if cells:
+        if cells and equal and xc.size and yc.size:
+            self._paint_map_grid(p, series, xc, yc, left, top, W, H,
+                                 lo, hi, flat, vspan, show_val, ring)
+        elif cells:
             # One filled cell per ROI, spanning to the boundary it shares with
             # its neighbour: the difference against the cell next door is the
             # point of the view, and touching blocks show it where dots cannot.
@@ -741,10 +760,50 @@ class DistributionChart(QWidget):
                f" · CV {_pct(u['cv_pct'])}")
         if cells and cw > 0 and ch > 0:
             txt += f" · cell {cw:.0f}×{ch:.0f} px"
+        if cells and equal:
+            txt += " · equal cells"
         p.setPen(QColor(theme.INK2))
         p.setFont(theme.mono_font(8))
         p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
                    Qt.AlignLeft | Qt.AlignVCenter, txt)
+
+    def _paint_map_grid(self, p: QPainter, series, xc, yc, left, top, W, H,
+                        lo, hi, flat, vspan, show_val, ring) -> None:
+        """Every cell the same size, one slot per row and column.
+
+        Cell edges taken literally sit midway between neighbours, so an uneven
+        pitch — or one missing ROI — gives neighbouring cells visibly
+        different areas, and area is not something this chart is measuring.
+        On the lattice every ROI gets an identical tile, which is what a die
+        map looks like and what makes two cells comparable at a glance; the
+        axis still labels each slot with the position it stands for.
+        """
+        cw, ch = W / float(xc.size), H / float(yc.size)
+        p.setFont(theme.mono_font(8, weight=700))
+        fm = p.fontMetrics()
+        for s in series:
+            edge = QColor(s["color"])
+            for px_, py_, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+                i = int(np.abs(xc - px_).argmin())
+                j = int(np.abs(yc - py_).argmin())
+                t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+                col = heat_color(t)
+                r = QRectF(left + cw * i, top + ch * j, cw, ch)
+                p.setBrush(QColor(col))
+                p.setPen(QPen(edge, 1.2) if ring
+                         else QPen(QColor(0, 0, 0, 45), 0.8))
+                p.drawRect(r)
+                if not show_val:
+                    continue
+                txt = _fmt_span(float(v), vspan)
+                if (fm.horizontalAdvance(txt) + 6 <= r.width()
+                        and fm.height() <= r.height()):
+                    p.setPen(QColor("#FFFFFF") if _is_dark(col)
+                             else QColor(theme.INK))
+                    p.drawText(r, Qt.AlignCenter, txt)
+        p.setPen(QPen(QColor(theme.LINE2), 1))       # cells cover the frame
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(left, top, W, H))
 
     # -- overlaid histogram ------------------------------------------- #
     def _paint_hist(self, p: QPainter) -> None:
@@ -1075,15 +1134,17 @@ class StageBar(QWidget):
             "hovered ROI always shows its own). Off with heatmap on = colour "
             "only.")
         self.values_chk.toggled.connect(self.values_changed)
-        self.heatmap_chk = QCheckBox("heatmap")
-        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
+        self.heatmap_chk = QCheckBox("heat boxes")
+        self.heatmap_chk.setToolTip(
+            "Fill each ROI box with its value's colour.")
         self.heatmap_chk.toggled.connect(self._on_heatmap)
-        self.cells_chk = QCheckBox("fill field")
+        self.cells_chk = QCheckBox("heat field")
         self.cells_chk.setToolTip(
             "Spread each ROI's colour over the patch of image it speaks for "
             "(midway to its neighbours), so a gradient across the field reads "
-            "as one surface. The measured box stays outlined on top.")
-        self.cells_chk.toggled.connect(self.cells_changed)
+            "as one surface. The measured box stays outlined on top. Works on "
+            "its own — boxes and field are two ways to paint the same values.")
+        self.cells_chk.toggled.connect(self._on_cells)
         self.outliers_chk = QCheckBox("flag outliers")
         self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
                                      "within their group.")
@@ -1154,9 +1215,13 @@ class StageBar(QWidget):
         self._gate()
 
     def _gate(self) -> None:
-        on = self.heatmap_chk.isChecked()
-        for w in (self.cells_chk, self.alpha_spin, self.scale_btn):
-            w.setEnabled(on)              # all three only bite on a heat fill
+        # Either mode paints the values; the opacity and the colour scale
+        # belong to whichever is on. Neither gates the other — ticking the
+        # field alone used to leave the image untouched, which read as a
+        # broken checkbox.
+        on = self.heatmap_chk.isChecked() or self.cells_chk.isChecked()
+        for w in (self.alpha_spin, self.scale_btn):
+            w.setEnabled(on)
 
     def set_heat_range(self, rng) -> None:
         """Restore the locked colour range (or None for auto)."""
@@ -1203,6 +1268,10 @@ class StageBar(QWidget):
     def _on_heatmap(self, on: bool) -> None:
         self._gate()
         self.heatmap_changed.emit(bool(on))
+
+    def _on_cells(self, on: bool) -> None:
+        self._gate()
+        self.cells_changed.emit(bool(on))
 
     def _on_show(self, _i: int) -> None:
         self._show = self.show_combo.currentData() or ""
@@ -1867,6 +1936,15 @@ class AnalysisPanel(QWidget):
         self.cells_chk.toggled.connect(self._on_cells)
         self.cells_chk.setVisible(False)
         head.addWidget(self.cells_chk)
+        self.equal_chk = QCheckBox("equal cells")
+        self.equal_chk.setChecked(True)
+        self.equal_chk.setToolTip(
+            "Draw every cell the same size, one slot per row and column — a "
+            "die map. Off: each cell spans to the midline with its neighbour, "
+            "so an uneven pitch gives cells of uneven area.")
+        self.equal_chk.toggled.connect(self._on_chart_opts)
+        self.equal_chk.setVisible(False)
+        head.addWidget(self.equal_chk)
         self.mapval_chk = QCheckBox("values")
         self.mapval_chk.setToolTip(
             "Print the metric inside each cell (cells wide enough to hold it).")
@@ -1948,9 +2026,10 @@ class AnalysisPanel(QWidget):
             w.setVisible(t == "hist")
         self.axis_box.setVisible(t == "position")
         self.trend_chk.setVisible(t == "position")
-        for chk in (self.cells_chk, self.mapval_chk):
+        for chk in (self.cells_chk, self.equal_chk, self.mapval_chk):
             chk.setVisible(t == "map")
-        self.mapval_chk.setEnabled(self.cells_chk.isChecked())
+        for chk in (self.equal_chk, self.mapval_chk):
+            chk.setEnabled(self.cells_chk.isChecked())
         if self._last_result is not None:
             self._render_body(self._last_result)   # re-render, no recompute
 
@@ -1962,8 +2041,10 @@ class AnalysisPanel(QWidget):
             self._render_body(self._last_result)   # positions are already there
 
     def _on_cells(self, on: bool) -> None:
-        # values are printed inside a cell, so they have nowhere to go on dots
-        self.mapval_chk.setEnabled(bool(on))
+        # both only mean anything for cells: values are printed inside one,
+        # and dots have no area to equalise
+        for chk in (self.equal_chk, self.mapval_chk):
+            chk.setEnabled(bool(on))
         self._on_chart_opts()
 
     def _on_chart_opts(self, _=False) -> None:
@@ -2258,6 +2339,7 @@ class AnalysisPanel(QWidget):
                 "bins": int(self.bins_spin.value()),
                 "hist_pct": self.pct_chk.isChecked(),
                 "cells": self.cells_chk.isChecked(),
+                "equal_cells": self.equal_chk.isChecked(),
                 "map_values": (self.mapval_chk.isChecked()
                                and self.cells_chk.isChecked())}
         wide = self._chart_type in ("position", "map")   # these need the width

@@ -523,20 +523,25 @@ def test_stage_bar_drives_the_overlays_and_the_field_fill(app):
     win.set_image(make_field(), "f.png")
     _grid_group(win, 3, 3)
     sb = win.stage_bar
-    assert not sb.cells_chk.isEnabled() and not sb.alpha_spin.isEnabled()
+    assert not sb.alpha_spin.isEnabled()             # nothing painted yet
     sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
     assert win._show_metric == "glv_mean" and win.image_view._roi_values
-    sb.heatmap_chk.setChecked(True)
-    assert sb.cells_chk.isEnabled() and win.image_view._heat
-    assert win.image_view._heat_cells == {}          # boxes only, so far
+
+    # the field paints on its own — it does not wait for "heat boxes"
     sb.cells_chk.setChecked(True)
+    assert sb.alpha_spin.isEnabled() and win.image_view._heat
     cells = win.image_view._heat_cells
     assert len(cells) == len(win._rois)
     h, w = make_field().shape[:2]
     for x0, y0, x1, y1 in cells.values():            # clipped to the image
         assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h
-    sb.heatmap_chk.setChecked(False)                 # the fill goes with it
-    assert win.image_view._heat_cells == {} and not sb.cells_chk.isEnabled()
+
+    sb.cells_chk.setChecked(False)                   # …and boxes on their own
+    assert win.image_view._heat == {} and win.image_view._heat_cells == {}
+    sb.heatmap_chk.setChecked(True)
+    assert win.image_view._heat and win.image_view._heat_cells == {}
+    sb.heatmap_chk.setChecked(False)
+    assert win.image_view._heat == {} and not sb.alpha_spin.isEnabled()
 
 
 def test_roi_list_shows_and_sorts_by_the_shown_metric(app):
@@ -659,6 +664,42 @@ def test_map_draws_touching_cells_and_optional_values(app):
         c.grab()
         # the toggles are render-only — the position data is untouched
         assert c._series[0]["pos_x"].size == len(win._rois)
+
+
+def test_heat_map_lattice_gives_every_cell_the_same_size(app):
+    """Uneven pitch must not hand neighbouring cells different areas."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_group()
+    gid = win._active_gid
+    for row, y in enumerate((20, 90, 200)):          # deliberately uneven rows
+        for col, x in enumerate((20, 60, 200, 260)): # …and uneven columns
+            win.on_roi_created((x, y, 16, 14))
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("map")
+    app.processEvents()
+    assert not ap.equal_chk.isHidden() and ap.equal_chk.isChecked()
+
+    def maps():
+        return [c for c in ap.body.findChildren(DistributionChart)
+                if c._ctype == "map"]
+
+    assert any(c._opts["equal_cells"] for c in maps())
+    for c in maps():
+        c.grab()                       # exercises the lattice painter
+    ap.equal_chk.setChecked(False)     # back to true midline tiling
+    app.processEvents()
+    assert any(not c._opts["equal_cells"] for c in maps())
+    for c in maps():
+        c.grab()
+    ap.cells_chk.setChecked(False)     # dots have no area to equalise
+    assert not ap.equal_chk.isEnabled()
 
 
 def test_overlay_toggles_are_independent(app, tmp_path):
@@ -946,6 +987,7 @@ def test_stage_and_inspector_export_images(app, tmp_path):
     assert not win.image_view._exporting                   # flag always restored
 
     sb.heatmap_chk.setChecked(False)                       # no key, no strip
+    sb.cells_chk.setChecked(False)
     plain = tmp_path / "plain.png"
     assert win.export_stage_image(str(plain), 1.0) == str(plain)
     assert (QImage(str(plain)).width(), QImage(str(plain)).height()) == (w, h)

@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 4dc6f64b534af98167f06df456f8e0a102230227 266 README.md
+#F 455e9bf6d0dd31852fb0281ae12447f9be32a2ba 272 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -323,12 +323,14 @@ if __name__ == "__main__":
 #  its own.
 #  - **values** — the number printed on the box, where the box is big enough
 #    to hold it; the ROI under the cursor always shows its own, floated above.
-#  - **heatmap** — the box filled with the metric's colour, with a colorbar.
-#    **opacity** turns the fill down until the image underneath shows through.
-#  - **fill field** — spread each ROI's colour over the patch of image it
+#  - **heat boxes** — each ROI box filled with its value's colour, with a
+#    colorbar. **opacity** turns the fill down until the image underneath
+#    shows through, and **scale…** locks the colour range.
+#  - **heat field** — spread each ROI's colour over the patch of image it
 #    speaks for (midway to its neighbours), so a gradient across the field
 #    reads as one surface instead of a row of small tinted boxes. The measured
-#    box stays outlined on top. Hand-placed ROIs land a few pixels off each
+#    box stays outlined on top. Boxes and field are two ways to paint the same
+#    values, and **either works on its own**. Hand-placed ROIs land a few pixels off each
 #    other, and cell edges fall midway between centres — taken literally, a
 #    grid of eight columns shatters into thirty-odd slivers. Centres within a
 #    **jitter tolerance measured from the data** count as one row or column, so
@@ -420,11 +422,14 @@ if __name__ == "__main__":
 #
 #  **A uniform field reads as a flat line.**
 #- **Heat map** — the ROIs at their own **(x, y)**, each coloured by the
-#  metric, with a colour bar. As **cells** (the default) every ROI is a block
-#  reaching the boundary it shares with its neighbour, so the field tiles with
-#  no gaps and a block reads against the one beside it; **values** prints the
-#  number inside each block, and unticking **cells** falls back to separate
-#  dots. **A uniform field is one flat colour**; a gradient or a hot corner is
+#  metric, with a colour bar. As **cells** (the default) every ROI is a block;
+#  **values** prints the number inside each block, and unticking **cells**
+#  falls back to separate dots. **equal cells** (on by default) lays the blocks
+#  out one slot per row and column, every tile the same size — a die map. Off,
+#  each block reaches the midline it shares with its neighbour, which is
+#  faithful to the spacing but hands neighbouring cells visibly different areas
+#  when the pitch is uneven or a slot is empty, and area is not something this
+#  chart measures. **A uniform field is one flat colour**; a gradient or a hot corner is
 #  the non-uniformity, and you can see *where* it is.
 #
 #Both print the numbers rather than a verdict: **range** (peak-to-peak),
@@ -497,7 +502,8 @@ if __name__ == "__main__":
 #  resolution, each results section, the ROI inspector),
 #  histogram bins / percent / tick steps,
 #  chart aspect, position profile + heat map (cells / dots / values),
-#  independent ROI overlay toggles, field fill, value-label fitting, fit across
+#  independent ROI overlay toggles (boxes and field each on their own), the
+#  heat-map lattice, value-label fitting, fit across
 #  a resize, ROI list values / ordering, align buttons, status headline,
 #  per-lane box scale, chart settings (titles, axis names, ticks, locked value
 #  and heat scales), list rebuilds leaving no stale rows.
@@ -2611,7 +2617,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F be1586bc3ef900da9913a8b68be352d48f65c9d5 967 pear/ui/main_window.py
+#F a9ac232f1ab5f9727e6f131f03f8afca0796c56e 973 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -3102,6 +3108,9 @@ if __name__ == "__main__":
 #
 #    def on_heat_field(self, on: bool) -> None:
 #        self._heat_field = bool(on)
+#        if on and not self._is_glv_show():
+#            self.statusBar().showMessage(
+#                "Pick a GLV metric in “show on ROIs” to colour the field.", 4000)
 #        self._update_heatmap()
 #
 #    def align_rois(self, mode: str) -> None:
@@ -3164,7 +3173,10 @@ if __name__ == "__main__":
 #        return bool(self._show_metric) and self._show_metric != SNR_ID
 #
 #    def _update_heatmap(self) -> None:
-#        if self._heatmap and self._image is not None and self._is_glv_show():
+#        # Boxes and field are two ways to paint the same values: either one on
+#        # its own is a heat overlay.
+#        if ((self._heatmap or self._heat_field) and self._image is not None
+#                and self._is_glv_show()):
 #            vals = self._values
 #            finite = [v for v in vals.values() if np.isfinite(v)]
 #            if finite:
@@ -3776,7 +3788,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 853fd358860e5a0fa26acecbd1e69ed07c71dc80 2471 pear/ui/widgets.py
+#F 8310ae5d774365af9eafb080994242d12edf0bef 2553 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -4374,6 +4386,7 @@ if __name__ == "__main__":
 #        vspan = 1.0 if flat else hi - lo
 #
 #        cells = bool(self._opts.get("cells", True))
+#        equal = bool(self._opts.get("equal_cells", True))
 #        show_val = bool(self._opts.get("map_values", False))
 #        xc, xe = cell_edges(allx)
 #        yc, ye = cell_edges(ally)
@@ -4428,21 +4441,39 @@ if __name__ == "__main__":
 #        p.setFont(theme.mono_font(8))
 #        p.setPen(QColor(theme.INK3))
 #        nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
-#        for t in range(nx):             # X ticks
-#            gx = left + W * t / (nx - 1.0)
-#            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-#                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
-#        for t in range(ny):             # Y ticks (top = small y, like the image)
-#            gy = top + H * t / (ny - 1.0)
-#            p.drawText(QRectF(6, gy - 6, left - 10, 12),
-#                       Qt.AlignRight | Qt.AlignVCenter,
-#                       f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
+#        grid_mode = cells and equal and xc.size > 0 and yc.size > 0
+#        if grid_mode:
+#            # every column is one slot wide, so the tick belongs to the slot,
+#            # not to a linear axis — label the ones that fit
+#            for t in range(min(nx, int(xc.size))):
+#                i = int(round(t * (xc.size - 1) / max(1, min(nx, xc.size) - 1)))
+#                gx = left + W * (i + 0.5) / xc.size
+#                p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+#                           f"{xc[i]:.0f}")
+#            for t in range(min(ny, int(yc.size))):
+#                j = int(round(t * (yc.size - 1) / max(1, min(ny, yc.size) - 1)))
+#                gy = top + H * (j + 0.5) / yc.size
+#                p.drawText(QRectF(6, gy - 6, left - 10, 12),
+#                           Qt.AlignRight | Qt.AlignVCenter, f"{yc[j]:.0f}")
+#        else:
+#            for t in range(nx):         # X ticks
+#                gx = left + W * t / (nx - 1.0)
+#                p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+#                           f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
+#            for t in range(ny):         # Y ticks (top = small y, like the image)
+#                gy = top + H * t / (ny - 1.0)
+#                p.drawText(QRectF(6, gy - 6, left - 10, 12),
+#                           Qt.AlignRight | Qt.AlignVCenter,
+#                           f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
 #        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
 #                   str(self._st("xlabel", "ROI centre X (px)")))
 #        self._ytitle(p, self._st("ylabel", "ROI centre Y (px)"))
 #
 #        ring = len(series) > 1        # only needed to tell groups apart
-#        if cells:
+#        if cells and equal and xc.size and yc.size:
+#            self._paint_map_grid(p, series, xc, yc, left, top, W, H,
+#                                 lo, hi, flat, vspan, show_val, ring)
+#        elif cells:
 #            # One filled cell per ROI, spanning to the boundary it shares with
 #            # its neighbour: the difference against the cell next door is the
 #            # point of the view, and touching blocks show it where dots cannot.
@@ -4520,10 +4551,50 @@ if __name__ == "__main__":
 #               f" · CV {_pct(u['cv_pct'])}")
 #        if cells and cw > 0 and ch > 0:
 #            txt += f" · cell {cw:.0f}×{ch:.0f} px"
+#        if cells and equal:
+#            txt += " · equal cells"
 #        p.setPen(QColor(theme.INK2))
 #        p.setFont(theme.mono_font(8))
 #        p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
 #                   Qt.AlignLeft | Qt.AlignVCenter, txt)
+#
+#    def _paint_map_grid(self, p: QPainter, series, xc, yc, left, top, W, H,
+#                        lo, hi, flat, vspan, show_val, ring) -> None:
+#        """Every cell the same size, one slot per row and column.
+#
+#        Cell edges taken literally sit midway between neighbours, so an uneven
+#        pitch — or one missing ROI — gives neighbouring cells visibly
+#        different areas, and area is not something this chart is measuring.
+#        On the lattice every ROI gets an identical tile, which is what a die
+#        map looks like and what makes two cells comparable at a glance; the
+#        axis still labels each slot with the position it stands for.
+#        """
+#        cw, ch = W / float(xc.size), H / float(yc.size)
+#        p.setFont(theme.mono_font(8, weight=700))
+#        fm = p.fontMetrics()
+#        for s in series:
+#            edge = QColor(s["color"])
+#            for px_, py_, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+#                i = int(np.abs(xc - px_).argmin())
+#                j = int(np.abs(yc - py_).argmin())
+#                t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+#                col = heat_color(t)
+#                r = QRectF(left + cw * i, top + ch * j, cw, ch)
+#                p.setBrush(QColor(col))
+#                p.setPen(QPen(edge, 1.2) if ring
+#                         else QPen(QColor(0, 0, 0, 45), 0.8))
+#                p.drawRect(r)
+#                if not show_val:
+#                    continue
+#                txt = _fmt_span(float(v), vspan)
+#                if (fm.horizontalAdvance(txt) + 6 <= r.width()
+#                        and fm.height() <= r.height()):
+#                    p.setPen(QColor("#FFFFFF") if _is_dark(col)
+#                             else QColor(theme.INK))
+#                    p.drawText(r, Qt.AlignCenter, txt)
+#        p.setPen(QPen(QColor(theme.LINE2), 1))       # cells cover the frame
+#        p.setBrush(Qt.NoBrush)
+#        p.drawRect(QRectF(left, top, W, H))
 #
 #    # -- overlaid histogram ------------------------------------------- #
 #    def _paint_hist(self, p: QPainter) -> None:
@@ -4854,15 +4925,17 @@ if __name__ == "__main__":
 #            "hovered ROI always shows its own). Off with heatmap on = colour "
 #            "only.")
 #        self.values_chk.toggled.connect(self.values_changed)
-#        self.heatmap_chk = QCheckBox("heatmap")
-#        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
+#        self.heatmap_chk = QCheckBox("heat boxes")
+#        self.heatmap_chk.setToolTip(
+#            "Fill each ROI box with its value's colour.")
 #        self.heatmap_chk.toggled.connect(self._on_heatmap)
-#        self.cells_chk = QCheckBox("fill field")
+#        self.cells_chk = QCheckBox("heat field")
 #        self.cells_chk.setToolTip(
 #            "Spread each ROI's colour over the patch of image it speaks for "
 #            "(midway to its neighbours), so a gradient across the field reads "
-#            "as one surface. The measured box stays outlined on top.")
-#        self.cells_chk.toggled.connect(self.cells_changed)
+#            "as one surface. The measured box stays outlined on top. Works on "
+#            "its own — boxes and field are two ways to paint the same values.")
+#        self.cells_chk.toggled.connect(self._on_cells)
 #        self.outliers_chk = QCheckBox("flag outliers")
 #        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
 #                                     "within their group.")
@@ -4933,9 +5006,13 @@ if __name__ == "__main__":
 #        self._gate()
 #
 #    def _gate(self) -> None:
-#        on = self.heatmap_chk.isChecked()
-#        for w in (self.cells_chk, self.alpha_spin, self.scale_btn):
-#            w.setEnabled(on)              # all three only bite on a heat fill
+#        # Either mode paints the values; the opacity and the colour scale
+#        # belong to whichever is on. Neither gates the other — ticking the
+#        # field alone used to leave the image untouched, which read as a
+#        # broken checkbox.
+#        on = self.heatmap_chk.isChecked() or self.cells_chk.isChecked()
+#        for w in (self.alpha_spin, self.scale_btn):
+#            w.setEnabled(on)
 #
 #    def set_heat_range(self, rng) -> None:
 #        """Restore the locked colour range (or None for auto)."""
@@ -4982,6 +5059,10 @@ if __name__ == "__main__":
 #    def _on_heatmap(self, on: bool) -> None:
 #        self._gate()
 #        self.heatmap_changed.emit(bool(on))
+#
+#    def _on_cells(self, on: bool) -> None:
+#        self._gate()
+#        self.cells_changed.emit(bool(on))
 #
 #    def _on_show(self, _i: int) -> None:
 #        self._show = self.show_combo.currentData() or ""
@@ -5646,6 +5727,15 @@ if __name__ == "__main__":
 #        self.cells_chk.toggled.connect(self._on_cells)
 #        self.cells_chk.setVisible(False)
 #        head.addWidget(self.cells_chk)
+#        self.equal_chk = QCheckBox("equal cells")
+#        self.equal_chk.setChecked(True)
+#        self.equal_chk.setToolTip(
+#            "Draw every cell the same size, one slot per row and column — a "
+#            "die map. Off: each cell spans to the midline with its neighbour, "
+#            "so an uneven pitch gives cells of uneven area.")
+#        self.equal_chk.toggled.connect(self._on_chart_opts)
+#        self.equal_chk.setVisible(False)
+#        head.addWidget(self.equal_chk)
 #        self.mapval_chk = QCheckBox("values")
 #        self.mapval_chk.setToolTip(
 #            "Print the metric inside each cell (cells wide enough to hold it).")
@@ -5727,9 +5817,10 @@ if __name__ == "__main__":
 #            w.setVisible(t == "hist")
 #        self.axis_box.setVisible(t == "position")
 #        self.trend_chk.setVisible(t == "position")
-#        for chk in (self.cells_chk, self.mapval_chk):
+#        for chk in (self.cells_chk, self.equal_chk, self.mapval_chk):
 #            chk.setVisible(t == "map")
-#        self.mapval_chk.setEnabled(self.cells_chk.isChecked())
+#        for chk in (self.equal_chk, self.mapval_chk):
+#            chk.setEnabled(self.cells_chk.isChecked())
 #        if self._last_result is not None:
 #            self._render_body(self._last_result)   # re-render, no recompute
 #
@@ -5741,8 +5832,10 @@ if __name__ == "__main__":
 #            self._render_body(self._last_result)   # positions are already there
 #
 #    def _on_cells(self, on: bool) -> None:
-#        # values are printed inside a cell, so they have nowhere to go on dots
-#        self.mapval_chk.setEnabled(bool(on))
+#        # both only mean anything for cells: values are printed inside one,
+#        # and dots have no area to equalise
+#        for chk in (self.equal_chk, self.mapval_chk):
+#            chk.setEnabled(bool(on))
 #        self._on_chart_opts()
 #
 #    def _on_chart_opts(self, _=False) -> None:
@@ -6037,6 +6130,7 @@ if __name__ == "__main__":
 #                "bins": int(self.bins_spin.value()),
 #                "hist_pct": self.pct_chk.isChecked(),
 #                "cells": self.cells_chk.isChecked(),
+#                "equal_cells": self.equal_chk.isChecked(),
 #                "map_values": (self.mapval_chk.isChecked()
 #                               and self.cells_chk.isChecked())}
 #        wide = self._chart_type in ("position", "map")   # these need the width
@@ -6762,7 +6856,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 148e301791fc1569ed1830a65587d7906b0b501a 1017 tests/test_ui_smoke.py
+#F b146c933afeca835d67679e731550cf9b5e18c42 1059 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7288,20 +7382,25 @@ if __name__ == "__main__":
 #    win.set_image(make_field(), "f.png")
 #    _grid_group(win, 3, 3)
 #    sb = win.stage_bar
-#    assert not sb.cells_chk.isEnabled() and not sb.alpha_spin.isEnabled()
+#    assert not sb.alpha_spin.isEnabled()             # nothing painted yet
 #    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
 #    assert win._show_metric == "glv_mean" and win.image_view._roi_values
-#    sb.heatmap_chk.setChecked(True)
-#    assert sb.cells_chk.isEnabled() and win.image_view._heat
-#    assert win.image_view._heat_cells == {}          # boxes only, so far
+#
+#    # the field paints on its own — it does not wait for "heat boxes"
 #    sb.cells_chk.setChecked(True)
+#    assert sb.alpha_spin.isEnabled() and win.image_view._heat
 #    cells = win.image_view._heat_cells
 #    assert len(cells) == len(win._rois)
 #    h, w = make_field().shape[:2]
 #    for x0, y0, x1, y1 in cells.values():            # clipped to the image
 #        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h
-#    sb.heatmap_chk.setChecked(False)                 # the fill goes with it
-#    assert win.image_view._heat_cells == {} and not sb.cells_chk.isEnabled()
+#
+#    sb.cells_chk.setChecked(False)                   # …and boxes on their own
+#    assert win.image_view._heat == {} and win.image_view._heat_cells == {}
+#    sb.heatmap_chk.setChecked(True)
+#    assert win.image_view._heat and win.image_view._heat_cells == {}
+#    sb.heatmap_chk.setChecked(False)
+#    assert win.image_view._heat == {} and not sb.alpha_spin.isEnabled()
 #
 #
 #def test_roi_list_shows_and_sorts_by_the_shown_metric(app):
@@ -7424,6 +7523,42 @@ if __name__ == "__main__":
 #        c.grab()
 #        # the toggles are render-only — the position data is untouched
 #        assert c._series[0]["pos_x"].size == len(win._rois)
+#
+#
+#def test_heat_map_lattice_gives_every_cell_the_same_size(app):
+#    """Uneven pitch must not hand neighbouring cells different areas."""
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    win.add_group()
+#    gid = win._active_gid
+#    for row, y in enumerate((20, 90, 200)):          # deliberately uneven rows
+#        for col, x in enumerate((20, 60, 200, 260)): # …and uneven columns
+#            win.on_roi_created((x, y, 16, 14))
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("within")
+#    win.on_within_group(gid)
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("map")
+#    app.processEvents()
+#    assert not ap.equal_chk.isHidden() and ap.equal_chk.isChecked()
+#
+#    def maps():
+#        return [c for c in ap.body.findChildren(DistributionChart)
+#                if c._ctype == "map"]
+#
+#    assert any(c._opts["equal_cells"] for c in maps())
+#    for c in maps():
+#        c.grab()                       # exercises the lattice painter
+#    ap.equal_chk.setChecked(False)     # back to true midline tiling
+#    app.processEvents()
+#    assert any(not c._opts["equal_cells"] for c in maps())
+#    for c in maps():
+#        c.grab()
+#    ap.cells_chk.setChecked(False)     # dots have no area to equalise
+#    assert not ap.equal_chk.isEnabled()
 #
 #
 #def test_overlay_toggles_are_independent(app, tmp_path):
@@ -7711,6 +7846,7 @@ if __name__ == "__main__":
 #    assert not win.image_view._exporting                   # flag always restored
 #
 #    sb.heatmap_chk.setChecked(False)                       # no key, no strip
+#    sb.cells_chk.setChecked(False)
 #    plain = tmp_path / "plain.png"
 #    assert win.export_stage_image(str(plain), 1.0) == str(plain)
 #    assert (QImage(str(plain)).width(), QImage(str(plain)).height()) == (w, h)

@@ -488,6 +488,9 @@ class MainWindow(QMainWindow):
 
     def on_heat_field(self, on: bool) -> None:
         self._heat_field = bool(on)
+        if on and not self._is_glv_show():
+            self.statusBar().showMessage(
+                "Pick a GLV metric in “show on ROIs” to colour the field.", 4000)
         self._update_heatmap()
 
     def align_rois(self, mode: str) -> None:
@@ -550,7 +553,10 @@ class MainWindow(QMainWindow):
         return bool(self._show_metric) and self._show_metric != SNR_ID
 
     def _update_heatmap(self) -> None:
-        if self._heatmap and self._image is not None and self._is_glv_show():
+        # Boxes and field are two ways to paint the same values: either one on
+        # its own is a heat overlay.
+        if ((self._heatmap or self._heat_field) and self._image is not None
+                and self._is_glv_show()):
             vals = self._values
             finite = [v for v in vals.values() if np.isfinite(v)]
             if finite:

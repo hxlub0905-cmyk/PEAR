@@ -45,12 +45,14 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
   its own.
   - **values** — the number printed on the box, where the box is big enough
     to hold it; the ROI under the cursor always shows its own, floated above.
-  - **heatmap** — the box filled with the metric's colour, with a colorbar.
-    **opacity** turns the fill down until the image underneath shows through.
-  - **fill field** — spread each ROI's colour over the patch of image it
+  - **heat boxes** — each ROI box filled with its value's colour, with a
+    colorbar. **opacity** turns the fill down until the image underneath
+    shows through, and **scale…** locks the colour range.
+  - **heat field** — spread each ROI's colour over the patch of image it
     speaks for (midway to its neighbours), so a gradient across the field
     reads as one surface instead of a row of small tinted boxes. The measured
-    box stays outlined on top. Hand-placed ROIs land a few pixels off each
+    box stays outlined on top. Boxes and field are two ways to paint the same
+    values, and **either works on its own**. Hand-placed ROIs land a few pixels off each
     other, and cell edges fall midway between centres — taken literally, a
     grid of eight columns shatters into thirty-odd slivers. Centres within a
     **jitter tolerance measured from the data** count as one row or column, so
@@ -142,11 +144,14 @@ one number everywhere.
 
   **A uniform field reads as a flat line.**
 - **Heat map** — the ROIs at their own **(x, y)**, each coloured by the
-  metric, with a colour bar. As **cells** (the default) every ROI is a block
-  reaching the boundary it shares with its neighbour, so the field tiles with
-  no gaps and a block reads against the one beside it; **values** prints the
-  number inside each block, and unticking **cells** falls back to separate
-  dots. **A uniform field is one flat colour**; a gradient or a hot corner is
+  metric, with a colour bar. As **cells** (the default) every ROI is a block;
+  **values** prints the number inside each block, and unticking **cells**
+  falls back to separate dots. **equal cells** (on by default) lays the blocks
+  out one slot per row and column, every tile the same size — a die map. Off,
+  each block reaches the midline it shares with its neighbour, which is
+  faithful to the spacing but hands neighbouring cells visibly different areas
+  when the pitch is uneven or a slot is empty, and area is not something this
+  chart measures. **A uniform field is one flat colour**; a gradient or a hot corner is
   the non-uniformity, and you can see *where* it is.
 
 Both print the numbers rather than a verdict: **range** (peak-to-peak),
@@ -219,7 +224,8 @@ pytest                              # headless core + offscreen UI smoke
   resolution, each results section, the ROI inspector),
   histogram bins / percent / tick steps,
   chart aspect, position profile + heat map (cells / dots / values),
-  independent ROI overlay toggles, field fill, value-label fitting, fit across
+  independent ROI overlay toggles (boxes and field each on their own), the
+  heat-map lattice, value-label fitting, fit across
   a resize, ROI list values / ordering, align buttons, status headline,
   per-lane box scale, chart settings (titles, axis names, ticks, locked value
   and heat scales), list rebuilds leaving no stale rows.
