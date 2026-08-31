@@ -188,6 +188,48 @@ QToolTip {{ background: {INK}; color: #FFFFFF; border: none; padding: 5px 8px; b
 """
 
 
+def glyph_icon(kind: str, color: str = INK2, size: int = 18):
+    """A small hand-drawn icon.
+
+    Drawn rather than shipped: the repo travels to the offline machine as one
+    plain-text file, which carries no binary assets — so every pixel PEAR
+    shows has to come from code. Rendered at 2× and handed to Qt as a pixmap,
+    so it stays sharp on a scaled display.
+
+    ``kind`` is ``"import"`` (an arrow coming down into a tray) or
+    ``"export"`` (one leaving it).
+    """
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
+
+    scale = 2
+    pm = QPixmap(size * scale, size * scale)
+    pm.setDevicePixelRatio(scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color), max(1.4, size * 0.1))
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    u = size / 18.0                       # the drawing is designed at 18 px
+    # the tray: open at the top, so the arrow reads as going in or coming out
+    p.drawLine(QPointF(3.5 * u, 11.5 * u), QPointF(3.5 * u, 14.5 * u))
+    p.drawLine(QPointF(3.5 * u, 14.5 * u), QPointF(14.5 * u, 14.5 * u))
+    p.drawLine(QPointF(14.5 * u, 14.5 * u), QPointF(14.5 * u, 11.5 * u))
+    # the shaft and its head
+    if kind == "export":
+        p.drawLine(QPointF(9 * u, 11 * u), QPointF(9 * u, 3 * u))
+        p.drawLine(QPointF(5.8 * u, 6.2 * u), QPointF(9 * u, 3 * u))
+        p.drawLine(QPointF(12.2 * u, 6.2 * u), QPointF(9 * u, 3 * u))
+    else:
+        p.drawLine(QPointF(9 * u, 3 * u), QPointF(9 * u, 11 * u))
+        p.drawLine(QPointF(5.8 * u, 7.8 * u), QPointF(9 * u, 11 * u))
+        p.drawLine(QPointF(12.2 * u, 7.8 * u), QPointF(9 * u, 11 * u))
+    p.end()
+    return QIcon(pm)
+
+
 def apply_theme(app, *_ignored) -> None:
     """Apply the light theme to a QApplication (single theme; args ignored)."""
     app.setStyleSheet(build_qss())

@@ -14,10 +14,10 @@ from typing import List, Optional
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSizePolicy, QToolButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QDockWidget, QFileDialog, QHBoxLayout,
+                               QLabel, QMainWindow, QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
                                 compute_analysis, distribute_rects,
@@ -31,7 +31,7 @@ from pear.core.attributes import metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
 from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
-                             StageBar, save_widget_image)
+                             RoiSizeDialog, StageBar, save_widget_image)
 
 _FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 
@@ -865,8 +865,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     _ROI_FILTER = "ROI list (*.json)"
 
-    def import_rois(self, path: Optional[str] = None,
-                    mode: str = "") -> Optional[int]:
+    def import_rois(self, path: Optional[str] = None, mode: str = "",
+                    size=None, ask_size: bool = True) -> Optional[int]:
         """Read a flat ROI list. Returns how many ROIs landed, or None.
 
         The file says where the boxes go and what colour they are; PEAR turns
@@ -883,11 +883,19 @@ class MainWindow(QMainWindow):
         try:
             with open(path, encoding="utf-8-sig") as fh:
                 items = json.load(fh)
-            w, h = self.rail.roi_size()
+            w, h = size or self.rail.roi_size()
+            if size is None and ask_size:
+                dlg = RoiSizeDialog(self, "import", w, h,
+                                    len(items) if isinstance(items, list) else 0)
+                if dlg.exec() != QDialog.Accepted:
+                    return None
+                size = dlg.options()["size"]
+                if size:
+                    w, h = size
             shape = self._image.shape[:2]
             groups, rois, clamped = rois_from_points(
                 items, w, h, bounds=(shape[1], shape[0]),
-                start_rid=self._next_rid)
+                start_rid=self._next_rid, force_size=bool(size))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "Import ROIs",
                                 f"Could not read that file:\n{exc}")
@@ -941,10 +949,19 @@ class MainWindow(QMainWindow):
         self._refresh()
         return len(rois)
 
-    def export_rois(self, path: Optional[str] = None) -> Optional[str]:
+    def export_rois(self, path: Optional[str] = None, size=None,
+                    include_size: bool = True,
+                    ask_size: bool = True) -> Optional[str]:
         """Write every ROI as that same flat list."""
         if not self._rois:
             return None
+        if ask_size and size is None:
+            w, h = self.rail.roi_size()
+            dlg = RoiSizeDialog(self, "export", w, h, len(self._rois))
+            if dlg.exec() != QDialog.Accepted:
+                return None
+            opts = dlg.options()
+            size, include_size = opts["size"], opts["include_size"]
         if not path:
             base = os.path.splitext(os.path.basename(self._image_path or
                                                      "rois"))[0]
@@ -952,7 +969,8 @@ class MainWindow(QMainWindow):
                 self, "Export ROIs", f"{base}_rois.json", self._ROI_FILTER)
             if not path:
                 return None
-        items = rois_to_points(self._groups, self._rois)
+        items = rois_to_points(self._groups, self._rois, size,
+                               include_size)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(items, fh, indent=2, ensure_ascii=False)
         self.statusBar().showMessage(

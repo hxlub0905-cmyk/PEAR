@@ -289,7 +289,7 @@ if __name__ == "__main__":
 #if exist "%~dp0.venv\Scripts\pythonw.exe" exit /b
 #start "PEAR" pythonw -m pear
 #
-#F edbb73188ae5e5edb5edb377a3a1354c3fcc288b 335 README.md
+#F f4b07632a7dda5348503d74c879a9e25560f0225 338 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -322,8 +322,9 @@ if __name__ == "__main__":
 #  - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
 #    duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
 #    group. **Right-drag pans** the image at any time, grid placement included.
-#  - **Import ROIs… / Export ROIs…** — the ROI set travels on its own as a
-#    flat JSON list, so a layout worked out in another tool drops straight in:
+#  - **⤓ / ⤒** (the two icons in the ROIs card header) — the ROI set travels
+#    on its own as a flat JSON list, so a layout worked out in another tool
+#    drops straight in:
 #
 #    ```json
 #    [ { "color": "#00ffff", "x": 32, "y": 68, "w": 30, "h": 24,
@@ -331,13 +332,15 @@ if __name__ == "__main__":
 #    ```
 #
 #    `x` / `y` are the box's **top-left corner**; **each colour becomes a
-#    group**. `w` / `h` are optional on the way in — a list that only says
-#    where the boxes go takes the size from the **size** fields above — and
-#    always written on the way out, so a round trip does not silently resize
-#    anything. `target` is accepted and written for compatibility with the
-#    tool the format comes from; PEAR has no target role. Boxes that fall
-#    outside the image are moved inside it and the status bar says how many.
-#    Importing over existing ROIs asks whether to replace them or add to them.
+#    group**. Both ends ask what to do about the box size: **import** takes it
+#    from the file (or the **size** fields, for a list that only says where
+#    the boxes go) or forces one size on the whole set; **export** keeps each
+#    box's own size, writes one size for all of them, or leaves `w` / `h` out
+#    entirely — the shape a tool with its own box size expects. `target` is
+#    accepted and written for compatibility with the tool the format comes
+#    from; PEAR has no target role. Boxes that fall outside the image are
+#    moved inside it and the status bar says how many. Importing over existing
+#    ROIs asks whether to replace them or add to them.
 #  - **align** — pull the selection (or the whole active group, with nothing
 #    selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
 #    Bottom*) or even out its spacing (*Even across / Even down*).
@@ -570,7 +573,7 @@ if __name__ == "__main__":
 #  byte, survives CRLF, catches tampering, and is not stale; the batch files
 #  stay flat enough to run with LF endings.
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
-#  select, ROI import / export, ROI re-indexing, heatmap/outliers, hover sync, keyboard
+#  select, ROI import / export with its size choice, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
 #  save/open, CSV export, image export of every view (field at native
 #  resolution, each results section, the ROI inspector),
@@ -981,7 +984,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F f3d748c1a385cb81b8061277732b74eb1cee2735 765 pear/core/analysis.py
+#F ace879293e523188fd812c9bbb2ffe4067783602 777 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -1550,7 +1553,8 @@ if __name__ == "__main__":
 ## --------------------------------------------------------------------------- #
 ## ROI interchange — the flat list other tools speak
 ## --------------------------------------------------------------------------- #
-#def rois_to_points(groups: List[Group], rois: List[ROI]) -> List[dict]:
+#def rois_to_points(groups: List[Group], rois: List[ROI], size=None,
+#                   include_size: bool = True) -> List[dict]:
 #    """The ROI set as a flat list of ``{color, x, y, w, h, target}``.
 #
 #    One dict per ROI, positioned by its **top-left corner**, carrying the
@@ -1559,7 +1563,9 @@ if __name__ == "__main__":
 #    on the way back.
 #
 #    ``w``/``h`` are PEAR's addition to the format: without them a round trip
-#    silently resizes every box to whatever the size fields happen to say.
+#    silently resizes every box to whatever the size fields happen to say. Pass
+#    ``include_size=False`` for a tool that carries its own box size and does
+#    not expect them, or ``size=(w, h)`` to write one size for the whole set.
 #    ``target`` is written as ``false`` and ignored on the way in — PEAR has no
 #    target role — but it is kept so a file passes through unchanged in shape.
 #    """
@@ -1567,20 +1573,26 @@ if __name__ == "__main__":
 #    out = []
 #    for r in rois:
 #        x, y, w, h = r.rect
-#        out.append({"color": color.get(r.gid, GROUP_PALETTE[0]),
-#                    "x": int(x), "y": int(y), "w": int(w), "h": int(h),
-#                    "target": False})
+#        item = {"color": color.get(r.gid, GROUP_PALETTE[0]),
+#                "x": int(x), "y": int(y)}
+#        if include_size:
+#            item["w"], item["h"] = ((int(size[0]), int(size[1])) if size
+#                                    else (int(w), int(h)))
+#        item["target"] = False
+#        out.append(item)
 #    return out
 #
 #
 #def rois_from_points(items, default_w: int, default_h: int, bounds=None,
-#                     start_rid: int = 1):
+#                     start_rid: int = 1, force_size: bool = False):
 #    """``(groups, rois, clamped)`` from the flat list.
 #
 #    Each distinct colour becomes a group, in the order the colours first
 #    appear. Entries carry ``w``/``h`` when they came from PEAR and take the
 #    given defaults when they did not — a list that only says where the boxes
-#    go needs to be told how big they are.
+#    go needs to be told how big they are. ``force_size`` ignores the file's
+#    sizes and gives every box the defaults, for a file whose boxes are the
+#    right places at the wrong size.
 #
 #    ``bounds = (width, height)`` keeps every box inside the image; the count
 #    of boxes that had to move is returned rather than hidden, because a file
@@ -1601,8 +1613,11 @@ if __name__ == "__main__":
 #            y = int(round(float(it["y"])))
 #        except (KeyError, TypeError, ValueError):
 #            raise ValueError(f"entry {i} has no numeric x / y") from None
-#        w = int(round(float(it.get("w") or default_w)))
-#        h = int(round(float(it.get("h") or default_h)))
+#        if force_size:
+#            w, h = int(default_w), int(default_h)
+#        else:
+#            w = int(round(float(it.get("w") or default_w)))
+#            h = int(round(float(it.get("h") or default_h)))
 #        w, h = max(1, w), max(1, h)
 #        color = str(it.get("color") or GROUP_PALETTE[0])
 #        gid = by_color.get(color)
@@ -2784,7 +2799,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F 3f51d07c9b3b8c5b8916a3a3f08f64d9af2a35f1 1058 pear/ui/main_window.py
+#F 6fccf14c8187f6c1244bf53f96def0cc9e0d9737 1076 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2801,10 +2816,10 @@ if __name__ == "__main__":
 #
 #import numpy as np
 #from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-#from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
-#                               QMainWindow, QMenu, QMessageBox, QPushButton,
-#                               QScrollArea, QSizePolicy, QToolButton,
-#                               QVBoxLayout, QWidget)
+#from PySide6.QtWidgets import (QDialog, QDockWidget, QFileDialog, QHBoxLayout,
+#                               QLabel, QMainWindow, QMenu, QMessageBox,
+#                               QPushButton, QScrollArea, QSizePolicy,
+#                               QToolButton, QVBoxLayout, QWidget)
 #
 #from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
 #                                compute_analysis, distribute_rects,
@@ -2818,7 +2833,7 @@ if __name__ == "__main__":
 #from pear.ui import theme
 #from pear.ui.image_view import ImageView
 #from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
-#                             StageBar, save_widget_image)
+#                             RoiSizeDialog, StageBar, save_widget_image)
 #
 #_FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 #
@@ -3652,8 +3667,8 @@ if __name__ == "__main__":
 #    # ------------------------------------------------------------------ #
 #    _ROI_FILTER = "ROI list (*.json)"
 #
-#    def import_rois(self, path: Optional[str] = None,
-#                    mode: str = "") -> Optional[int]:
+#    def import_rois(self, path: Optional[str] = None, mode: str = "",
+#                    size=None, ask_size: bool = True) -> Optional[int]:
 #        """Read a flat ROI list. Returns how many ROIs landed, or None.
 #
 #        The file says where the boxes go and what colour they are; PEAR turns
@@ -3670,11 +3685,19 @@ if __name__ == "__main__":
 #        try:
 #            with open(path, encoding="utf-8-sig") as fh:
 #                items = json.load(fh)
-#            w, h = self.rail.roi_size()
+#            w, h = size or self.rail.roi_size()
+#            if size is None and ask_size:
+#                dlg = RoiSizeDialog(self, "import", w, h,
+#                                    len(items) if isinstance(items, list) else 0)
+#                if dlg.exec() != QDialog.Accepted:
+#                    return None
+#                size = dlg.options()["size"]
+#                if size:
+#                    w, h = size
 #            shape = self._image.shape[:2]
 #            groups, rois, clamped = rois_from_points(
 #                items, w, h, bounds=(shape[1], shape[0]),
-#                start_rid=self._next_rid)
+#                start_rid=self._next_rid, force_size=bool(size))
 #        except (OSError, ValueError, json.JSONDecodeError) as exc:
 #            QMessageBox.warning(self, "Import ROIs",
 #                                f"Could not read that file:\n{exc}")
@@ -3728,10 +3751,19 @@ if __name__ == "__main__":
 #        self._refresh()
 #        return len(rois)
 #
-#    def export_rois(self, path: Optional[str] = None) -> Optional[str]:
+#    def export_rois(self, path: Optional[str] = None, size=None,
+#                    include_size: bool = True,
+#                    ask_size: bool = True) -> Optional[str]:
 #        """Write every ROI as that same flat list."""
 #        if not self._rois:
 #            return None
+#        if ask_size and size is None:
+#            w, h = self.rail.roi_size()
+#            dlg = RoiSizeDialog(self, "export", w, h, len(self._rois))
+#            if dlg.exec() != QDialog.Accepted:
+#                return None
+#            opts = dlg.options()
+#            size, include_size = opts["size"], opts["include_size"]
 #        if not path:
 #            base = os.path.splitext(os.path.basename(self._image_path or
 #                                                     "rois"))[0]
@@ -3739,7 +3771,8 @@ if __name__ == "__main__":
 #                self, "Export ROIs", f"{base}_rois.json", self._ROI_FILTER)
 #            if not path:
 #                return None
-#        items = rois_to_points(self._groups, self._rois)
+#        items = rois_to_points(self._groups, self._rois, size,
+#                               include_size)
 #        with open(path, "w", encoding="utf-8") as fh:
 #            json.dump(items, fh, indent=2, ensure_ascii=False)
 #        self.statusBar().showMessage(
@@ -3843,7 +3876,7 @@ if __name__ == "__main__":
 #                    line.append(f"{summarize(vals)['mean']:.6g}")
 #                w.writerow(line)
 #
-#F d2e0f5632ceef07a1d5c29ba41647e1f22d73c04 196 pear/ui/theme.py
+#F 6e52a5cfab38e76b4717d58d36937a9e9afb09d5 238 pear/ui/theme.py
 #"""Design tokens and global QSS — a single light instrument theme.
 #
 #Palette and type are adopted from the sibling project's design system
@@ -4034,13 +4067,55 @@ if __name__ == "__main__":
 #"""
 #
 #
+#def glyph_icon(kind: str, color: str = INK2, size: int = 18):
+#    """A small hand-drawn icon.
+#
+#    Drawn rather than shipped: the repo travels to the offline machine as one
+#    plain-text file, which carries no binary assets — so every pixel PEAR
+#    shows has to come from code. Rendered at 2× and handed to Qt as a pixmap,
+#    so it stays sharp on a scaled display.
+#
+#    ``kind`` is ``"import"`` (an arrow coming down into a tray) or
+#    ``"export"`` (one leaving it).
+#    """
+#    from PySide6.QtCore import QPointF, Qt
+#    from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
+#
+#    scale = 2
+#    pm = QPixmap(size * scale, size * scale)
+#    pm.setDevicePixelRatio(scale)
+#    pm.fill(Qt.transparent)
+#    p = QPainter(pm)
+#    p.setRenderHint(QPainter.Antialiasing, True)
+#    pen = QPen(QColor(color), max(1.4, size * 0.1))
+#    pen.setCapStyle(Qt.RoundCap)
+#    pen.setJoinStyle(Qt.RoundJoin)
+#    p.setPen(pen)
+#    u = size / 18.0                       # the drawing is designed at 18 px
+#    # the tray: open at the top, so the arrow reads as going in or coming out
+#    p.drawLine(QPointF(3.5 * u, 11.5 * u), QPointF(3.5 * u, 14.5 * u))
+#    p.drawLine(QPointF(3.5 * u, 14.5 * u), QPointF(14.5 * u, 14.5 * u))
+#    p.drawLine(QPointF(14.5 * u, 14.5 * u), QPointF(14.5 * u, 11.5 * u))
+#    # the shaft and its head
+#    if kind == "export":
+#        p.drawLine(QPointF(9 * u, 11 * u), QPointF(9 * u, 3 * u))
+#        p.drawLine(QPointF(5.8 * u, 6.2 * u), QPointF(9 * u, 3 * u))
+#        p.drawLine(QPointF(12.2 * u, 6.2 * u), QPointF(9 * u, 3 * u))
+#    else:
+#        p.drawLine(QPointF(9 * u, 3 * u), QPointF(9 * u, 11 * u))
+#        p.drawLine(QPointF(5.8 * u, 7.8 * u), QPointF(9 * u, 11 * u))
+#        p.drawLine(QPointF(12.2 * u, 7.8 * u), QPointF(9 * u, 11 * u))
+#    p.end()
+#    return QIcon(pm)
+#
+#
 #def apply_theme(app, *_ignored) -> None:
 #    """Apply the light theme to a QApplication (single theme; args ignored)."""
 #    app.setStyleSheet(build_qss())
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 579b86498c53066d67170bf98545adcc77e8edc9 2711 pear/ui/widgets.py
+#F 7622c402a30e62e748509fd41713e317b992f2b5 2798 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -4059,8 +4134,8 @@ if __name__ == "__main__":
 #from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog,
 #                               QDialogButtonBox, QDoubleSpinBox, QFrame,
 #                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-#                               QMenu, QPushButton, QScrollArea, QSpinBox,
-#                               QToolButton, QVBoxLayout, QWidget)
+#                               QMenu, QPushButton, QRadioButton, QScrollArea,
+#                               QSpinBox, QToolButton, QVBoxLayout, QWidget)
 #
 #from pear.core.analysis import (Group, cell_edges, heat_color,
 #                               linear_trend, pixel_hist,
@@ -4092,6 +4167,17 @@ if __name__ == "__main__":
 #    frame._head = head           # type: ignore[attr-defined]
 #    lay.addLayout(head)
 #    return frame
+#
+#
+#def _icon_button(kind: str, tooltip: str) -> QToolButton:
+#    """A small icon-only button, drawn rather than shipped."""
+#    b = QToolButton()
+#    b.setIcon(theme.glyph_icon(kind))
+#    b.setIconSize(QSize(18, 18))
+#    b.setFixedSize(28, 26)
+#    b.setAutoRaise(True)
+#    b.setToolTip(tooltip)
+#    return b
 #
 #
 #def _swatch(color: str, on_pick: Callable[[str], None]) -> QPushButton:
@@ -5408,6 +5494,83 @@ if __name__ == "__main__":
 #    return row, auto, lo, hi
 #
 #
+#class RoiSizeDialog(QDialog):
+#    """How big the boxes are, on the way in or out.
+#
+#    The interchange list says where each ROI goes; how big it is can come
+#    from three places — the file itself, the rail's size fields, or a size
+#    typed here for the whole set. Rather than guess, ask, and let the export
+#    leave ``w`` / ``h`` out entirely for a tool that does not expect them.
+#    """
+#
+#    def __init__(self, parent, mode: str, w: int, h: int, count: int = 0):
+#        super().__init__(parent)
+#        importing = mode == "import"
+#        self.setWindowTitle("Import ROIs" if importing else "Export ROIs")
+#        self.setMinimumWidth(380)
+#        root = QVBoxLayout(self)
+#        root.setContentsMargins(16, 14, 16, 14)
+#        root.setSpacing(10)
+#        if count:
+#            head = QLabel(f"{count} ROIs")
+#            head.setObjectName("SectionTitle")
+#            head.setFont(theme.display_font(12, weight=700))
+#            root.addWidget(head)
+#
+#        self.include_chk = QCheckBox("write w / h for every box")
+#        self.include_chk.setChecked(True)
+#        self.include_chk.setToolTip(
+#            "Off: only colour, x, y and target are written — the shape a tool "
+#            "that has its own box size expects.")
+#        if not importing:
+#            root.addWidget(self.include_chk)
+#
+#        self.own_radio = QRadioButton(
+#            "keep each box's own size" if not importing
+#            else "take the size from the file (or the size fields, if it has "
+#                 "none)")
+#        self.own_radio.setChecked(True)
+#        self.custom_radio = QRadioButton("use this size for every box")
+#        root.addWidget(self.own_radio)
+#        row = QHBoxLayout()
+#        row.setSpacing(6)
+#        row.addWidget(self.custom_radio)
+#        self.w_spin, self.h_spin = QSpinBox(), QSpinBox()
+#        for sp, val in ((self.w_spin, w), (self.h_spin, h)):
+#            sp.setRange(1, 4000)
+#            sp.setValue(int(val))
+#            sp.setMinimumHeight(28)
+#            sp.setFixedWidth(80)
+#            sp.setEnabled(False)
+#        row.addWidget(self.w_spin)
+#        row.addWidget(QLabel("×"))
+#        row.addWidget(self.h_spin)
+#        row.addStretch(1)
+#        root.addLayout(row)
+#        self.custom_radio.toggled.connect(
+#            lambda on: [sp.setEnabled(on) for sp in (self.w_spin, self.h_spin)])
+#        if not importing:
+#            self.include_chk.toggled.connect(self._gate)
+#            self._gate(True)
+#
+#        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+#        buttons.accepted.connect(self.accept)
+#        buttons.rejected.connect(self.reject)
+#        root.addWidget(buttons)
+#
+#    def _gate(self, on: bool) -> None:
+#        for w in (self.own_radio, self.custom_radio):
+#            w.setEnabled(on)
+#        for sp in (self.w_spin, self.h_spin):
+#            sp.setEnabled(on and self.custom_radio.isChecked())
+#
+#    def options(self) -> dict:
+#        """``{"size": (w, h) or None, "include_size": bool}``."""
+#        size = ((int(self.w_spin.value()), int(self.h_spin.value()))
+#                if self.custom_radio.isChecked() else None)
+#        return {"size": size, "include_size": self.include_chk.isChecked()}
+#
+#
 #class ChartSettingsDialog(QDialog):
 #    """Rename the figures and set their axes by hand.
 #
@@ -5691,6 +5854,18 @@ if __name__ == "__main__":
 #        # ROIs (of the active group)
 #        roi = _card("ROIs", "of active group")
 #        rlay = roi.layout()
+#        # The ROI set travels on its own — a flat {color, x, y, w, h} list, so
+#        # a layout worked out somewhere else can be dropped straight in. Both
+#        # live in the card's own header, where they cost no height.
+#        self.roi_import_btn = _icon_button(
+#            "import", "Import ROIs — a JSON list of boxes, one object each "
+#            "with a colour and a top-left x / y. Each colour becomes a group.")
+#        self.roi_import_btn.clicked.connect(self.roi_import)
+#        self.roi_export_btn = _icon_button(
+#            "export", "Export ROIs — write every box as that same JSON list.")
+#        self.roi_export_btn.clicked.connect(self.roi_export)
+#        roi._head.addWidget(self.roi_import_btn)
+#        roi._head.addWidget(self.roi_export_btn)
 #        self.grid_btn = QPushButton("▦ Grid")
 #        self.grid_btn.setCheckable(True)
 #        self.grid_btn.setToolTip("Click the top-left then bottom-right corner "
@@ -5805,19 +5980,6 @@ if __name__ == "__main__":
 #        self.roi_scroll.setWidget(roi_list_host)
 #        self.roi_scroll.setFixedHeight(6)        # grows with content up to a cap
 #        rlay.addWidget(self.roi_scroll)
-#        # The ROI set travels on its own — a flat {color, x, y, w, h} list, so
-#        # a layout worked out somewhere else can be dropped straight in.
-#        self.roi_import_btn = QPushButton("Import ROIs…")
-#        self.roi_import_btn.setToolTip(
-#            "Read a JSON list of ROIs — one object per box with a colour and "
-#            "a top-left x / y. Each colour becomes a group; boxes without a "
-#            "w / h take the size set above.")
-#        self.roi_import_btn.clicked.connect(self.roi_import)
-#        self.roi_export_btn = QPushButton("Export ROIs…")
-#        self.roi_export_btn.setToolTip(
-#            "Write every ROI as that same JSON list.")
-#        self.roi_export_btn.clicked.connect(self.roi_export)
-#        rlay.addLayout(_button_row(self.roi_import_btn, self.roi_export_btn))
 #        self.roi_hint = QLabel(
 #            "• Click → drop a size-W×H ROI · drag → custom size\n"
 #            "• Grid → two corners, set row×col, Add grid\n"
@@ -7357,7 +7519,7 @@ if __name__ == "__main__":
 #    assert list(s.pos_x) == [6.0, 34.0]
 #
 #
-#F 9aafaca40d1c43099bca425870a8798a06ea66e6 1205 tests/test_ui_smoke.py
+#F d52074de444df8727fe6cc282318c05882845523 1248 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7948,7 +8110,7 @@ if __name__ == "__main__":
 #         {"color": "#ff8800", "x": 100, "y": 68, "target": False}]),
 #        encoding="utf-8")
 #
-#    assert win.import_rois(str(src), mode="replace") == 3
+#    assert win.import_rois(str(src), mode="replace", ask_size=False) == 3
 #    assert len(win._rois) == 3
 #    colors = sorted(g.color for g in win._groups)
 #    assert colors == ["#00ffff", "#ff8800"]          # a group per colour
@@ -7960,12 +8122,12 @@ if __name__ == "__main__":
 #
 #    # adding keeps what is there and reuses the group that already has that
 #    # colour, rather than making a second cyan group
-#    assert win.import_rois(str(src), mode="add") == 3
+#    assert win.import_rois(str(src), mode="add", ask_size=False) == 3
 #    assert len(win._rois) == 6 and len(win._groups) == 2
 #    assert len({r.rid for r in win._rois}) == 6      # rids stay unique
 #
 #    out = tmp_path / "out.json"
-#    assert win.export_rois(str(out)) == str(out)
+#    assert win.export_rois(str(out), ask_size=False) == str(out)
 #    items = json.loads(out.read_text(encoding="utf-8"))
 #    assert len(items) == 6
 #    assert set(items[0]) == {"color", "x", "y", "w", "h", "target"}
@@ -7973,8 +8135,51 @@ if __name__ == "__main__":
 #
 #    win2 = MainWindow()
 #    win2.set_image(make_field(), "f.png")
-#    assert win2.import_rois(str(out), mode="replace") == 6
+#    assert win2.import_rois(str(out), mode="replace", ask_size=False) == 6
 #    assert [r.rect for r in win2._rois] == [r.rect for r in win._rois]
+#
+#
+#def test_roi_size_dialog_drives_import_and_export(app, tmp_path):
+#    """Both ends can override the box size; export can omit it entirely."""
+#    import json
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import RoiSizeDialog
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    src = tmp_path / "in.json"
+#    src.write_text(json.dumps([{"color": "#00ffff", "x": 10, "y": 12,
+#                                "w": 99, "h": 98}]), encoding="utf-8")
+#
+#    # the icon buttons are what the rail offers now
+#    assert win.rail.roi_import_btn.text() == ""
+#    assert not win.rail.roi_import_btn.icon().isNull()
+#    assert not win.rail.roi_export_btn.icon().isNull()
+#
+#    dlg = RoiSizeDialog(None, "import", 28, 24)
+#    assert dlg.options()["size"] is None           # the file's own size wins
+#    dlg.custom_radio.setChecked(True)
+#    dlg.w_spin.setValue(40)
+#    dlg.h_spin.setValue(30)
+#    assert dlg.options()["size"] == (40, 30)
+#
+#    assert win.import_rois(str(src), mode="replace", size=(40, 30)) == 1
+#    assert win._rois[0].rect == (10, 12, 40, 30)   # not the file's 99×98
+#    assert win.import_rois(str(src), mode="replace", ask_size=False) == 1
+#    assert win._rois[0].rect == (10, 12, 99, 98)   # the file's, when not asked
+#
+#    out = tmp_path / "out.json"
+#    win.export_rois(str(out), size=(7, 8), ask_size=False)
+#    assert json.loads(out.read_text(encoding="utf-8"))[0]["w"] == 7
+#
+#    bare = tmp_path / "bare.json"
+#    win.export_rois(str(bare), include_size=False, ask_size=False)
+#    item = json.loads(bare.read_text(encoding="utf-8"))[0]
+#    assert set(item) == {"color", "x", "y", "target"}   # the other tool's shape
+#
+#    ex = RoiSizeDialog(None, "export", 28, 24, count=3)
+#    ex.include_chk.setChecked(False)                    # gates the size choice
+#    assert not ex.own_radio.isEnabled() and not ex.w_spin.isEnabled()
+#    assert ex.options()["include_size"] is False
 #
 #
 #def test_import_rois_reports_a_bad_file(app, tmp_path, monkeypatch):
@@ -7987,12 +8192,12 @@ if __name__ == "__main__":
 #                        lambda *a, **k: seen.append(a[-1]))
 #    bad = tmp_path / "bad.json"
 #    bad.write_text("{not json", encoding="utf-8")
-#    assert win.import_rois(str(bad), mode="replace") is None
+#    assert win.import_rois(str(bad), mode="replace", ask_size=False) is None
 #    empty = tmp_path / "empty.json"
 #    empty.write_text("[]", encoding="utf-8")
-#    assert win.import_rois(str(empty), mode="replace") is None
+#    assert win.import_rois(str(empty), mode="replace", ask_size=False) is None
 #    assert len(seen) == 2 and win._rois == []
-#    assert win.export_rois(str(tmp_path / "none.json")) is None
+#    assert win.export_rois(str(tmp_path / "none.json"), ask_size=False) is None
 #
 #
 #def test_align_buttons_tidy_the_selection_then_the_group(app):

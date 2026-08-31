@@ -588,7 +588,7 @@ def test_import_and_export_rois(app, tmp_path):
          {"color": "#ff8800", "x": 100, "y": 68, "target": False}]),
         encoding="utf-8")
 
-    assert win.import_rois(str(src), mode="replace") == 3
+    assert win.import_rois(str(src), mode="replace", ask_size=False) == 3
     assert len(win._rois) == 3
     colors = sorted(g.color for g in win._groups)
     assert colors == ["#00ffff", "#ff8800"]          # a group per colour
@@ -600,12 +600,12 @@ def test_import_and_export_rois(app, tmp_path):
 
     # adding keeps what is there and reuses the group that already has that
     # colour, rather than making a second cyan group
-    assert win.import_rois(str(src), mode="add") == 3
+    assert win.import_rois(str(src), mode="add", ask_size=False) == 3
     assert len(win._rois) == 6 and len(win._groups) == 2
     assert len({r.rid for r in win._rois}) == 6      # rids stay unique
 
     out = tmp_path / "out.json"
-    assert win.export_rois(str(out)) == str(out)
+    assert win.export_rois(str(out), ask_size=False) == str(out)
     items = json.loads(out.read_text(encoding="utf-8"))
     assert len(items) == 6
     assert set(items[0]) == {"color", "x", "y", "w", "h", "target"}
@@ -613,8 +613,51 @@ def test_import_and_export_rois(app, tmp_path):
 
     win2 = MainWindow()
     win2.set_image(make_field(), "f.png")
-    assert win2.import_rois(str(out), mode="replace") == 6
+    assert win2.import_rois(str(out), mode="replace", ask_size=False) == 6
     assert [r.rect for r in win2._rois] == [r.rect for r in win._rois]
+
+
+def test_roi_size_dialog_drives_import_and_export(app, tmp_path):
+    """Both ends can override the box size; export can omit it entirely."""
+    import json
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import RoiSizeDialog
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    src = tmp_path / "in.json"
+    src.write_text(json.dumps([{"color": "#00ffff", "x": 10, "y": 12,
+                                "w": 99, "h": 98}]), encoding="utf-8")
+
+    # the icon buttons are what the rail offers now
+    assert win.rail.roi_import_btn.text() == ""
+    assert not win.rail.roi_import_btn.icon().isNull()
+    assert not win.rail.roi_export_btn.icon().isNull()
+
+    dlg = RoiSizeDialog(None, "import", 28, 24)
+    assert dlg.options()["size"] is None           # the file's own size wins
+    dlg.custom_radio.setChecked(True)
+    dlg.w_spin.setValue(40)
+    dlg.h_spin.setValue(30)
+    assert dlg.options()["size"] == (40, 30)
+
+    assert win.import_rois(str(src), mode="replace", size=(40, 30)) == 1
+    assert win._rois[0].rect == (10, 12, 40, 30)   # not the file's 99×98
+    assert win.import_rois(str(src), mode="replace", ask_size=False) == 1
+    assert win._rois[0].rect == (10, 12, 99, 98)   # the file's, when not asked
+
+    out = tmp_path / "out.json"
+    win.export_rois(str(out), size=(7, 8), ask_size=False)
+    assert json.loads(out.read_text(encoding="utf-8"))[0]["w"] == 7
+
+    bare = tmp_path / "bare.json"
+    win.export_rois(str(bare), include_size=False, ask_size=False)
+    item = json.loads(bare.read_text(encoding="utf-8"))[0]
+    assert set(item) == {"color", "x", "y", "target"}   # the other tool's shape
+
+    ex = RoiSizeDialog(None, "export", 28, 24, count=3)
+    ex.include_chk.setChecked(False)                    # gates the size choice
+    assert not ex.own_radio.isEnabled() and not ex.w_spin.isEnabled()
+    assert ex.options()["include_size"] is False
 
 
 def test_import_rois_reports_a_bad_file(app, tmp_path, monkeypatch):
@@ -627,12 +670,12 @@ def test_import_rois_reports_a_bad_file(app, tmp_path, monkeypatch):
                         lambda *a, **k: seen.append(a[-1]))
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
-    assert win.import_rois(str(bad), mode="replace") is None
+    assert win.import_rois(str(bad), mode="replace", ask_size=False) is None
     empty = tmp_path / "empty.json"
     empty.write_text("[]", encoding="utf-8")
-    assert win.import_rois(str(empty), mode="replace") is None
+    assert win.import_rois(str(empty), mode="replace", ask_size=False) is None
     assert len(seen) == 2 and win._rois == []
-    assert win.export_rois(str(tmp_path / "none.json")) is None
+    assert win.export_rois(str(tmp_path / "none.json"), ask_size=False) is None
 
 
 def test_align_buttons_tidy_the_selection_then_the_group(app):

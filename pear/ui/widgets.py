@@ -16,8 +16,8 @@ from PySide6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog,
                                QDialogButtonBox, QDoubleSpinBox, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QMenu, QPushButton, QScrollArea, QSpinBox,
-                               QToolButton, QVBoxLayout, QWidget)
+                               QMenu, QPushButton, QRadioButton, QScrollArea,
+                               QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 from pear.core.analysis import (Group, cell_edges, heat_color,
                                linear_trend, pixel_hist,
@@ -49,6 +49,17 @@ def _card(title: str, sub: str = "") -> QFrame:
     frame._head = head           # type: ignore[attr-defined]
     lay.addLayout(head)
     return frame
+
+
+def _icon_button(kind: str, tooltip: str) -> QToolButton:
+    """A small icon-only button, drawn rather than shipped."""
+    b = QToolButton()
+    b.setIcon(theme.glyph_icon(kind))
+    b.setIconSize(QSize(18, 18))
+    b.setFixedSize(28, 26)
+    b.setAutoRaise(True)
+    b.setToolTip(tooltip)
+    return b
 
 
 def _swatch(color: str, on_pick: Callable[[str], None]) -> QPushButton:
@@ -1365,6 +1376,83 @@ def _num_row(label: str, style: dict, kmin: str, kmax: str, unit: str = ""):
     return row, auto, lo, hi
 
 
+class RoiSizeDialog(QDialog):
+    """How big the boxes are, on the way in or out.
+
+    The interchange list says where each ROI goes; how big it is can come
+    from three places — the file itself, the rail's size fields, or a size
+    typed here for the whole set. Rather than guess, ask, and let the export
+    leave ``w`` / ``h`` out entirely for a tool that does not expect them.
+    """
+
+    def __init__(self, parent, mode: str, w: int, h: int, count: int = 0):
+        super().__init__(parent)
+        importing = mode == "import"
+        self.setWindowTitle("Import ROIs" if importing else "Export ROIs")
+        self.setMinimumWidth(380)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+        if count:
+            head = QLabel(f"{count} ROIs")
+            head.setObjectName("SectionTitle")
+            head.setFont(theme.display_font(12, weight=700))
+            root.addWidget(head)
+
+        self.include_chk = QCheckBox("write w / h for every box")
+        self.include_chk.setChecked(True)
+        self.include_chk.setToolTip(
+            "Off: only colour, x, y and target are written — the shape a tool "
+            "that has its own box size expects.")
+        if not importing:
+            root.addWidget(self.include_chk)
+
+        self.own_radio = QRadioButton(
+            "keep each box's own size" if not importing
+            else "take the size from the file (or the size fields, if it has "
+                 "none)")
+        self.own_radio.setChecked(True)
+        self.custom_radio = QRadioButton("use this size for every box")
+        root.addWidget(self.own_radio)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(self.custom_radio)
+        self.w_spin, self.h_spin = QSpinBox(), QSpinBox()
+        for sp, val in ((self.w_spin, w), (self.h_spin, h)):
+            sp.setRange(1, 4000)
+            sp.setValue(int(val))
+            sp.setMinimumHeight(28)
+            sp.setFixedWidth(80)
+            sp.setEnabled(False)
+        row.addWidget(self.w_spin)
+        row.addWidget(QLabel("×"))
+        row.addWidget(self.h_spin)
+        row.addStretch(1)
+        root.addLayout(row)
+        self.custom_radio.toggled.connect(
+            lambda on: [sp.setEnabled(on) for sp in (self.w_spin, self.h_spin)])
+        if not importing:
+            self.include_chk.toggled.connect(self._gate)
+            self._gate(True)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _gate(self, on: bool) -> None:
+        for w in (self.own_radio, self.custom_radio):
+            w.setEnabled(on)
+        for sp in (self.w_spin, self.h_spin):
+            sp.setEnabled(on and self.custom_radio.isChecked())
+
+    def options(self) -> dict:
+        """``{"size": (w, h) or None, "include_size": bool}``."""
+        size = ((int(self.w_spin.value()), int(self.h_spin.value()))
+                if self.custom_radio.isChecked() else None)
+        return {"size": size, "include_size": self.include_chk.isChecked()}
+
+
 class ChartSettingsDialog(QDialog):
     """Rename the figures and set their axes by hand.
 
@@ -1648,6 +1736,18 @@ class RailPanel(QWidget):
         # ROIs (of the active group)
         roi = _card("ROIs", "of active group")
         rlay = roi.layout()
+        # The ROI set travels on its own — a flat {color, x, y, w, h} list, so
+        # a layout worked out somewhere else can be dropped straight in. Both
+        # live in the card's own header, where they cost no height.
+        self.roi_import_btn = _icon_button(
+            "import", "Import ROIs — a JSON list of boxes, one object each "
+            "with a colour and a top-left x / y. Each colour becomes a group.")
+        self.roi_import_btn.clicked.connect(self.roi_import)
+        self.roi_export_btn = _icon_button(
+            "export", "Export ROIs — write every box as that same JSON list.")
+        self.roi_export_btn.clicked.connect(self.roi_export)
+        roi._head.addWidget(self.roi_import_btn)
+        roi._head.addWidget(self.roi_export_btn)
         self.grid_btn = QPushButton("▦ Grid")
         self.grid_btn.setCheckable(True)
         self.grid_btn.setToolTip("Click the top-left then bottom-right corner "
@@ -1762,19 +1862,6 @@ class RailPanel(QWidget):
         self.roi_scroll.setWidget(roi_list_host)
         self.roi_scroll.setFixedHeight(6)        # grows with content up to a cap
         rlay.addWidget(self.roi_scroll)
-        # The ROI set travels on its own — a flat {color, x, y, w, h} list, so
-        # a layout worked out somewhere else can be dropped straight in.
-        self.roi_import_btn = QPushButton("Import ROIs…")
-        self.roi_import_btn.setToolTip(
-            "Read a JSON list of ROIs — one object per box with a colour and "
-            "a top-left x / y. Each colour becomes a group; boxes without a "
-            "w / h take the size set above.")
-        self.roi_import_btn.clicked.connect(self.roi_import)
-        self.roi_export_btn = QPushButton("Export ROIs…")
-        self.roi_export_btn.setToolTip(
-            "Write every ROI as that same JSON list.")
-        self.roi_export_btn.clicked.connect(self.roi_export)
-        rlay.addLayout(_button_row(self.roi_import_btn, self.roi_export_btn))
         self.roi_hint = QLabel(
             "• Click → drop a size-W×H ROI · drag → custom size\n"
             "• Grid → two corners, set row×col, Add grid\n"

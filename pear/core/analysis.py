@@ -566,7 +566,8 @@ def snapshot(groups: List[Group], rois: List[ROI]):
 # --------------------------------------------------------------------------- #
 # ROI interchange — the flat list other tools speak
 # --------------------------------------------------------------------------- #
-def rois_to_points(groups: List[Group], rois: List[ROI]) -> List[dict]:
+def rois_to_points(groups: List[Group], rois: List[ROI], size=None,
+                   include_size: bool = True) -> List[dict]:
     """The ROI set as a flat list of ``{color, x, y, w, h, target}``.
 
     One dict per ROI, positioned by its **top-left corner**, carrying the
@@ -575,7 +576,9 @@ def rois_to_points(groups: List[Group], rois: List[ROI]) -> List[dict]:
     on the way back.
 
     ``w``/``h`` are PEAR's addition to the format: without them a round trip
-    silently resizes every box to whatever the size fields happen to say.
+    silently resizes every box to whatever the size fields happen to say. Pass
+    ``include_size=False`` for a tool that carries its own box size and does
+    not expect them, or ``size=(w, h)`` to write one size for the whole set.
     ``target`` is written as ``false`` and ignored on the way in — PEAR has no
     target role — but it is kept so a file passes through unchanged in shape.
     """
@@ -583,20 +586,26 @@ def rois_to_points(groups: List[Group], rois: List[ROI]) -> List[dict]:
     out = []
     for r in rois:
         x, y, w, h = r.rect
-        out.append({"color": color.get(r.gid, GROUP_PALETTE[0]),
-                    "x": int(x), "y": int(y), "w": int(w), "h": int(h),
-                    "target": False})
+        item = {"color": color.get(r.gid, GROUP_PALETTE[0]),
+                "x": int(x), "y": int(y)}
+        if include_size:
+            item["w"], item["h"] = ((int(size[0]), int(size[1])) if size
+                                    else (int(w), int(h)))
+        item["target"] = False
+        out.append(item)
     return out
 
 
 def rois_from_points(items, default_w: int, default_h: int, bounds=None,
-                     start_rid: int = 1):
+                     start_rid: int = 1, force_size: bool = False):
     """``(groups, rois, clamped)`` from the flat list.
 
     Each distinct colour becomes a group, in the order the colours first
     appear. Entries carry ``w``/``h`` when they came from PEAR and take the
     given defaults when they did not — a list that only says where the boxes
-    go needs to be told how big they are.
+    go needs to be told how big they are. ``force_size`` ignores the file's
+    sizes and gives every box the defaults, for a file whose boxes are the
+    right places at the wrong size.
 
     ``bounds = (width, height)`` keeps every box inside the image; the count
     of boxes that had to move is returned rather than hidden, because a file
@@ -617,8 +626,11 @@ def rois_from_points(items, default_w: int, default_h: int, bounds=None,
             y = int(round(float(it["y"])))
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"entry {i} has no numeric x / y") from None
-        w = int(round(float(it.get("w") or default_w)))
-        h = int(round(float(it.get("h") or default_h)))
+        if force_size:
+            w, h = int(default_w), int(default_h)
+        else:
+            w = int(round(float(it.get("w") or default_w)))
+            h = int(round(float(it.get("h") or default_h)))
         w, h = max(1, w), max(1, h)
         color = str(it.get("color") or GROUP_PALETTE[0])
         gid = by_color.get(color)
