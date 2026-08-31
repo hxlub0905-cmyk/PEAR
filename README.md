@@ -68,11 +68,28 @@ groups, scored by η² (variance explained) and Cohen's d — and a **group ×
 metric heatmap** for an at-a-glance overview, plus a summary table.
 
 Charts are laid out as figures — a printable shape, capped in width and
-centred, rather than stretched across the window. **Export image** saves the
-chart sheet alone (no window chrome, no layout margin) as **PNG at 3×** for
-slides or **SVG** for a paper — the plots are hand-painted with QPainter, so
-the SVG comes out as real curves and text, not a bitmap in a wrapper. **CSV export** carries every ROI's metrics and a
-per-group summary.
+centred, rather than stretched across the window. **CSV export** carries every
+ROI's metrics and a per-group summary.
+
+## Every view exports as a picture
+
+Anything on screen can go into a report. **PNG is rendered at 3×** (a 1×
+screenshot of a chart is unreadable once a projector or a journal column has
+it) and **SVG stays vector** — every view is hand-painted with QPainter, so
+the SVG is real curves and text, not a bitmap in a wrapper. Nothing carries
+window chrome, and the marks that belong to what you are *doing* (cursor
+readout, selection handles, marquee, grid preview) are left out.
+
+- **The field** — *Export image* on the stage bar. Not a screenshot: the
+  image is redrawn **at its own resolution** (×2 by default) with the
+  overlays on top, whatever the view's zoom and pan happen to be, and the
+  colour key gets a strip of its own under the field instead of sitting on
+  the ROIs it is the key for.
+- **The results** — *Export image ▾* in the Analysis window offers exactly
+  the sections the current result has: **Charts** (the figures alone, cropped
+  out of the layout's slack), **Attribute ranking**, **Group × metric
+  heatmap**, **Summary table**, or **Everything** as one sheet.
+- **One ROI's pixels** — *Export image* in the ROI inspector window.
 
 ## Uniformity — is the GLV flat across the field?
 
@@ -165,7 +182,9 @@ pytest                              # headless core + offscreen UI smoke
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
   select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-  save/open, CSV + chart-image export, histogram bins / percent / tick steps,
+  save/open, CSV export, image export of every view (field at native
+  resolution, each results section, the ROI inspector),
+  histogram bins / percent / tick steps,
   chart aspect, position profile + heat map (cells / dots / values),
   independent ROI overlay toggles, field fill, value-label fitting, fit across
   a resize, ROI list values / ordering, status headline, per-lane box scale,
@@ -204,7 +223,7 @@ git add -A && python tools/make_text_bundle.py && git add -A
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
 flagging with per-overlay toggles and a field fill, attribute ranking +
-group×metric heatmap, chart image export (PNG / SVG),
+group×metric heatmap, image export of every view (PNG / SVG),
 per-ROI pixel inspector,
 between-group and within-group comparison in a separate window (box, histogram,
 position profile, or spatial heat map), project save/open, CSV export.

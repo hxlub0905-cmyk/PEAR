@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 76aec3c5f74330216e21d68832fe5c69aee32c0d 213 README.md
+#F f11089a40f4d704a9982e456aeb86eded42e86ac 232 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -346,11 +346,28 @@ if __name__ == "__main__":
 #metric heatmap** for an at-a-glance overview, plus a summary table.
 #
 #Charts are laid out as figures — a printable shape, capped in width and
-#centred, rather than stretched across the window. **Export image** saves the
-#chart sheet alone (no window chrome, no layout margin) as **PNG at 3×** for
-#slides or **SVG** for a paper — the plots are hand-painted with QPainter, so
-#the SVG comes out as real curves and text, not a bitmap in a wrapper. **CSV export** carries every ROI's metrics and a
-#per-group summary.
+#centred, rather than stretched across the window. **CSV export** carries every
+#ROI's metrics and a per-group summary.
+#
+### Every view exports as a picture
+#
+#Anything on screen can go into a report. **PNG is rendered at 3×** (a 1×
+#screenshot of a chart is unreadable once a projector or a journal column has
+#it) and **SVG stays vector** — every view is hand-painted with QPainter, so
+#the SVG is real curves and text, not a bitmap in a wrapper. Nothing carries
+#window chrome, and the marks that belong to what you are *doing* (cursor
+#readout, selection handles, marquee, grid preview) are left out.
+#
+#- **The field** — *Export image* on the stage bar. Not a screenshot: the
+#  image is redrawn **at its own resolution** (×2 by default) with the
+#  overlays on top, whatever the view's zoom and pan happen to be, and the
+#  colour key gets a strip of its own under the field instead of sitting on
+#  the ROIs it is the key for.
+#- **The results** — *Export image ▾* in the Analysis window offers exactly
+#  the sections the current result has: **Charts** (the figures alone, cropped
+#  out of the layout's slack), **Attribute ranking**, **Group × metric
+#  heatmap**, **Summary table**, or **Everything** as one sheet.
+#- **One ROI's pixels** — *Export image* in the ROI inspector window.
 #
 ### Uniformity — is the GLV flat across the field?
 #
@@ -443,7 +460,9 @@ if __name__ == "__main__":
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
 #  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-#  save/open, CSV + chart-image export, histogram bins / percent / tick steps,
+#  save/open, CSV export, image export of every view (field at native
+#  resolution, each results section, the ROI inspector),
+#  histogram bins / percent / tick steps,
 #  chart aspect, position profile + heat map (cells / dots / values),
 #  independent ROI overlay toggles, field fill, value-label fitting, fit across
 #  a resize, ROI list values / ordering, status headline, per-lane box scale,
@@ -482,7 +501,7 @@ if __name__ == "__main__":
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 #grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
 #flagging with per-overlay toggles and a field fill, attribute ranking +
-#group×metric heatmap, chart image export (PNG / SVG),
+#group×metric heatmap, image export of every view (PNG / SVG),
 #per-ROI pixel inspector,
 #between-group and within-group comparison in a separate window (box, histogram,
 #position profile, or spatial heat map), project save/open, CSV export.
@@ -1497,7 +1516,7 @@ if __name__ == "__main__":
 #F afa940644becc78d2d6a262afdec4f08ba635fc2 2 pear/ui/__init__.py
 #"""Qt UI for PEAR. All Qt imports live under this package."""
 #
-#F 21f43e80884e81458de2a990fa0b4a49eeb94483 863 pear/ui/image_view.py
+#F 7c40a51ba56ccad9ffa2d6eb956eb07120304ff0 926 pear/ui/image_view.py
 #"""Image stage: zoom/pan and place / move / resize ROIs.
 #
 #ROIs belong to groups and are drawn in their group's colour.
@@ -1513,7 +1532,7 @@ if __name__ == "__main__":
 #from typing import List, Optional, Tuple
 #
 #import numpy as np
-#from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+#from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 #from PySide6.QtGui import (QColor, QImage, QKeyEvent, QLinearGradient,
 #                           QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent)
 #from PySide6.QtWidgets import QWidget
@@ -1525,6 +1544,7 @@ if __name__ == "__main__":
 #_HANDLE = 8
 #_MIN_ROI = 4
 #_DEFAULT = 28          # default single-ROI size (px) for a plain click
+#_LEGEND_H = 58         # colour-key strip added under an exported field
 #
 #
 #def label_rect(r: QRectF, bw: float, bh: float,
@@ -1586,6 +1606,7 @@ if __name__ == "__main__":
 #        self._heat_cells: dict = {}            # rid -> (x0,y0,x1,y1) image px
 #        self._outliers: set = set()            # rids flagged as outliers
 #        self._hover_rid: int = -1              # rid under the cursor
+#        self._exporting = False                # drop the in-progress marks
 #
 #        self._grid_mode = False
 #        self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
@@ -1643,6 +1664,66 @@ if __name__ == "__main__":
 #        self._heat_legend = legend
 #        self._heat_alpha = int(np.clip(int(alpha), 0, 255))
 #        self.update()
+#
+#    def export_image(self, path: str, scale: float = 2.0) -> Optional[str]:
+#        """Save the annotated field: the image at its own resolution × ``scale``.
+#
+#        Not a screenshot of the stage — the view's zoom, pan and black
+#        surround have nothing to do with the figure someone wants in a
+#        report. The pixels are drawn at their own size and the overlays (heat,
+#        cells, ROI boxes, values, flags, the colour key) on top of them, so
+#        the export is as sharp as the data allows whatever the window shows.
+#        """
+#        if self._pixmap is None:
+#            return None
+#        scale = float(np.clip(scale, 0.25, 8.0))
+#        w = max(1, int(round(self._pixmap.width() * scale)))
+#        h = max(1, int(round(self._pixmap.height() * scale)))
+#        # the colour key gets a strip of its own rather than sitting on top of
+#        # the ROIs it is the key for
+#        legend_h = _LEGEND_H if (self._heat_legend and self._heat) else 0
+#        keep = (self._scale, self._offset)
+#        self._scale, self._offset = scale, QPointF(0.0, 0.0)
+#        self._exporting = True
+#        try:
+#            if str(path).lower().endswith(".svg"):
+#                try:
+#                    from PySide6.QtSvg import QSvgGenerator
+#                except ImportError:
+#                    return None
+#                gen = QSvgGenerator()
+#                gen.setFileName(path)
+#                gen.setSize(QSize(w, h + legend_h))
+#                gen.setViewBox(QRect(0, 0, w, h + legend_h))
+#                painter = QPainter()
+#                if not painter.begin(gen):
+#                    return None
+#                painter.fillRect(QRectF(0, 0, w, h + legend_h),
+#                                 QColor(theme.STAGE))
+#                self._paint_export(painter, w, h, legend_h)
+#                painter.end()
+#                return path
+#            pm = QPixmap(w, h + legend_h)
+#            pm.fill(QColor(theme.STAGE))
+#            painter = QPainter(pm)
+#            self._paint_export(painter, w, h, legend_h)
+#            painter.end()
+#            return path if pm.save(path) else None
+#        finally:
+#            self._scale, self._offset = keep
+#            self._exporting = False
+#
+#    def _paint_export(self, p: QPainter, w: int, h: int,
+#                      legend_h: int = 0) -> None:
+#        """The field and its overlays — no cursor HUD, no marquee, no grid
+#        preview: those are things you are doing, not things you measured."""
+#        p.setRenderHint(QPainter.Antialiasing, True)
+#        p.drawPixmap(QRectF(0, 0, w, h), self._pixmap,
+#                     QRectF(self._pixmap.rect()))
+#        self._paint_heat_cells(p)
+#        self._paint_rois(p)
+#        if legend_h:
+#            self._paint_colorbar(p, QRectF(0, h, w, legend_h))
 #
 #    def set_heat_cells(self, cells: dict) -> None:
 #        """Tile the heat across the field: rid -> (x0, y0, x1, y1) in image px.
@@ -1822,9 +1903,9 @@ if __name__ == "__main__":
 #            p.setPen(pen)
 #            p.setBrush(fill)
 #            p.drawRect(r)
-#            if roi.rid == self._hover_rid:
+#            if roi.rid == self._hover_rid and not self._exporting:
 #                self._paint_hover_ring(p, r)
-#            if in_sel:
+#            if in_sel and not self._exporting:
 #                self._paint_selection_ring(p, r)
 #            if roi.rid in self._outliers:
 #                self._paint_outlier(p, r)
@@ -1833,7 +1914,7 @@ if __name__ == "__main__":
 #            val = self._roi_values.get(roi.rid)
 #            if val is not None:
 #                self._paint_value(p, r, val, roi.rid == self._hover_rid)
-#            if selected and not self._grid_mode:
+#            if selected and not self._grid_mode and not self._exporting:
 #                self._paint_handles(p, r, color)
 #
 #    def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
@@ -1851,11 +1932,12 @@ if __name__ == "__main__":
 #        p.drawRect(r.adjusted(-1, -1, 1, 1))
 #        self._paint_badge(p, r, "!", QColor(theme.WARNING), corner="tr")
 #
-#    def _paint_colorbar(self, p: QPainter) -> None:
+#    def _paint_colorbar(self, p: QPainter, frame: Optional[QRectF] = None) -> None:
 #        if not self._heat_legend or not self._heat:
 #            return
 #        vmin, vmax, label = self._heat_legend
-#        x, y, w, h = 14, self.height() - 42, 150, 12
+#        frame = frame if frame is not None else QRectF(self.rect())
+#        x, y, w, h = frame.left() + 14, frame.bottom() - 42, 150, 12
 #        grad = QLinearGradient(float(x), 0.0, float(x + w), 0.0)
 #        for t in (0.0, 0.25, 0.5, 0.75, 1.0):
 #            grad.setColorAt(t, QColor(heat_color(t)))
@@ -2361,7 +2443,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F 8e1df155069e933eb42a4390919c2d038a226058 871 pear/ui/main_window.py
+#F fea680a8b2c7f3ab74b67b92b642d1c540ffbc98 921 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2392,7 +2474,7 @@ if __name__ == "__main__":
 #from pear.ui import theme
 #from pear.ui.image_view import ImageView
 #from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
-#                             StageBar)
+#                             StageBar, save_widget_image)
 #
 #_FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 #
@@ -2569,10 +2651,23 @@ if __name__ == "__main__":
 #        self.inspector = RoiInspector()
 #        self.inspector_window = QWidget()
 #        self.inspector_window.setWindowTitle("PEAR — ROI inspector")
-#        self.inspector_window.resize(600, 440)
+#        self.inspector_window.resize(600, 470)
 #        lay = QVBoxLayout(self.inspector_window)
 #        lay.setContentsMargins(0, 0, 0, 0)
-#        lay.addWidget(self.inspector)
+#        lay.setSpacing(0)
+#        bar = QWidget()
+#        bar.setObjectName("StageBar")
+#        blay = QHBoxLayout(bar)
+#        blay.setContentsMargins(12, 6, 12, 6)
+#        blay.addStretch(1)
+#        self.inspector_image_btn = QPushButton("Export image")
+#        self.inspector_image_btn.setFixedHeight(26)
+#        self.inspector_image_btn.setToolTip(
+#            "Save this ROI's pixel view as a picture.")
+#        self.inspector_image_btn.clicked.connect(self.export_inspector_image)
+#        blay.addWidget(self.inspector_image_btn)
+#        lay.addWidget(bar)
+#        lay.addWidget(self.inspector, 1)
 #
 #    def _wire(self) -> None:
 #        self.load_btn.clicked.connect(self.on_load)
@@ -2622,6 +2717,7 @@ if __name__ == "__main__":
 #        self.analysis.within_group_changed.connect(self.on_within_group)
 #        self.analysis.export_requested.connect(self.export_csv)
 #        self.analysis.export_image_requested.connect(self.export_chart_image)
+#        self.stage_bar.export_image_requested.connect(self.export_stage_image)
 #
 #    # ------------------------------------------------------------------ #
 #    # image
@@ -3159,23 +3255,59 @@ if __name__ == "__main__":
 #    # ------------------------------------------------------------------ #
 #    # export
 #    # ------------------------------------------------------------------ #
-#    def export_chart_image(self, path: Optional[str] = None) -> Optional[str]:
-#        """Save the chart sheet for a report — PNG at 3×, or SVG for print."""
-#        if not path:
-#            path, _ = QFileDialog.getSaveFileName(
-#                self.analysis_window, "Export chart image", "pear_chart.png",
-#                "PNG image (*.png);;SVG vector (*.svg)")
-#            if not path:
-#                return None
-#        out = self.analysis.save_charts_image(path)
+#    _IMAGE_FILTER = "PNG image (*.png);;SVG vector (*.svg)"
+#
+#    def _ask_image_path(self, parent, title: str, default: str) -> Optional[str]:
+#        path, _ = QFileDialog.getSaveFileName(parent, title, default,
+#                                              self._IMAGE_FILTER)
+#        return path or None
+#
+#    def _report_image(self, out, title: str) -> Optional[str]:
 #        if out is None:
 #            QMessageBox.warning(
-#                self, "Export chart image",
-#                "Nothing to export — open a chart first. SVG also needs "
-#                "PySide6's QtSvg module.")
+#                self, title,
+#                "Nothing to export — SVG also needs PySide6's QtSvg module.")
 #            return None
-#        self.statusBar().showMessage(f"Chart image written to {out}", 4000)
+#        self.statusBar().showMessage(f"Image written to {out}", 4000)
 #        return out
+#
+#    def export_chart_image(self, scope: str = "charts",
+#                           path: Optional[str] = None) -> Optional[str]:
+#        """Save a section of the results for a report — PNG at 3×, or SVG."""
+#        scope = scope or "charts"
+#        if not path:
+#            path = self._ask_image_path(self.analysis_window,
+#                                        "Export results image",
+#                                        f"pear_{scope}.png")
+#            if not path:
+#                return None
+#        return self._report_image(self.analysis.save_image(path, scope),
+#                                  "Export results image")
+#
+#    def export_stage_image(self, path: Optional[str] = None,
+#                           scale: float = 2.0) -> Optional[str]:
+#        """Save the annotated field — the image itself, overlays on top."""
+#        if self._image is None:
+#            return None
+#        if not path:
+#            base = os.path.splitext(os.path.basename(self._image_path or
+#                                                     "field"))[0]
+#            path = self._ask_image_path(self, "Export field image",
+#                                        f"{base}_pear.png")
+#            if not path:
+#                return None
+#        return self._report_image(self.image_view.export_image(path, scale),
+#                                  "Export field image")
+#
+#    def export_inspector_image(self, path: Optional[str] = None) -> Optional[str]:
+#        """Save the ROI pixel view."""
+#        if not path:
+#            path = self._ask_image_path(self.inspector_window,
+#                                        "Export ROI image", "pear_roi.png")
+#            if not path:
+#                return None
+#        return self._report_image(save_widget_image(self.inspector, path),
+#                                  "Export ROI image")
 #
 #    def export_csv(self, path: Optional[str] = None) -> Optional[str]:
 #        if self._image is None or not self._rois:
@@ -3430,7 +3562,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F e9e0b54374ab1ff4d473334bd9464d8d19ee9324 2029 pear/ui/widgets.py
+#F 46cb48a1f4c8d7536cb9973bddbcf201c845812f 2088 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3448,8 +3580,8 @@ if __name__ == "__main__":
 #                           QRegion)
 #from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
 #                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-#                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
-#                               QWidget)
+#                               QMenu, QPushButton, QScrollArea, QSpinBox,
+#                               QToolButton, QVBoxLayout, QWidget)
 #
 #from pear.core.analysis import (Group, cell_edges, heat_color,
 #                               linear_trend, pixel_hist,
@@ -3496,6 +3628,48 @@ if __name__ == "__main__":
 #            on_pick(c.name())
 #    b.clicked.connect(choose)
 #    return b
+#
+#
+#def save_widget_image(widget, path: str, scale: float = 3.0,
+#                      crop=None, background=None) -> Optional[str]:
+#    """Save a painted widget as a picture: SVG if the name says so, else PNG.
+#
+#    Every view in PEAR is hand-painted with QPainter, so the same two lines
+#    serve all of them — SVG keeps real curves and text for print, PNG is
+#    rendered at ``scale`` × the on-screen size because a 1× screenshot of a
+#    chart is unreadable once a projector or a journal column has it. ``crop``
+#    (widget coordinates) trims to the part worth keeping.
+#    """
+#    if widget is None:
+#        return None
+#    area = QRect(crop) if crop is not None else widget.rect()
+#    w, h = max(1, area.width()), max(1, area.height())
+#    bg = QColor(background or theme.CARD)
+#    if str(path).lower().endswith(".svg"):
+#        try:
+#            from PySide6.QtSvg import QSvgGenerator
+#        except ImportError:
+#            return None
+#        gen = QSvgGenerator()
+#        gen.setFileName(path)
+#        gen.setSize(QSize(w, h))
+#        gen.setViewBox(area)              # the viewBox does the cropping
+#        painter = QPainter()
+#        if not painter.begin(gen):
+#            return None
+#        painter.fillRect(QRectF(area), bg)
+#        widget.render(painter, QPoint(0, 0), QRegion(area))
+#        painter.end()
+#        return path
+#    scale = float(np.clip(scale, 1.0, 8.0))
+#    full = QPixmap(int(widget.width() * scale), int(widget.height() * scale))
+#    full.setDevicePixelRatio(scale)
+#    full.fill(bg)
+#    widget.render(full)
+#    pm = full.copy(QRect(int(area.x() * scale), int(area.y() * scale),
+#                         int(w * scale), int(h * scale)))
+#    pm.setDevicePixelRatio(scale)
+#    return path if pm.save(path) else None
 #
 #
 #def _clear(layout) -> None:
@@ -4383,6 +4557,7 @@ if __name__ == "__main__":
 #    cells_changed = Signal(bool)        # spread the heat over the ROI's cell
 #    outliers_changed = Signal(bool)
 #    heat_alpha_changed = Signal(int)    # percent
+#    export_image_requested = Signal()
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
@@ -4439,6 +4614,14 @@ if __name__ == "__main__":
 #        lay.addWidget(op)
 #        lay.addWidget(self.alpha_spin)
 #        lay.addStretch(1)
+#        self.image_btn = QPushButton("Export image")
+#        self.image_btn.setFixedHeight(26)
+#        self.image_btn.setToolTip(
+#            "Save the annotated field as a picture — the image at its own "
+#            "resolution with the overlays on top, not a screenshot of the "
+#            "stage.")
+#        self.image_btn.clicked.connect(self.export_image_requested)
+#        lay.addWidget(self.image_btn)
 #        self.set_metrics(list(GLV_STATS.keys()) + [SNR_ID])
 #        self._gate()
 #
@@ -4844,7 +5027,7 @@ if __name__ == "__main__":
 #    mode_changed = Signal(str)              # "between" | "within"
 #    within_group_changed = Signal(str)
 #    export_requested = Signal()
-#    export_image_requested = Signal()
+#    export_image_requested = Signal(str)    # which section: see SCOPES
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
@@ -4957,11 +5140,14 @@ if __name__ == "__main__":
 #        self.sub = QLabel("")
 #        self.sub.setObjectName("Hint")
 #        head.addWidget(self.sub)
-#        self.image_btn = QPushButton("Export image")
+#        self.image_btn = QToolButton()
+#        self.image_btn.setText("Export image ▾")
+#        self.image_btn.setPopupMode(QToolButton.InstantPopup)
 #        self.image_btn.setToolTip(
-#            "Save the charts as a picture — PNG at 3× for slides, or SVG for "
-#            "a paper.")
-#        self.image_btn.clicked.connect(self.export_image_requested)
+#            "Save any part of the results as a picture — PNG at 3× for "
+#            "slides, or SVG for a paper.")
+#        self._image_menu = QMenu(self.image_btn)
+#        self.image_btn.setMenu(self._image_menu)
 #        self.image_btn.setEnabled(False)
 #        head.addWidget(self.image_btn)
 #        self.export_btn = QPushButton("Export CSV")
@@ -4986,7 +5172,7 @@ if __name__ == "__main__":
 #        self._pos_axis = "x"
 #        self._last_result = None
 #        self._suppress = False
-#        self._chart_host: Optional[QWidget] = None
+#        self._cards: dict = {}          # scope -> the widget to export
 #
 #    def _pick_mode(self, mode: str) -> None:
 #        self._mode = mode
@@ -5066,7 +5252,6 @@ if __name__ == "__main__":
 #            self.selector.setVisible(False)
 #        self._suppress = False
 #        self.export_btn.setEnabled(bool(enabled))
-#        self.image_btn.setEnabled(bool(enabled))
 #
 #    def set_computing(self, on: bool) -> None:
 #        self.busy.setText("· working…" if on else "")
@@ -5077,7 +5262,7 @@ if __name__ == "__main__":
 #
 #    def _render_body(self, result) -> None:
 #        _clear(self.body_lay)
-#        self._chart_host = None
+#        self._cards = {}
 #        self.sub.setText(result.subtitle)
 #        if result.empty:
 #            self._empty(result.empty)
@@ -5094,62 +5279,64 @@ if __name__ == "__main__":
 #            self._heatmap_card(result.heat)
 #        if result.table_rows:
 #            self._table(result.table_headers, result.table_rows)
+#        self._rebuild_image_menu()
+#
+#    def _rebuild_image_menu(self) -> None:
+#        """Offer exactly the sections this result has."""
+#        self._image_menu.clear()
+#        labels = dict(self.SCOPES)
+#        scopes = self.scopes_available()
+#        for key in scopes:
+#            self._image_menu.addAction(
+#                f"{labels[key]}…",
+#                lambda _=False, k=key: self.export_image_requested.emit(k))
+#        self.image_btn.setEnabled(bool(scopes))
+#
+#    # -- image export --------------------------------------------------- #
+#    SCOPES = (("charts", "Charts"), ("ranking", "Attribute ranking"),
+#              ("heat", "Group × metric heatmap"), ("table", "Summary table"),
+#              ("all", "Everything"))
+#
+#    def scopes_available(self) -> List[str]:
+#        """Which sections the current result actually has to export."""
+#        out = [k for k, _lab in self.SCOPES
+#               if k not in ("all",) and self._cards.get(k) is not None]
+#        return out + (["all"] if len(out) > 1 else [])
+#
+#    def save_image(self, path: str, scope: str = "charts",
+#                   scale: float = 3.0) -> Optional[str]:
+#        """Save one section of the results — or all of it — as a picture."""
+#        if scope == "all":
+#            widgets = [w for _k, w in self._cards.items() if w is not None]
+#            if not widgets:
+#                return None
+#            area = widgets[0].geometry()
+#            for w in widgets[1:]:
+#                area = area.united(w.geometry())
+#            return save_widget_image(self.body, path, scale, crop=area,
+#                                     background=theme.WINDOW)
+#        host = self._cards.get(scope)
+#        if host is None:
+#            return None
+#        crop = None
+#        if scope == "charts":
+#            # only the figures travel — the layout's slack either side of them
+#            # is margin on screen and dead white space in a document
+#            charts = host.findChildren(DistributionChart)
+#            if not charts:
+#                return None
+#            crop = charts[0].geometry()
+#            for c in charts[1:]:
+#                crop = crop.united(c.geometry())
+#        return save_widget_image(host, path, scale, crop=crop)
 #
 #    def save_charts_image(self, path: str, scale: float = 3.0) -> Optional[str]:
-#        """Save the chart sheet as a picture: SVG if the name says so, else PNG.
-#
-#        PNG is rendered at ``scale`` × the on-screen size — a screenshot of a
-#        chart is unreadable once a projector or a journal column gets hold of
-#        it. SVG stays vector, which is what a paper wants; the charts are
-#        hand-painted with QPainter, so it comes out as real curves and text
-#        rather than a bitmap in a wrapper.
-#        """
-#        host = self._chart_host
-#        charts = (host.findChildren(DistributionChart)
-#                  if host is not None else [])
-#        if not charts:
-#            return None
-#        # only the figures travel — the layout's slack either side of them is
-#        # margin on screen and would be dead white space in a document
-#        area = charts[0].geometry()
-#        for c in charts[1:]:
-#            area = area.united(c.geometry())
-#        w, h = max(1, area.width()), max(1, area.height())
-#        if str(path).lower().endswith(".svg"):
-#            try:
-#                from PySide6.QtSvg import QSvgGenerator
-#            except ImportError:
-#                return None
-#            gen = QSvgGenerator()
-#            gen.setFileName(path)
-#            gen.setSize(QSize(w, h))
-#            gen.setViewBox(area)          # the viewBox does the cropping
-#            gen.setTitle(self._title_for_export())
-#            painter = QPainter()
-#            if not painter.begin(gen):
-#                return None
-#            painter.fillRect(QRectF(area), QColor(theme.CARD))
-#            host.render(painter, QPoint(0, 0), QRegion(area))
-#            painter.end()
-#            return path
-#        scale = float(np.clip(scale, 1.0, 8.0))
-#        full = QPixmap(int(host.width() * scale), int(host.height() * scale))
-#        full.setDevicePixelRatio(scale)
-#        full.fill(QColor(theme.CARD))
-#        host.render(full)
-#        pm = full.copy(QRect(int(area.x() * scale), int(area.y() * scale),
-#                             int(w * scale), int(h * scale)))
-#        pm.setDevicePixelRatio(scale)
-#        return path if pm.save(path) else None
-#
-#    def _title_for_export(self) -> str:
-#        charts = (self._chart_host.findChildren(DistributionChart)
-#                  if self._chart_host is not None else [])
-#        return " · ".join(c._title for c in charts) or "PEAR chart"
+#        return self.save_image(path, "charts", scale)
 #
 #    def _ranking_card(self, ranking) -> None:
 #        host = QFrame()
 #        host.setObjectName("Card")
+#        self._cards["ranking"] = host
 #        lay = QVBoxLayout(host)
 #        lay.setContentsMargins(14, 12, 14, 14)
 #        lay.setSpacing(8)
@@ -5188,6 +5375,7 @@ if __name__ == "__main__":
 #    def _heatmap_card(self, heat) -> None:
 #        host = QFrame()
 #        host.setObjectName("Card")
+#        self._cards["heat"] = host
 #        lay = QVBoxLayout(host)
 #        lay.setContentsMargins(14, 12, 14, 14)
 #        lay.setSpacing(8)
@@ -5241,7 +5429,7 @@ if __name__ == "__main__":
 #    def _chart_grid(self, charts) -> None:
 #        grid_host = QWidget()
 #        grid_host.setObjectName("ChartSheet")
-#        self._chart_host = grid_host
+#        self._cards["charts"] = grid_host
 #        grid = QGridLayout(grid_host)
 #        grid.setContentsMargins(0, 0, 0, 0)
 #        grid.setSpacing(10)
@@ -5278,6 +5466,7 @@ if __name__ == "__main__":
 #    def _table(self, headers, rows) -> None:
 #        host = QFrame()
 #        host.setObjectName("Card")
+#        self._cards["table"] = host
 #        lay = QGridLayout(host)
 #        lay.setContentsMargins(12, 10, 12, 10)
 #        lay.setSpacing(6)
@@ -5331,6 +5520,8 @@ if __name__ == "__main__":
 #class RoiInspector(QWidget):
 #    """Pixel-level view of one ROI: false-colour heatmap, grey-level histogram,
 #    and horizontal / vertical intensity profiles."""
+#
+#    export_image_requested = Signal()
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
@@ -5933,7 +6124,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 521fe22557c69d1f3c81020f8364362bcc3ae986 814 tests/test_ui_smoke.py
+#F 23e05eb98352072673b348e67048ce54e4b8b6eb 895 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -6683,7 +6874,7 @@ if __name__ == "__main__":
 #    assert ap.image_btn.isEnabled()
 #
 #    png = tmp_path / "fig.png"
-#    assert win.export_chart_image(str(png)) == str(png)
+#    assert win.export_chart_image("charts", str(png)) == str(png)
 #    from PySide6.QtGui import QImage
 #    img = QImage(str(png))
 #    chart = [c for c in ap.body.findChildren(DistributionChart)
@@ -6693,9 +6884,90 @@ if __name__ == "__main__":
 #    assert img.height() == chart.height() * 3
 #
 #    svg = tmp_path / "fig.svg"
-#    if win.export_chart_image(str(svg)) is not None:    # QtSvg is optional
+#    if win.export_chart_image("charts", str(svg)) is not None:  # QtSvg optional
 #        text = svg.read_text(encoding="utf-8")
 #        assert "<svg" in text and f"{chart.width()} {chart.height()}" in text
+#
+#
+#def test_every_results_section_exports(app, tmp_path):
+#    """Between-groups has four sections; each is offered and each writes."""
+#    from PySide6.QtGui import QImage
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean", "glv_median"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    win.analysis_window.resize(1200, 900)
+#    win.analysis_window.show()
+#    app.processEvents()
+#    app.processEvents()
+#    scopes = ap.scopes_available()
+#    assert set(scopes) == {"charts", "ranking", "heat", "table", "all"}
+#    assert ap.image_btn.isEnabled()
+#    assert [a.text() for a in ap._image_menu.actions()] == [
+#        "Charts…", "Attribute ranking…", "Group × metric heatmap…",
+#        "Summary table…", "Everything…"]
+#    for scope in scopes:
+#        out = tmp_path / f"{scope}.png"
+#        assert win.export_chart_image(scope, str(out)) == str(out)
+#        img = QImage(str(out))
+#        assert img.width() > 60 and img.height() > 40
+#    # within a group there is no ranking or group heatmap to offer
+#    win.on_cmp_mode("within")
+#    win.on_within_group(win._groups[0].gid)
+#    win.render_analysis_sync()
+#    app.processEvents()
+#    assert "ranking" not in ap.scopes_available()
+#
+#
+#def test_stage_and_inspector_export_images(app, tmp_path):
+#    """The annotated field exports at the image's own resolution, not the view's."""
+#    from PySide6.QtGui import QImage
+#    from pear.core.analysis import group_rois
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    field = make_field()
+#    win.set_image(field, "f.png")
+#    _grid_group(win, 2, 3)
+#    sb = win.stage_bar
+#    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
+#    sb.heatmap_chk.setChecked(True)
+#    sb.cells_chk.setChecked(True)
+#    win.image_view.resize(300, 200)          # a small, zoomed-out view…
+#    app.processEvents()
+#
+#    out = tmp_path / "field.png"
+#    assert win.export_stage_image(str(out), 2.0) == str(out)
+#    img = QImage(str(out))
+#    h, w = field.shape[:2]
+#    from pear.ui.image_view import _LEGEND_H
+#    assert img.width() == w * 2                            # …exports full size
+#    # the colour key gets a strip of its own under the field
+#    assert img.height() == h * 2 + _LEGEND_H
+#    assert win.image_view._scale != 2.0                    # the view is untouched
+#    assert not win.image_view._exporting                   # flag always restored
+#
+#    sb.heatmap_chk.setChecked(False)                       # no key, no strip
+#    plain = tmp_path / "plain.png"
+#    assert win.export_stage_image(str(plain), 1.0) == str(plain)
+#    assert (QImage(str(plain)).width(), QImage(str(plain)).height()) == (w, h)
+#    sb.heatmap_chk.setChecked(True)
+#
+#    svg = tmp_path / "field.svg"
+#    if win.export_stage_image(str(svg), 1.0) is not None:
+#        assert "<svg" in svg.read_text(encoding="utf-8")
+#
+#    rid = group_rois(win._rois, win._active_gid)[0].rid
+#    win.open_inspector(rid)
+#    win.inspector_window.resize(600, 470)
+#    win.inspector_window.show()
+#    app.processEvents()
+#    roi_png = tmp_path / "roi.png"
+#    assert win.export_inspector_image(str(roi_png)) == str(roi_png)
+#    assert QImage(str(roi_png)).width() == win.inspector.width() * 3
 #
 #
 #def test_position_chart_without_positions_is_safe(app):

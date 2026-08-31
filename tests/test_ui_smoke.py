@@ -747,7 +747,7 @@ def test_export_chart_image_writes_png_and_svg(app, tmp_path):
     assert ap.image_btn.isEnabled()
 
     png = tmp_path / "fig.png"
-    assert win.export_chart_image(str(png)) == str(png)
+    assert win.export_chart_image("charts", str(png)) == str(png)
     from PySide6.QtGui import QImage
     img = QImage(str(png))
     chart = [c for c in ap.body.findChildren(DistributionChart)
@@ -757,9 +757,90 @@ def test_export_chart_image_writes_png_and_svg(app, tmp_path):
     assert img.height() == chart.height() * 3
 
     svg = tmp_path / "fig.svg"
-    if win.export_chart_image(str(svg)) is not None:    # QtSvg is optional
+    if win.export_chart_image("charts", str(svg)) is not None:  # QtSvg optional
         text = svg.read_text(encoding="utf-8")
         assert "<svg" in text and f"{chart.width()} {chart.height()}" in text
+
+
+def test_every_results_section_exports(app, tmp_path):
+    """Between-groups has four sections; each is offered and each writes."""
+    from PySide6.QtGui import QImage
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean", "glv_median"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    win.analysis_window.resize(1200, 900)
+    win.analysis_window.show()
+    app.processEvents()
+    app.processEvents()
+    scopes = ap.scopes_available()
+    assert set(scopes) == {"charts", "ranking", "heat", "table", "all"}
+    assert ap.image_btn.isEnabled()
+    assert [a.text() for a in ap._image_menu.actions()] == [
+        "Charts…", "Attribute ranking…", "Group × metric heatmap…",
+        "Summary table…", "Everything…"]
+    for scope in scopes:
+        out = tmp_path / f"{scope}.png"
+        assert win.export_chart_image(scope, str(out)) == str(out)
+        img = QImage(str(out))
+        assert img.width() > 60 and img.height() > 40
+    # within a group there is no ranking or group heatmap to offer
+    win.on_cmp_mode("within")
+    win.on_within_group(win._groups[0].gid)
+    win.render_analysis_sync()
+    app.processEvents()
+    assert "ranking" not in ap.scopes_available()
+
+
+def test_stage_and_inspector_export_images(app, tmp_path):
+    """The annotated field exports at the image's own resolution, not the view's."""
+    from PySide6.QtGui import QImage
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    field = make_field()
+    win.set_image(field, "f.png")
+    _grid_group(win, 2, 3)
+    sb = win.stage_bar
+    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
+    sb.heatmap_chk.setChecked(True)
+    sb.cells_chk.setChecked(True)
+    win.image_view.resize(300, 200)          # a small, zoomed-out view…
+    app.processEvents()
+
+    out = tmp_path / "field.png"
+    assert win.export_stage_image(str(out), 2.0) == str(out)
+    img = QImage(str(out))
+    h, w = field.shape[:2]
+    from pear.ui.image_view import _LEGEND_H
+    assert img.width() == w * 2                            # …exports full size
+    # the colour key gets a strip of its own under the field
+    assert img.height() == h * 2 + _LEGEND_H
+    assert win.image_view._scale != 2.0                    # the view is untouched
+    assert not win.image_view._exporting                   # flag always restored
+
+    sb.heatmap_chk.setChecked(False)                       # no key, no strip
+    plain = tmp_path / "plain.png"
+    assert win.export_stage_image(str(plain), 1.0) == str(plain)
+    assert (QImage(str(plain)).width(), QImage(str(plain)).height()) == (w, h)
+    sb.heatmap_chk.setChecked(True)
+
+    svg = tmp_path / "field.svg"
+    if win.export_stage_image(str(svg), 1.0) is not None:
+        assert "<svg" in svg.read_text(encoding="utf-8")
+
+    rid = group_rois(win._rois, win._active_gid)[0].rid
+    win.open_inspector(rid)
+    win.inspector_window.resize(600, 470)
+    win.inspector_window.show()
+    app.processEvents()
+    roi_png = tmp_path / "roi.png"
+    assert win.export_inspector_image(str(roi_png)) == str(roi_png)
+    assert QImage(str(roi_png)).width() == win.inspector.width() * 3
 
 
 def test_position_chart_without_positions_is_safe(app):

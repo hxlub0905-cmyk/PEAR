@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QImage, QKeyEvent, QLinearGradient,
                            QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent)
 from PySide6.QtWidgets import QWidget
@@ -25,6 +25,7 @@ Rect = Tuple[int, int, int, int]
 _HANDLE = 8
 _MIN_ROI = 4
 _DEFAULT = 28          # default single-ROI size (px) for a plain click
+_LEGEND_H = 58         # colour-key strip added under an exported field
 
 
 def label_rect(r: QRectF, bw: float, bh: float,
@@ -86,6 +87,7 @@ class ImageView(QWidget):
         self._heat_cells: dict = {}            # rid -> (x0,y0,x1,y1) image px
         self._outliers: set = set()            # rids flagged as outliers
         self._hover_rid: int = -1              # rid under the cursor
+        self._exporting = False                # drop the in-progress marks
 
         self._grid_mode = False
         self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
@@ -143,6 +145,66 @@ class ImageView(QWidget):
         self._heat_legend = legend
         self._heat_alpha = int(np.clip(int(alpha), 0, 255))
         self.update()
+
+    def export_image(self, path: str, scale: float = 2.0) -> Optional[str]:
+        """Save the annotated field: the image at its own resolution × ``scale``.
+
+        Not a screenshot of the stage — the view's zoom, pan and black
+        surround have nothing to do with the figure someone wants in a
+        report. The pixels are drawn at their own size and the overlays (heat,
+        cells, ROI boxes, values, flags, the colour key) on top of them, so
+        the export is as sharp as the data allows whatever the window shows.
+        """
+        if self._pixmap is None:
+            return None
+        scale = float(np.clip(scale, 0.25, 8.0))
+        w = max(1, int(round(self._pixmap.width() * scale)))
+        h = max(1, int(round(self._pixmap.height() * scale)))
+        # the colour key gets a strip of its own rather than sitting on top of
+        # the ROIs it is the key for
+        legend_h = _LEGEND_H if (self._heat_legend and self._heat) else 0
+        keep = (self._scale, self._offset)
+        self._scale, self._offset = scale, QPointF(0.0, 0.0)
+        self._exporting = True
+        try:
+            if str(path).lower().endswith(".svg"):
+                try:
+                    from PySide6.QtSvg import QSvgGenerator
+                except ImportError:
+                    return None
+                gen = QSvgGenerator()
+                gen.setFileName(path)
+                gen.setSize(QSize(w, h + legend_h))
+                gen.setViewBox(QRect(0, 0, w, h + legend_h))
+                painter = QPainter()
+                if not painter.begin(gen):
+                    return None
+                painter.fillRect(QRectF(0, 0, w, h + legend_h),
+                                 QColor(theme.STAGE))
+                self._paint_export(painter, w, h, legend_h)
+                painter.end()
+                return path
+            pm = QPixmap(w, h + legend_h)
+            pm.fill(QColor(theme.STAGE))
+            painter = QPainter(pm)
+            self._paint_export(painter, w, h, legend_h)
+            painter.end()
+            return path if pm.save(path) else None
+        finally:
+            self._scale, self._offset = keep
+            self._exporting = False
+
+    def _paint_export(self, p: QPainter, w: int, h: int,
+                      legend_h: int = 0) -> None:
+        """The field and its overlays — no cursor HUD, no marquee, no grid
+        preview: those are things you are doing, not things you measured."""
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.drawPixmap(QRectF(0, 0, w, h), self._pixmap,
+                     QRectF(self._pixmap.rect()))
+        self._paint_heat_cells(p)
+        self._paint_rois(p)
+        if legend_h:
+            self._paint_colorbar(p, QRectF(0, h, w, legend_h))
 
     def set_heat_cells(self, cells: dict) -> None:
         """Tile the heat across the field: rid -> (x0, y0, x1, y1) in image px.
@@ -322,9 +384,9 @@ class ImageView(QWidget):
             p.setPen(pen)
             p.setBrush(fill)
             p.drawRect(r)
-            if roi.rid == self._hover_rid:
+            if roi.rid == self._hover_rid and not self._exporting:
                 self._paint_hover_ring(p, r)
-            if in_sel:
+            if in_sel and not self._exporting:
                 self._paint_selection_ring(p, r)
             if roi.rid in self._outliers:
                 self._paint_outlier(p, r)
@@ -333,7 +395,7 @@ class ImageView(QWidget):
             val = self._roi_values.get(roi.rid)
             if val is not None:
                 self._paint_value(p, r, val, roi.rid == self._hover_rid)
-            if selected and not self._grid_mode:
+            if selected and not self._grid_mode and not self._exporting:
                 self._paint_handles(p, r, color)
 
     def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
@@ -351,11 +413,12 @@ class ImageView(QWidget):
         p.drawRect(r.adjusted(-1, -1, 1, 1))
         self._paint_badge(p, r, "!", QColor(theme.WARNING), corner="tr")
 
-    def _paint_colorbar(self, p: QPainter) -> None:
+    def _paint_colorbar(self, p: QPainter, frame: Optional[QRectF] = None) -> None:
         if not self._heat_legend or not self._heat:
             return
         vmin, vmax, label = self._heat_legend
-        x, y, w, h = 14, self.height() - 42, 150, 12
+        frame = frame if frame is not None else QRectF(self.rect())
+        x, y, w, h = frame.left() + 14, frame.bottom() - 42, 150, 12
         grad = QLinearGradient(float(x), 0.0, float(x + w), 0.0)
         for t in (0.0, 0.25, 0.5, 0.75, 1.0):
             grad.setColorAt(t, QColor(heat_color(t)))

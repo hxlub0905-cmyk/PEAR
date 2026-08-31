@@ -15,8 +15,8 @@ from PySide6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,
                            QRegion)
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
-                               QWidget)
+                               QMenu, QPushButton, QScrollArea, QSpinBox,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from pear.core.analysis import (Group, cell_edges, heat_color,
                                linear_trend, pixel_hist,
@@ -63,6 +63,48 @@ def _swatch(color: str, on_pick: Callable[[str], None]) -> QPushButton:
             on_pick(c.name())
     b.clicked.connect(choose)
     return b
+
+
+def save_widget_image(widget, path: str, scale: float = 3.0,
+                      crop=None, background=None) -> Optional[str]:
+    """Save a painted widget as a picture: SVG if the name says so, else PNG.
+
+    Every view in PEAR is hand-painted with QPainter, so the same two lines
+    serve all of them — SVG keeps real curves and text for print, PNG is
+    rendered at ``scale`` × the on-screen size because a 1× screenshot of a
+    chart is unreadable once a projector or a journal column has it. ``crop``
+    (widget coordinates) trims to the part worth keeping.
+    """
+    if widget is None:
+        return None
+    area = QRect(crop) if crop is not None else widget.rect()
+    w, h = max(1, area.width()), max(1, area.height())
+    bg = QColor(background or theme.CARD)
+    if str(path).lower().endswith(".svg"):
+        try:
+            from PySide6.QtSvg import QSvgGenerator
+        except ImportError:
+            return None
+        gen = QSvgGenerator()
+        gen.setFileName(path)
+        gen.setSize(QSize(w, h))
+        gen.setViewBox(area)              # the viewBox does the cropping
+        painter = QPainter()
+        if not painter.begin(gen):
+            return None
+        painter.fillRect(QRectF(area), bg)
+        widget.render(painter, QPoint(0, 0), QRegion(area))
+        painter.end()
+        return path
+    scale = float(np.clip(scale, 1.0, 8.0))
+    full = QPixmap(int(widget.width() * scale), int(widget.height() * scale))
+    full.setDevicePixelRatio(scale)
+    full.fill(bg)
+    widget.render(full)
+    pm = full.copy(QRect(int(area.x() * scale), int(area.y() * scale),
+                         int(w * scale), int(h * scale)))
+    pm.setDevicePixelRatio(scale)
+    return path if pm.save(path) else None
 
 
 def _clear(layout) -> None:
@@ -950,6 +992,7 @@ class StageBar(QWidget):
     cells_changed = Signal(bool)        # spread the heat over the ROI's cell
     outliers_changed = Signal(bool)
     heat_alpha_changed = Signal(int)    # percent
+    export_image_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1006,6 +1049,14 @@ class StageBar(QWidget):
         lay.addWidget(op)
         lay.addWidget(self.alpha_spin)
         lay.addStretch(1)
+        self.image_btn = QPushButton("Export image")
+        self.image_btn.setFixedHeight(26)
+        self.image_btn.setToolTip(
+            "Save the annotated field as a picture — the image at its own "
+            "resolution with the overlays on top, not a screenshot of the "
+            "stage.")
+        self.image_btn.clicked.connect(self.export_image_requested)
+        lay.addWidget(self.image_btn)
         self.set_metrics(list(GLV_STATS.keys()) + [SNR_ID])
         self._gate()
 
@@ -1411,7 +1462,7 @@ class AnalysisPanel(QWidget):
     mode_changed = Signal(str)              # "between" | "within"
     within_group_changed = Signal(str)
     export_requested = Signal()
-    export_image_requested = Signal()
+    export_image_requested = Signal(str)    # which section: see SCOPES
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1524,11 +1575,14 @@ class AnalysisPanel(QWidget):
         self.sub = QLabel("")
         self.sub.setObjectName("Hint")
         head.addWidget(self.sub)
-        self.image_btn = QPushButton("Export image")
+        self.image_btn = QToolButton()
+        self.image_btn.setText("Export image ▾")
+        self.image_btn.setPopupMode(QToolButton.InstantPopup)
         self.image_btn.setToolTip(
-            "Save the charts as a picture — PNG at 3× for slides, or SVG for "
-            "a paper.")
-        self.image_btn.clicked.connect(self.export_image_requested)
+            "Save any part of the results as a picture — PNG at 3× for "
+            "slides, or SVG for a paper.")
+        self._image_menu = QMenu(self.image_btn)
+        self.image_btn.setMenu(self._image_menu)
         self.image_btn.setEnabled(False)
         head.addWidget(self.image_btn)
         self.export_btn = QPushButton("Export CSV")
@@ -1553,7 +1607,7 @@ class AnalysisPanel(QWidget):
         self._pos_axis = "x"
         self._last_result = None
         self._suppress = False
-        self._chart_host: Optional[QWidget] = None
+        self._cards: dict = {}          # scope -> the widget to export
 
     def _pick_mode(self, mode: str) -> None:
         self._mode = mode
@@ -1633,7 +1687,6 @@ class AnalysisPanel(QWidget):
             self.selector.setVisible(False)
         self._suppress = False
         self.export_btn.setEnabled(bool(enabled))
-        self.image_btn.setEnabled(bool(enabled))
 
     def set_computing(self, on: bool) -> None:
         self.busy.setText("· working…" if on else "")
@@ -1644,7 +1697,7 @@ class AnalysisPanel(QWidget):
 
     def _render_body(self, result) -> None:
         _clear(self.body_lay)
-        self._chart_host = None
+        self._cards = {}
         self.sub.setText(result.subtitle)
         if result.empty:
             self._empty(result.empty)
@@ -1661,62 +1714,64 @@ class AnalysisPanel(QWidget):
             self._heatmap_card(result.heat)
         if result.table_rows:
             self._table(result.table_headers, result.table_rows)
+        self._rebuild_image_menu()
+
+    def _rebuild_image_menu(self) -> None:
+        """Offer exactly the sections this result has."""
+        self._image_menu.clear()
+        labels = dict(self.SCOPES)
+        scopes = self.scopes_available()
+        for key in scopes:
+            self._image_menu.addAction(
+                f"{labels[key]}…",
+                lambda _=False, k=key: self.export_image_requested.emit(k))
+        self.image_btn.setEnabled(bool(scopes))
+
+    # -- image export --------------------------------------------------- #
+    SCOPES = (("charts", "Charts"), ("ranking", "Attribute ranking"),
+              ("heat", "Group × metric heatmap"), ("table", "Summary table"),
+              ("all", "Everything"))
+
+    def scopes_available(self) -> List[str]:
+        """Which sections the current result actually has to export."""
+        out = [k for k, _lab in self.SCOPES
+               if k not in ("all",) and self._cards.get(k) is not None]
+        return out + (["all"] if len(out) > 1 else [])
+
+    def save_image(self, path: str, scope: str = "charts",
+                   scale: float = 3.0) -> Optional[str]:
+        """Save one section of the results — or all of it — as a picture."""
+        if scope == "all":
+            widgets = [w for _k, w in self._cards.items() if w is not None]
+            if not widgets:
+                return None
+            area = widgets[0].geometry()
+            for w in widgets[1:]:
+                area = area.united(w.geometry())
+            return save_widget_image(self.body, path, scale, crop=area,
+                                     background=theme.WINDOW)
+        host = self._cards.get(scope)
+        if host is None:
+            return None
+        crop = None
+        if scope == "charts":
+            # only the figures travel — the layout's slack either side of them
+            # is margin on screen and dead white space in a document
+            charts = host.findChildren(DistributionChart)
+            if not charts:
+                return None
+            crop = charts[0].geometry()
+            for c in charts[1:]:
+                crop = crop.united(c.geometry())
+        return save_widget_image(host, path, scale, crop=crop)
 
     def save_charts_image(self, path: str, scale: float = 3.0) -> Optional[str]:
-        """Save the chart sheet as a picture: SVG if the name says so, else PNG.
-
-        PNG is rendered at ``scale`` × the on-screen size — a screenshot of a
-        chart is unreadable once a projector or a journal column gets hold of
-        it. SVG stays vector, which is what a paper wants; the charts are
-        hand-painted with QPainter, so it comes out as real curves and text
-        rather than a bitmap in a wrapper.
-        """
-        host = self._chart_host
-        charts = (host.findChildren(DistributionChart)
-                  if host is not None else [])
-        if not charts:
-            return None
-        # only the figures travel — the layout's slack either side of them is
-        # margin on screen and would be dead white space in a document
-        area = charts[0].geometry()
-        for c in charts[1:]:
-            area = area.united(c.geometry())
-        w, h = max(1, area.width()), max(1, area.height())
-        if str(path).lower().endswith(".svg"):
-            try:
-                from PySide6.QtSvg import QSvgGenerator
-            except ImportError:
-                return None
-            gen = QSvgGenerator()
-            gen.setFileName(path)
-            gen.setSize(QSize(w, h))
-            gen.setViewBox(area)          # the viewBox does the cropping
-            gen.setTitle(self._title_for_export())
-            painter = QPainter()
-            if not painter.begin(gen):
-                return None
-            painter.fillRect(QRectF(area), QColor(theme.CARD))
-            host.render(painter, QPoint(0, 0), QRegion(area))
-            painter.end()
-            return path
-        scale = float(np.clip(scale, 1.0, 8.0))
-        full = QPixmap(int(host.width() * scale), int(host.height() * scale))
-        full.setDevicePixelRatio(scale)
-        full.fill(QColor(theme.CARD))
-        host.render(full)
-        pm = full.copy(QRect(int(area.x() * scale), int(area.y() * scale),
-                             int(w * scale), int(h * scale)))
-        pm.setDevicePixelRatio(scale)
-        return path if pm.save(path) else None
-
-    def _title_for_export(self) -> str:
-        charts = (self._chart_host.findChildren(DistributionChart)
-                  if self._chart_host is not None else [])
-        return " · ".join(c._title for c in charts) or "PEAR chart"
+        return self.save_image(path, "charts", scale)
 
     def _ranking_card(self, ranking) -> None:
         host = QFrame()
         host.setObjectName("Card")
+        self._cards["ranking"] = host
         lay = QVBoxLayout(host)
         lay.setContentsMargins(14, 12, 14, 14)
         lay.setSpacing(8)
@@ -1755,6 +1810,7 @@ class AnalysisPanel(QWidget):
     def _heatmap_card(self, heat) -> None:
         host = QFrame()
         host.setObjectName("Card")
+        self._cards["heat"] = host
         lay = QVBoxLayout(host)
         lay.setContentsMargins(14, 12, 14, 14)
         lay.setSpacing(8)
@@ -1808,7 +1864,7 @@ class AnalysisPanel(QWidget):
     def _chart_grid(self, charts) -> None:
         grid_host = QWidget()
         grid_host.setObjectName("ChartSheet")
-        self._chart_host = grid_host
+        self._cards["charts"] = grid_host
         grid = QGridLayout(grid_host)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
@@ -1845,6 +1901,7 @@ class AnalysisPanel(QWidget):
     def _table(self, headers, rows) -> None:
         host = QFrame()
         host.setObjectName("Card")
+        self._cards["table"] = host
         lay = QGridLayout(host)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
@@ -1898,6 +1955,8 @@ def _heat_lut():
 class RoiInspector(QWidget):
     """Pixel-level view of one ROI: false-colour heatmap, grey-level histogram,
     and horizontal / vertical intensity profiles."""
+
+    export_image_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)

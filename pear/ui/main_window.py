@@ -28,7 +28,7 @@ from pear.core.attributes import SNR_ID, metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
 from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
-                             StageBar)
+                             StageBar, save_widget_image)
 
 _FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 
@@ -205,10 +205,23 @@ class MainWindow(QMainWindow):
         self.inspector = RoiInspector()
         self.inspector_window = QWidget()
         self.inspector_window.setWindowTitle("PEAR — ROI inspector")
-        self.inspector_window.resize(600, 440)
+        self.inspector_window.resize(600, 470)
         lay = QVBoxLayout(self.inspector_window)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.inspector)
+        lay.setSpacing(0)
+        bar = QWidget()
+        bar.setObjectName("StageBar")
+        blay = QHBoxLayout(bar)
+        blay.setContentsMargins(12, 6, 12, 6)
+        blay.addStretch(1)
+        self.inspector_image_btn = QPushButton("Export image")
+        self.inspector_image_btn.setFixedHeight(26)
+        self.inspector_image_btn.setToolTip(
+            "Save this ROI's pixel view as a picture.")
+        self.inspector_image_btn.clicked.connect(self.export_inspector_image)
+        blay.addWidget(self.inspector_image_btn)
+        lay.addWidget(bar)
+        lay.addWidget(self.inspector, 1)
 
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load)
@@ -258,6 +271,7 @@ class MainWindow(QMainWindow):
         self.analysis.within_group_changed.connect(self.on_within_group)
         self.analysis.export_requested.connect(self.export_csv)
         self.analysis.export_image_requested.connect(self.export_chart_image)
+        self.stage_bar.export_image_requested.connect(self.export_stage_image)
 
     # ------------------------------------------------------------------ #
     # image
@@ -795,23 +809,59 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # export
     # ------------------------------------------------------------------ #
-    def export_chart_image(self, path: Optional[str] = None) -> Optional[str]:
-        """Save the chart sheet for a report — PNG at 3×, or SVG for print."""
-        if not path:
-            path, _ = QFileDialog.getSaveFileName(
-                self.analysis_window, "Export chart image", "pear_chart.png",
-                "PNG image (*.png);;SVG vector (*.svg)")
-            if not path:
-                return None
-        out = self.analysis.save_charts_image(path)
+    _IMAGE_FILTER = "PNG image (*.png);;SVG vector (*.svg)"
+
+    def _ask_image_path(self, parent, title: str, default: str) -> Optional[str]:
+        path, _ = QFileDialog.getSaveFileName(parent, title, default,
+                                              self._IMAGE_FILTER)
+        return path or None
+
+    def _report_image(self, out, title: str) -> Optional[str]:
         if out is None:
             QMessageBox.warning(
-                self, "Export chart image",
-                "Nothing to export — open a chart first. SVG also needs "
-                "PySide6's QtSvg module.")
+                self, title,
+                "Nothing to export — SVG also needs PySide6's QtSvg module.")
             return None
-        self.statusBar().showMessage(f"Chart image written to {out}", 4000)
+        self.statusBar().showMessage(f"Image written to {out}", 4000)
         return out
+
+    def export_chart_image(self, scope: str = "charts",
+                           path: Optional[str] = None) -> Optional[str]:
+        """Save a section of the results for a report — PNG at 3×, or SVG."""
+        scope = scope or "charts"
+        if not path:
+            path = self._ask_image_path(self.analysis_window,
+                                        "Export results image",
+                                        f"pear_{scope}.png")
+            if not path:
+                return None
+        return self._report_image(self.analysis.save_image(path, scope),
+                                  "Export results image")
+
+    def export_stage_image(self, path: Optional[str] = None,
+                           scale: float = 2.0) -> Optional[str]:
+        """Save the annotated field — the image itself, overlays on top."""
+        if self._image is None:
+            return None
+        if not path:
+            base = os.path.splitext(os.path.basename(self._image_path or
+                                                     "field"))[0]
+            path = self._ask_image_path(self, "Export field image",
+                                        f"{base}_pear.png")
+            if not path:
+                return None
+        return self._report_image(self.image_view.export_image(path, scale),
+                                  "Export field image")
+
+    def export_inspector_image(self, path: Optional[str] = None) -> Optional[str]:
+        """Save the ROI pixel view."""
+        if not path:
+            path = self._ask_image_path(self.inspector_window,
+                                        "Export ROI image", "pear_roi.png")
+            if not path:
+                return None
+        return self._report_image(save_widget_image(self.inspector, path),
+                                  "Export ROI image")
 
     def export_csv(self, path: Optional[str] = None) -> Optional[str]:
         if self._image is None or not self._rois:
