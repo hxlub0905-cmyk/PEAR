@@ -1074,6 +1074,80 @@ def test_chart_text_and_marks_are_adjustable(app):
     c.grab()
 
 
+def test_project_remembers_the_chart_settings(app, tmp_path):
+    """Reopening a project has to draw the chart you left, not the defaults.
+
+    The style (titles, fonts, colours, locked scales) and the header toggles
+    (points, legend, bins, cells…) both travel in the project file — a
+    locked scale that came back on auto would quietly make two lots look
+    comparable when they were not.
+    """
+    import json
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win, 3, 4)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+
+    ap.set_chart_style({"titles": {"GLV mean": "Figure 2"},
+                        "xlabel": "ROI centre X (px)",
+                        "font_pt": 13.0, "label_pt": 15.0, "tick_bold": True,
+                        "axis_ink": "#123456", "label_ink": "#654321",
+                        "point_color": "#0000FF", "line_color": "#FF00FF",
+                        "point_size": 5.0, "line_width": 3.0,
+                        "xticks": 7, "yticks": 3,
+                        "vmin": 40.0, "vmax": 210.0,
+                        "heat_vmin": 0.0, "heat_vmax": 255.0})
+    ap._pick_ctype("map")
+    ap.legend_chk.setChecked(True)
+    ap.points_chk.setChecked(False)
+    ap.pct_chk.setChecked(True)
+    ap.bins_spin.setValue(24)
+    ap.mapval_chk.setChecked(True)
+    ap.equal_chk.setChecked(False)
+    ap.axis_box.setCurrentIndex(1)
+    app.processEvents()
+    before_style = ap.chart_style()
+    before_opts = ap.chart_options()
+
+    out = tmp_path / "p.pear.json"
+    win.save_project(str(out))
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["chart_opts"]["bins"] == 24
+    assert data["chart_style"]["label_ink"] == "#654321"
+
+    win2 = MainWindow()
+    win2.set_image(make_field(), "f.png")
+    win2._restore_project(data)
+    win2.render_analysis_sync()
+    ap2 = win2.analysis
+    assert ap2.chart_style() == before_style
+    assert ap2.chart_options() == before_opts
+    assert ap2.chart_state() == ("map", "y")
+    assert ap2.legend_chk.isChecked() and not ap2.points_chk.isChecked()
+    assert ap2.bins_spin.value() == 24 and ap2.pct_chk.isChecked()
+    # every chart still draws with them
+    for ctype in ("box", "hist", "position", "map"):
+        ap2._pick_ctype(ctype)
+        app.processEvents()
+        c = [x for x in ap2._chart_widgets if x._ctype == ctype][-1]
+        assert c._locked(1.0, 2.0, "vmin", "vmax") == (40.0, 210.0)
+        c.grab()
+
+    # an older project without the key keeps today's defaults rather than
+    # coming back with every toggle off
+    data.pop("chart_opts")
+    win3 = MainWindow()
+    win3.set_image(make_field(), "f.png")
+    win3._restore_project(data)
+    assert win3.analysis.chart_options()["cells"] is True
+    assert win3.analysis.chart_options()["legend"] is False
+
+
 def test_axis_names_never_cover_the_tick_numbers(app):
     """Bigger text has to push the axes in, not print on top of them.
 

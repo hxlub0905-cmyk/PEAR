@@ -2491,6 +2491,50 @@ class AnalysisPanel(QWidget):
             st["title"] = custom
         return st
 
+    #: The header toggles, paired with the project key each is stored under.
+    #: ``map_values`` keeps the box's own state rather than the value the
+    #: renderer uses (which is ANDed with *cells*), so turning cells back on
+    #: restores the choice instead of silently clearing it.
+    _OPT_BOXES = (("points", "points_chk"), ("whiskers", "whiskers_chk"),
+                  ("own_scale", "ownscale_chk"), ("legend", "legend_chk"),
+                  ("hist_pct", "pct_chk"), ("trend", "trend_chk"),
+                  ("cells", "cells_chk"), ("equal_cells", "equal_chk"),
+                  ("map_values", "mapval_chk"))
+
+    def chart_options(self) -> dict:
+        """The header toggles — saved with the project.
+
+        Without these a reopened project drew the chart with the defaults
+        back: points on, legend off, bins auto. The style says how a chart
+        looks; this says what is on it.
+        """
+        out = {key: getattr(self, name).isChecked()
+               for key, name in self._OPT_BOXES}
+        out["bins"] = int(self.bins_spin.value())
+        return out
+
+    def set_chart_options(self, opts) -> None:
+        """Restore those toggles, then draw once rather than ten times."""
+        opts = dict(opts or {})
+        widgets = [getattr(self, name) for _, name in self._OPT_BOXES]
+        widgets.append(self.bins_spin)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            for key, name in self._OPT_BOXES:
+                if key in opts:
+                    getattr(self, name).setChecked(bool(opts[key]))
+            if opts.get("bins") is not None:
+                self.bins_spin.setValue(int(opts["bins"]))
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        # cells gates the two that only mean something inside a cell
+        for chk in (self.equal_chk, self.mapval_chk):
+            chk.setEnabled(self.cells_chk.isChecked())
+        if self._last_result is not None:
+            self._render_body(self._last_result)
+
     def chart_state(self) -> tuple:
         """(chart type, position axis) — persisted with the project."""
         return self._chart_type, self._pos_axis

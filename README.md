@@ -113,17 +113,36 @@ needs: a boxed plot area with inward tick marks, labelled axes, and
 observations drawn as **open markers** so a scatter never fuses into the lines
 drawn in the same colour beside it.
 
-**Chart settings…** makes each figure yours: **rename** it (the title sits
+**Chart settings…** makes each figure yours, one row per thing on the chart so
+it is never a guess which control moves what:
+
+| Row | What it changes |
+|---|---|
+| **Tick values** | the numbers along both axes — size, bold, colour |
+| **Axis names** | the X and Y names and the plot frame — size, bold, colour |
+| **Data points** | every ROI's own marker — radius, colour |
+| **Lines** | the profile line, the median bar, the bar outlines — width, colour |
+
+Each colour has an **auto** box: on auto it follows the group's colour, and the
+two axis rows are dark by default, because a light grey tick label is not there
+on a projector. Above them you can **rename** each figure (the title sits
 centred above the plot, and the export menu follows the new name), give the
-**axes your own names**, set the **tick counts**, set the **axis text size and
-its colour** (dark by default — a light grey tick label is not there on a
-projector), set the **point size, line width and their colours** (points and
-lines follow their group's colour until you pick one), and **lock the value
-axis or the heat colours to a fixed range** — auto scaling is right while you are
-looking at one run and wrong the moment you put two side by side, because each
-picks its own range. The image overlay has the same lock under **scale…** on
-the stage bar, so the same colour means the same grey level on every image you
-open. All of it saves with the project.
+**axes your own names** and set the **tick counts**; below them the **Scales**
+rows say which chart each range acts on (`value (box Y · hist X · profile Y)`,
+`position X (profile · map)`, `position Y (map)`, `heat colours (map)`) and
+**lock it to a fixed range** — auto scaling is right while you are looking at
+one run and wrong the moment you put two side by side, because each picks its
+own range. The image overlay has the same lock under **scale…** on the stage
+bar, so the same colour means the same grey level on every image you open.
+
+Text sizes push the axes outward rather than printing over them: both gutters
+are measured from the font you chose, so a 16 pt tick label is drawn in full
+with the axis name clear beside it.
+
+**All of it saves with the project** — the titles, axis names, tick counts,
+sizes, colours and locked ranges, and the header toggles too (points,
+whiskers, legend, own scale, bins, %, trend, cells, equal cells, values). A
+reopened project draws the chart you left, not the defaults.
 
 **CSV export** carries every ROI's metrics and a per-group summary.
 

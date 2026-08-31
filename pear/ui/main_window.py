@@ -797,6 +797,7 @@ class MainWindow(QMainWindow):
             "active_gid": self._active_gid,
             "chart_type": self.analysis.chart_state()[0],
             "pos_axis": self.analysis.chart_state()[1],
+            "chart_opts": self.analysis.chart_options(),
         }
 
     def save_project(self, path: str) -> str:
@@ -853,6 +854,7 @@ class MainWindow(QMainWindow):
                                  self._flag_outliers, self._heat_alpha)
         self.analysis.set_chart_state(data.get("chart_type", "box"),
                                       data.get("pos_axis", "x"))
+        self.analysis.set_chart_options(data.get("chart_opts") or {})
         self.analysis.set_chart_style(data.get("chart_style") or {})
         self.stage_bar.set_heat_range(self._heat_range)
         self._refresh()
