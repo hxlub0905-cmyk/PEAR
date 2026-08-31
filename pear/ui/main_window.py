@@ -1,131 +1,154 @@
-"""Main window: assembles the image stage and the workspace docks, and
-wires user intent to the headless analysis core.
+"""Main window: image stage + control rail. Analysis lives in its own window.
+
+Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
+(click to drop, drag to size, or Grid via two corner clicks), then compare
+metric distributions between or within groups in the Analysis window.
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import os
 from typing import List, Optional
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog,
-                               QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                               QPushButton, QScrollArea, QTabWidget, QWidget)
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
+                               QMainWindow, QMenu, QMessageBox, QPushButton,
+                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
-from pear import __version__
-from pear.core import stacking
-from pear.core.analysis import (REGION_PALETTE, PeriodInfo, Region,
-                                attribute_table, build_golden_cell,
-                                load_image, run_region_analysis,
-                                run_region_separability, toggle_target)
-from pear.core.attributes import ATTR_LABELS
-from pear.core.period_core import estimate_period
+from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
+                                group_outliers, group_rois, group_snr,
+                                groups_from_json, groups_to_json, heat_color,
+                                load_image, roi_metric, roi_patch,
+                                rois_from_json, rois_to_json, snapshot,
+                                summarize)
+from pear.core.attributes import SNR_ID, metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
-from pear.ui.widgets import AnalysisPanel, SettingsPanel
+from pear.ui.widgets import AnalysisPanel, RailPanel, RoiInspector
 
-_IMAGE_FILTER = ("Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)")
+_FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
+
+
+class _AnalysisSignals(QObject):
+    done = Signal(int, object)
+
+
+class _AnalysisJob(QRunnable):
+    def __init__(self, token, args, signals):
+        super().__init__()
+        self._token = token
+        self._args = args
+        self._signals = signals
+
+    def run(self):
+        try:
+            result = compute_analysis(*self._args)
+        except Exception:  # noqa: BLE001
+            result = None
+        self._signals.done.emit(self._token, result)
 
 
 class MainWindow(QMainWindow):
-    """The PEAR application window."""
-
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PEAR — pre-EBI attribute ranker")
-        self.resize(1180, 760)
+        self.setWindowTitle("PEAR — group & ROI analysis")
+        self.resize(1180, 820)
 
         self._image: Optional[np.ndarray] = None
-        self._period: Optional[PeriodInfo] = None
-        self._regions: List[Region] = []
+        self._groups: List[Group] = []
+        self._rois: List[ROI] = []
+        self._active_gid: Optional[str] = None
         self._active_rid: Optional[int] = None
+        self._selected_rids: set = set()   # rids marquee-selected on the canvas
         self._next_rid = 1
-        self._nm_per_px: float = 0.0
-        self._mode = "unsupervised"   # "unsupervised" | "labelled"
+        self._metrics: List[str] = ["glv_mean", "glv_median"]
+        self._show_metric = ""            # single metric drawn live on ROIs
+        self._heatmap = False             # colour ROIs by the shown metric
+        self._flag_outliers = False       # flag Tukey outliers of the shown metric
+        self._outlier_rids: set = set()
+        self._image_path: Optional[str] = None
+        self._cmp_mode = "between"
+        self._within_gid: Optional[str] = None
+
+        self._pool = QThreadPool.globalInstance()
+        self._sig = _AnalysisSignals()
+        self._sig.done.connect(self._on_analysis_done)
+        self._analysis_token = 0
+        self._analysis_timer = QTimer(self)
+        self._analysis_timer.setSingleShot(True)
+        self._analysis_timer.setInterval(90)
+        self._analysis_timer.timeout.connect(self._run_analysis)
 
         self._build_topbar()
         self._build_docks()
-        self._build_statusbar()
+        self._build_status()
+        self._build_analysis_window()
+        self._build_inspector_window()
         self._wire()
+        self.rail.set_ready(False)
 
-    # ------------------------------------------------------------------ #
-    # construction
     # ------------------------------------------------------------------ #
     def _build_topbar(self) -> None:
         bar = QWidget()
         bar.setObjectName("TopBar")
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(18, 10, 18, 10)
-        lay.setSpacing(10)
-        title = QLabel("PEAR")
-        title.setObjectName("BrandTitle")
-        sub = QLabel("PRE-EBI ATTRIBUTE RANKER")
+        lay.setSpacing(8)
+        brand = QLabel('PE<span style="color:%s">A</span>R' % theme.AMBER)
+        brand.setObjectName("BrandTitle")
+        brand.setTextFormat(Qt.RichText)
+        sub = QLabel("group & ROI analysis")
         sub.setObjectName("BrandSub")
-        self.dataset_lbl = QLabel("NO IMAGE")
+        self.dataset_lbl = QLabel("no image")
         self.dataset_lbl.setObjectName("DatasetTag")
-        self.theme_btn = QPushButton(self._theme_btn_text())
-        self.theme_btn.setMinimumHeight(34)
-        self.theme_btn.clicked.connect(self.toggle_theme)
+        self.project_btn = QToolButton()
+        self.project_btn.setText("Project ▾")
+        self.project_btn.setPopupMode(QToolButton.InstantPopup)
+        pmenu = QMenu(self.project_btn)
+        pmenu.addAction("Open project…", self.on_open_project)
+        self._save_action = pmenu.addAction("Save project…", self.on_save_project)
+        self.project_btn.setMenu(pmenu)
+        self.analysis_btn_top = QPushButton("Analysis ⤢")
+        self.analysis_btn_top.setToolTip("Open the analysis window.")
+        self.analysis_btn_top.setEnabled(False)
         self.load_btn = QPushButton("Load…")
         self.load_btn.setObjectName("Primary")
-        self.load_btn.setMinimumHeight(34)
-        lay.addWidget(title)
-        lay.addSpacing(6)
+        lay.addWidget(brand, 0, Qt.AlignVCenter)
+        lay.addSpacing(8)
         lay.addWidget(sub)
         lay.addStretch(1)
         lay.addWidget(self.dataset_lbl)
-        lay.addSpacing(8)
-        lay.addWidget(self.theme_btn)
+        lay.addWidget(self.project_btn)
+        lay.addWidget(self.analysis_btn_top)
         lay.addWidget(self.load_btn)
         self.setMenuWidget(bar)
 
-    @staticmethod
-    def _theme_btn_text() -> str:
-        return "Theme: Dark" if theme.active_palette() == "dark" else "Theme: Swiss"
-
-    def toggle_theme(self) -> None:
-        new = "swiss" if theme.active_palette() == "dark" else "dark"
-        app = QApplication.instance()
-        if app is not None:
-            theme.apply_theme(app, new)
-        self.theme_btn.setText(self._theme_btn_text())
-        # Repaint everything (custom widgets read theme tokens at paint time).
-        for w in self.findChildren(QWidget):
-            w.update()
-        self.update()
-
     def _build_docks(self) -> None:
-        # Image is the central canvas; the workspace (tabbed) is a right dock
-        # the user can float/redock/resize.
         self.image_view = ImageView()
-        self.settings = SettingsPanel()
-        self.analysis = AnalysisPanel()
         self.setCentralWidget(self.image_view)
+        self.rail = RailPanel()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(self.rail)
+        self.rail_dock = QDockWidget("Workspace", self)
+        self.rail_dock.setObjectName("dock_rail")
+        self.rail_dock.setWidget(scroll)
+        self.rail_dock.setFeatures(QDockWidget.DockWidgetMovable |
+                                   QDockWidget.DockWidgetFloatable)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.rail_dock)
+        self.resizeDocks([self.rail_dock], [400], Qt.Horizontal)
 
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.addTab(self._scroll(self.settings), "Settings")
-        self.tabs.addTab(self._scroll(self.analysis), "Analysis")
-
-        self.workspace_dock = QDockWidget("Workspace", self)
-        self.workspace_dock.setObjectName("dock_workspace")
-        self.workspace_dock.setWidget(self.tabs)
-        self.workspace_dock.setFeatures(QDockWidget.DockWidgetMovable |
-                                        QDockWidget.DockWidgetFloatable)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.workspace_dock)
-        self.resizeDocks([self.workspace_dock], [440], Qt.Horizontal)
-
-    def _build_statusbar(self) -> None:
+    def _build_status(self) -> None:
         bar = self.statusBar()
-        # Cursor readout (left of the zoom controls).
         self.cursor_lbl = QLabel("")
         self.cursor_lbl.setObjectName("Mono")
         self.cursor_lbl.setFont(theme.mono_font(9))
         bar.addPermanentWidget(self.cursor_lbl)
-
         zoom = QWidget()
         zl = QHBoxLayout(zoom)
         zl.setContentsMargins(0, 0, 0, 0)
@@ -135,58 +158,84 @@ class MainWindow(QMainWindow):
         plus = QPushButton("+")
         for b in (fit, minus, plus):
             b.setFixedHeight(22)
-        minus.setFixedWidth(28)
-        plus.setFixedWidth(28)
+        minus.setFixedWidth(26)
+        plus.setFixedWidth(26)
         self.zoom_lbl = QLabel("100%")
         self.zoom_lbl.setObjectName("Mono")
         self.zoom_lbl.setFont(theme.mono_font(9))
-        self.zoom_lbl.setFixedWidth(48)
-        self.zoom_lbl.setAlignment(Qt.AlignCenter)
         fit.clicked.connect(self.image_view.fit)
         minus.clicked.connect(self.image_view.zoom_out)
         plus.clicked.connect(self.image_view.zoom_in)
-        for wdg in (fit, minus, self.zoom_lbl, plus):
-            zl.addWidget(wdg)
+        for w in (fit, minus, self.zoom_lbl, plus):
+            zl.addWidget(w)
         bar.addPermanentWidget(zoom)
 
-    @staticmethod
-    def _scroll(widget: QWidget) -> QScrollArea:
-        area = QScrollArea()
-        area.setWidgetResizable(True)
-        area.setFrameShape(QScrollArea.NoFrame)
-        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        area.setWidget(widget)
-        return area
+    def _build_analysis_window(self) -> None:
+        self.analysis = AnalysisPanel()
+        self.analysis_window = QWidget()
+        self.analysis_window.setWindowTitle("PEAR — Analysis")
+        self.analysis_window.resize(920, 580)
+        lay = QVBoxLayout(self.analysis_window)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.analysis)
+
+    def _build_inspector_window(self) -> None:
+        self.inspector = RoiInspector()
+        self.inspector_window = QWidget()
+        self.inspector_window.setWindowTitle("PEAR — ROI inspector")
+        self.inspector_window.resize(600, 440)
+        lay = QVBoxLayout(self.inspector_window)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.inspector)
 
     def _wire(self) -> None:
-        self.load_btn.clicked.connect(self.on_load_clicked)
-        self.settings.detect_requested.connect(self.detect_period)
-        self.settings.refine_requested.connect(self.refine_period)
-        self.settings.manual_changed.connect(self.on_manual_changed)
-        self.settings.region_add_requested.connect(self.add_region)
-        self.settings.region_selected.connect(self.select_region)
-        self.settings.region_deleted.connect(self.delete_region)
-        self.settings.region_renamed.connect(self.rename_region)
-        self.image_view.region_created.connect(self.create_region)
-        self.image_view.region_modified.connect(self.modify_region)
-        self.image_view.region_selected.connect(self.select_region)
-        self.image_view.draw_without_region.connect(self.on_draw_without_region)
-        self.image_view.cell_tag_toggled.connect(self.on_cell_tag_toggled)
-        self.image_view.cell_focused.connect(self.on_cell_focused)
+        self.load_btn.clicked.connect(self.on_load)
+        self.analysis_btn_top.clicked.connect(self.open_analysis)
+        self.rail.group_add.connect(self.add_group)
+        self.rail.group_pick.connect(self.select_group)
+        self.rail.group_del.connect(self.delete_group)
+        self.rail.group_color.connect(self.set_group_color)
+        self.rail.group_rename.connect(self.rename_group)
+        self.rail.group_clear.connect(self.clear_group)
+        self.rail.grid_mode_toggled.connect(self.set_grid_mode)
+        self.rail.grid_commit.connect(self.image_view.commit_grid)
+        self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
+        self.rail.roi_size_changed.connect(self.image_view.set_roi_size)
+        self.rail.roi_pick.connect(self.select_roi)
+        self.rail.roi_set_target.connect(self.set_target_roi)
+        self.rail.roi_del.connect(self.delete_roi)
+        self.rail.roi_hovered.connect(self.image_view.set_hover)
+        self.rail.metrics_changed.connect(self.set_metrics)
+        self.rail.show_metric_changed.connect(self.on_show_metric)
+        self.rail.heatmap_changed.connect(self.on_heatmap)
+        self.rail.outliers_changed.connect(self.on_flag_outliers)
+        self.rail.open_analysis.connect(self.open_analysis)
+
+        self.image_view.roi_created.connect(self.on_roi_created)
+        self.image_view.grid_committed.connect(self.on_grid_committed)
+        self.image_view.grid_ready.connect(self.rail.set_grid_ready)
+        self.image_view.roi_modified.connect(self.on_roi_modified)
+        self.image_view.roi_selected.connect(self.select_roi)
+        self.image_view.roi_delete_requested.connect(self.delete_roi)
+        self.image_view.rois_selected.connect(self.on_marquee_selected)
+        self.image_view.rois_delete_requested.connect(self.delete_rois)
+        self.image_view.roi_hovered.connect(self.rail.set_hovered_roi)
+        self.image_view.roi_duplicate_requested.connect(self.duplicate_roi)
+        self.image_view.roi_inspect_requested.connect(self.open_inspector)
+        self.image_view.group_index_requested.connect(self.select_group_by_index)
+        self.image_view.cursor_info.connect(self.cursor_lbl.setText)
         self.image_view.zoom_changed.connect(
             lambda s: self.zoom_lbl.setText(f"{int(round(s * 100))}%"))
-        self.image_view.cursor_info.connect(self.cursor_lbl.setText)
-        self.analysis.attr_selected.connect(self.on_attr_selected)
-        self.analysis.mode_changed.connect(self.on_mode_changed)
-        self.analysis.tag_mode_toggled.connect(self.image_view.set_tag_mode)
+
+        self.analysis.mode_changed.connect(self.on_cmp_mode)
+        self.analysis.within_group_changed.connect(self.on_within_group)
         self.analysis.export_requested.connect(self.export_csv)
 
     # ------------------------------------------------------------------ #
-    # image loading
+    # image
     # ------------------------------------------------------------------ #
-    def on_load_clicked(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load image", "", _IMAGE_FILTER)
+    def on_load(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Load image", "", _FILTER)
         if path:
             self.load_path(path)
 
@@ -197,241 +246,494 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Load failed", str(exc))
             return
         self.set_image(img, os.path.basename(path))
+        self._image_path = path
 
     def set_image(self, img: np.ndarray, name: str = "image") -> None:
         self._image = img
-        self._regions = []
+        self._image_path = None
+        self._groups = []
+        self._rois = []
+        self._active_gid = None
         self._active_rid = None
-        self._period = None
-        self.dataset_lbl.setText(f"{name} · {img.shape[1]}x{img.shape[0]}")
+        self._selected_rids = set()
+        self._outlier_rids = set()
+        self._within_gid = None
+        self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
         self.image_view.set_image(img)
-        self._refresh_views()
-        self.detect_period()
+        self.add_group()          # start with one group so adding ROIs works
+        self._refresh()
 
     # ------------------------------------------------------------------ #
-    # period
+    # groups
     # ------------------------------------------------------------------ #
-    def detect_period(self) -> None:
+    def add_group(self) -> None:
         if self._image is None:
             return
-        res = estimate_period(self._image)
-        if res.px is None or res.py is None:
-            QMessageBox.information(
-                self, "No period",
-                "No repeating structure was detected. Set the period "
-                "manually under Settings.")
-            self._period = None
-            self.settings.set_period(None)
-            self.image_view.set_period(None)
-            return
-        conf = (res.confidence_x + res.confidence_y) / 2.0
-        self._set_period(res.px, res.py, res.axis_mode, conf)
+        used = {g.gid for g in self._groups}
+        letter = next((chr(ord("A") + i) for i in range(26)
+                       if chr(ord("A") + i) not in used), None)
+        if letter is None:
+            letter = f"G{len(self._groups)}"
+        ci = (ord(letter) - ord("A")) if len(letter) == 1 else len(self._groups)
+        self._groups.append(Group(gid=letter, name=f"Group {letter}",
+                                  color=GROUP_PALETTE[ci % len(GROUP_PALETTE)]))
+        self._active_gid = letter
+        self._refresh()
 
-    def refine_period(self) -> None:
-        if self._image is None or self._period is None:
-            return
-        bpx, bpy, _lv = stacking.refine_period(
-            self._image, self._period.px, self._period.py, method="median")
-        self._set_period(bpx, bpy, self._period.axis_mode,
-                         self._period.confidence)
+    def select_group(self, gid: str) -> None:
+        self._active_gid = gid
+        self._refresh()
 
-    def on_manual_changed(self, px: int, py: int, nm_per_px: float) -> None:
-        if self._image is None:
-            return
-        self._nm_per_px = nm_per_px
-        mode = self._period.axis_mode if self._period else "XY"
-        conf = self._period.confidence if self._period else 0.0
-        self._set_period(px, py, mode, conf)
+    def delete_group(self, gid: str) -> None:
+        self._groups = [g for g in self._groups if g.gid != gid]
+        self._rois = [r for r in self._rois if r.gid != gid]
+        if self._active_gid == gid:
+            self._active_gid = self._groups[-1].gid if self._groups else None
+        if self._within_gid == gid:
+            self._within_gid = self._groups[0].gid if self._groups else None
+        self._refresh()
 
-    def _set_period(self, px: int, py: int, axis_mode: str,
-                    confidence: float) -> None:
-        golden = build_golden_cell(self._image, px, py)
-        _score, lap_var, _edge = stacking.ghosting_score(golden)
-        self._period = PeriodInfo(px=px, py=py, axis_mode=axis_mode,
-                                  confidence=confidence, golden_cell=golden)
-        self.settings.set_period(self._period)
-        self.settings.set_alignment(lap_var)
-        self.image_view.set_period(self._period)
-        self._reanalyze_all()
-        self._refresh_views()
+    def set_group_color(self, gid: str, color: str) -> None:
+        g = self._group(gid)
+        if g is not None:
+            g.color = color
+            self._refresh()
+
+    def rename_group(self, gid: str, name: str) -> None:
+        g = self._group(gid)
+        if g is not None and name:
+            g.name = name
+            self._refresh()
+
+    def clear_group(self, gid: str) -> None:
+        self._rois = [r for r in self._rois if r.gid != gid]
+        self._refresh()
 
     # ------------------------------------------------------------------ #
-    # regions
+    # rois
     # ------------------------------------------------------------------ #
-    def create_region(self, roi) -> None:
-        if self._image is None or self._period is None:
-            return
-        color = REGION_PALETTE[(self._next_rid - 1) % len(REGION_PALETTE)]
-        region = Region(rid=self._next_rid, name=f"region {self._next_rid}",
-                        color=color, roi=tuple(roi))
-        self._next_rid += 1
-        self._regions.append(region)
-        self._active_rid = region.rid
-        self._analyze(region)
-        self._refresh_views()
-
-    def add_region(self) -> None:
-        """Create a new region with a default ROI centered in the first cell;
-        the user then drags on the image to (re)define its ROI."""
-        if self._image is None or self._period is None:
+    def set_grid_mode(self, on: bool) -> None:
+        self.image_view.set_grid_mode(on)
+        if on:
             self.statusBar().showMessage(
-                "Load an image and detect a period first.", 4000)
-            return
-        px, py = self._period.px, self._period.py
-        w = max(6, px // 2)
-        h = max(6, py // 2)
-        roi = ((px - w) // 2, (py - h) // 2, w, h)
-        self.create_region(roi)
-        region = self._active_region()
-        name = region.name if region else "region"
-        self.statusBar().showMessage(
-            f"{name} added — drag on the image to set its ROI.", 4000)
+                "Grid: click the top-left, then the bottom-right corner.", 6000)
 
-    def on_draw_without_region(self) -> None:
-        self.statusBar().showMessage(
-            "Click “+ Add region” to start a region, then drag to set its ROI.",
-            4000)
+    def _add_roi(self, rect, refresh=True) -> ROI:
+        gid = self._active_gid or (self._groups[0].gid if self._groups else "A")
+        roi = ROI(rid=self._next_rid, gid=gid, rect=tuple(rect),
+                  label=f"ROI {self._next_rid}")
+        self._next_rid += 1
+        self._rois.append(roi)
+        self._active_rid = roi.rid
+        if refresh:
+            self._refresh()
+        return roi
 
-    def modify_region(self, rid: int, roi) -> None:
-        region = self._region(rid)
-        if region is None:
-            return
-        region.roi = tuple(roi)
-        self._analyze(region)
-        self._refresh_views()
+    def on_roi_created(self, rect) -> None:
+        if not self._groups:
+            self.add_group()
+        self._add_roi(rect)
 
-    def select_region(self, rid: int) -> None:
-        if self._region(rid) is None:
-            return
+    def on_grid_committed(self, rects) -> None:
+        if not self._groups:
+            self.add_group()
+        for rect in rects:
+            self._add_roi(rect, refresh=False)
+        self.rail.grid_btn.setChecked(False)     # exit grid mode
+        self.statusBar().showMessage(f"Added {len(rects)} ROIs.", 3000)
+        self._refresh()
+
+    def on_roi_modified(self, rid: int, rect) -> None:
+        roi = self._roi(rid)
+        if roi is not None:
+            roi.rect = tuple(rect)
+            self._refresh()
+
+    def select_roi(self, rid: int) -> None:
         self._active_rid = rid
-        self._refresh_views()
+        self._selected_rids = set()          # a single pick clears the marquee set
+        roi = self._roi(rid)
+        if roi is not None and roi.gid != self._active_gid:
+            self._active_gid = roi.gid
+        self._refresh()
 
-    def delete_region(self, rid: int) -> None:
-        self._regions = [r for r in self._regions if r.rid != rid]
+    def set_target_roi(self, rid: int) -> None:
+        """Tag an ROI as its group's SNR target (toggle off if already target)."""
+        roi = self._roi(rid)
+        if roi is None:
+            return
+        g = self._group(roi.gid)
+        if g is not None:
+            g.target_rid = None if g.target_rid == rid else rid
+            self._refresh()
+
+    def on_marquee_selected(self, rids) -> None:
+        self._selected_rids = set(rids or [])
+        self._refresh()
+        if self._selected_rids:
+            self.statusBar().showMessage(
+                f"{len(self._selected_rids)} ROIs selected · Delete to remove.",
+                4000)
+
+    def duplicate_roi(self, rid: int) -> None:
+        src = self._roi(rid)
+        if src is None:
+            return
+        x, y, w, h = src.rect
+        nx, ny = x + 8, y + 8
+        if self._image is not None:
+            ih, iw = self._image.shape[:2]
+            nx, ny = max(0, min(nx, iw - w)), max(0, min(ny, ih - h))
+        roi = ROI(rid=self._next_rid, gid=src.gid, rect=(nx, ny, w, h), label="")
+        self._next_rid += 1
+        self._rois.append(roi)
+        self._active_gid = src.gid
+        self._active_rid = roi.rid
+        self._selected_rids = set()
+        self._refresh()
+
+    def select_group_by_index(self, i: int) -> None:
+        if 0 <= i < len(self._groups):
+            self.select_group(self._groups[i].gid)
+
+    def delete_roi(self, rid: int) -> None:
+        self._rois = [r for r in self._rois if r.rid != rid]
         if self._active_rid == rid:
-            self._active_rid = self._regions[-1].rid if self._regions else None
-        self._refresh_views()
+            self._active_rid = None
+        self._selected_rids.discard(rid)
+        self._drop_targets({rid})
+        self._refresh()
 
-    def rename_region(self, rid: int, name: str) -> None:
-        region = self._region(rid)
-        if region is not None:
-            region.name = name   # list already shows it; no repopulate needed
-
-    def on_attr_selected(self, attr: str) -> None:
-        region = self._active_region()
-        if region is None:
+    def delete_rois(self, rids) -> None:
+        rid_set = set(rids or [])
+        if not rid_set:
             return
-        if self._mode == "labelled":
-            region.sep_sel_attr = attr
+        self._rois = [r for r in self._rois if r.rid not in rid_set]
+        if self._active_rid in rid_set:
+            self._active_rid = None
+        self._selected_rids -= rid_set
+        self._drop_targets(rid_set)
+        self.statusBar().showMessage(f"Deleted {len(rid_set)} ROIs.", 3000)
+        self._refresh()
+
+    def _drop_targets(self, rid_set: set) -> None:
+        for g in self._groups:
+            if g.target_rid in rid_set:
+                g.target_rid = None
+
+    def _target_of_active(self) -> Optional[int]:
+        g = self._group(self._active_gid)
+        return g.target_rid if g is not None else None
+
+    # ------------------------------------------------------------------ #
+    # metrics / comparison
+    # ------------------------------------------------------------------ #
+    def set_metrics(self, metrics: List[str]) -> None:
+        self._metrics = list(metrics)
+        self._render_analysis()
+
+    def on_show_metric(self, mid: str) -> None:
+        self._show_metric = mid or ""
+        self._refresh()
+
+    def on_heatmap(self, on: bool) -> None:
+        self._heatmap = bool(on)
+        if on and not self._is_glv_show():
+            self.statusBar().showMessage(
+                "Pick a GLV metric in “show on ROIs” to colour the heatmap.", 4000)
+        self._refresh()
+
+    def on_flag_outliers(self, on: bool) -> None:
+        self._flag_outliers = bool(on)
+        if on and not self._is_glv_show():
+            self.statusBar().showMessage(
+                "Pick a GLV metric in “show on ROIs” to flag outliers.", 4000)
+        self._refresh()
+
+    def _is_glv_show(self) -> bool:
+        return bool(self._show_metric) and self._show_metric != SNR_ID
+
+    def _update_heatmap(self) -> None:
+        if self._heatmap and self._image is not None and self._is_glv_show():
+            vals = {r.rid: roi_metric(self._image, r, self._show_metric)
+                    for r in self._rois}
+            finite = [v for v in vals.values() if np.isfinite(v)]
+            if finite:
+                vmin, vmax = min(finite), max(finite)
+                span = (vmax - vmin) or 1.0
+                colors = {rid: heat_color((v - vmin) / span)
+                          for rid, v in vals.items() if np.isfinite(v)}
+                self.image_view.set_heatmap(
+                    colors, (vmin, vmax, metric_label(self._show_metric)))
+                return
+        self.image_view.set_heatmap({}, None)
+
+    def _update_roi_values(self) -> None:
+        if not self._show_metric or self._image is None:
+            self.image_view.set_roi_values({})
+            return
+        vals = {}
+        if self._show_metric == SNR_ID:
+            # SNR is a per-group value; label the target (T) ROI with it.
+            for g in self._groups:
+                s = group_snr(self._image, group_rois(self._rois, g.gid),
+                              g.target_rid)
+                if s is not None and g.target_rid is not None:
+                    vals[g.target_rid] = f"{s:.3g}"
         else:
-            region.sel_attr = attr
-        self.analysis.update_attr(region, attr)
-        self.image_view.set_regions(self._regions, self._active_rid)
+            for r in self._rois:
+                vals[r.rid] = f"{roi_metric(self._image, r, self._show_metric):.3g}"
+        self.image_view.set_roi_values(vals)
 
-    def on_mode_changed(self, mode: str) -> None:
-        self._mode = mode
-        self.analysis.set_mode(mode)
-        self.image_view.set_display_mode(mode == "labelled")
-        self._refresh_views()
+    def on_cmp_mode(self, mode: str) -> None:
+        self._cmp_mode = mode
+        self._render_analysis()
 
-    def on_cell_focused(self, idx: int) -> None:
-        region = self._active_region()
-        if region is None or not (0 <= idx < len(region.records)):
+    def on_within_group(self, gid: str) -> None:
+        self._within_gid = gid
+        self._render_analysis()
+
+    def open_analysis(self) -> None:
+        self.analysis_window.show()
+        self.analysis_window.raise_()
+        self.analysis_window.activateWindow()
+        self._render_analysis()
+
+    def open_inspector(self, rid: int) -> None:
+        self.select_roi(rid)
+        self.inspector_window.show()
+        self.inspector_window.raise_()
+        self.inspector_window.activateWindow()
+        self._update_inspector()
+
+    def _update_inspector(self) -> None:
+        if not self.inspector_window.isVisible():
             return
-        rec = region.records[idx]
-        parts = [f"cell (row {rec['row']}, col {rec['col']})"]
-        ranking = (region.sep_ranking if self._mode == "labelled"
-                   else region.ranking)
-        for s in ranking[:3]:
-            if s.attr in rec:
-                parts.append(f"{ATTR_LABELS.get(s.attr, s.attr)}={rec[s.attr]:.4g}")
-        self.statusBar().showMessage("  ·  ".join(parts), 8000)
-
-    def on_cell_tag_toggled(self, idx: int) -> None:
-        region = self._active_region()
-        if region is None:
+        roi = self._roi(self._active_rid)
+        if roi is None or self._image is None:
+            self.inspector.set_roi(None, "")
             return
-        toggle_target(region, idx)
-        run_region_separability(region)
-        self._refresh_views()
+        g = self._group(roi.gid)
+        title = (f"{roi.label or ('ROI ' + str(roi.rid))} · "
+                 f"{roi.rect[2]}×{roi.rect[3]}"
+                 + (f" · {g.name}" if g is not None else ""))
+        self.inspector.set_roi(roi_patch(self._image, roi.rect), title)
 
     # ------------------------------------------------------------------ #
-    # analysis
+    # refresh
     # ------------------------------------------------------------------ #
-    def _analyze(self, region: Region) -> None:
-        if self._image is None or self._period is None:
+    def _renumber(self) -> None:
+        """Re-index each group's ROI display labels 1..n (rids stay unique)."""
+        for g in self._groups:
+            for i, r in enumerate(group_rois(self._rois, g.gid), 1):
+                r.label = f"ROI {i}"
+
+    def _refresh(self) -> None:
+        self._renumber()
+        has_img = self._image is not None
+        self.rail.set_ready(has_img)
+        self.analysis_btn_top.setEnabled(has_img)
+        self._save_action.setEnabled(has_img)
+        self._outlier_rids = (
+            group_outliers(self._image, self._rois, self._show_metric)
+            if (self._flag_outliers and has_img and self._is_glv_show())
+            else set())
+        counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
+        self.rail.set_groups(self._groups, self._active_gid, counts)
+        self.rail.set_rois(group_rois(self._rois, self._active_gid),
+                           self._active_rid, self._target_of_active(),
+                           self._selected_rids, self._outlier_rids)
+        self.image_view.set_groups(self._groups, self._active_gid)
+        self.image_view.set_rois(self._rois, self._active_rid)
+        self.image_view.set_selection(self._selected_rids)
+        self.image_view.set_outliers(self._outlier_rids)
+        self._update_roi_values()
+        self._update_heatmap()
+        self._update_inspector()
+        if self._within_gid is None and self._groups:
+            self._within_gid = self._groups[0].gid
+        self._render_analysis()
+
+    def _render_analysis(self) -> None:
+        enabled = (self._image is not None and bool(self._metrics)
+                   and any(group_rois(self._rois, g.gid) for g in self._groups))
+        self.analysis.set_controls(self._cmp_mode, self._groups,
+                                   self._within_gid, enabled)
+        self._analysis_timer.start()
+
+    def _run_analysis(self) -> None:
+        self._analysis_token += 1
+        token = self._analysis_token
+        gs, rs = snapshot(self._groups, self._rois)
+        args = (self._image, gs, rs, list(self._metrics), self._cmp_mode,
+                self._within_gid)
+        self.analysis.set_computing(True)
+        self._pool.start(_AnalysisJob(token, args, self._sig))
+
+    def _on_analysis_done(self, token: int, result) -> None:
+        if token != self._analysis_token or result is None:
             return
-        nm = self._nm_per_px if self._nm_per_px > 0 else None
-        run_region_analysis(self._image, region, self._period, nm_per_px=nm)
+        self.analysis.set_computing(False)
+        self.analysis.show_result(result)
 
-    def _reanalyze_all(self) -> None:
-        for region in self._regions:
-            self._analyze(region)
+    def render_analysis_sync(self) -> None:
+        self._analysis_timer.stop()
+        gs, rs = snapshot(self._groups, self._rois)
+        result = compute_analysis(self._image, gs, rs, list(self._metrics),
+                                  self._cmp_mode, self._within_gid)
+        enabled = result.empty is None
+        self.analysis.set_controls(self._cmp_mode, self._groups,
+                                   self._within_gid, enabled)
+        self.analysis.set_computing(False)
+        self.analysis.show_result(result)
 
-    def _active_region(self) -> Optional[Region]:
-        return self._region(self._active_rid) if self._active_rid else None
+    # ------------------------------------------------------------------ #
+    def _group(self, gid) -> Optional[Group]:
+        for g in self._groups:
+            if g.gid == gid:
+                return g
+        return None
 
-    def _region(self, rid: Optional[int]) -> Optional[Region]:
-        for r in self._regions:
+    def _roi(self, rid) -> Optional[ROI]:
+        for r in self._rois:
             if r.rid == rid:
                 return r
         return None
 
-    def _refresh_views(self) -> None:
-        self.settings.set_period(self._period)
-        self.settings.set_regions(self._regions, self._active_rid)
-        self.image_view.set_regions(self._regions, self._active_rid)
-        self.analysis.show_region(self._active_region())
+    # ------------------------------------------------------------------ #
+    # project save / open (JSON)
+    # ------------------------------------------------------------------ #
+    def on_open_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open project", "", "PEAR project (*.pear.json *.json)")
+        if path:
+            self.open_project(path)
+
+    def on_save_project(self) -> None:
+        if self._image is None:
+            QMessageBox.information(self, "Save project", "Load an image first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save project", "project.pear.json",
+            "PEAR project (*.pear.json *.json)")
+        if path:
+            self.save_project(path)
+            self.statusBar().showMessage(
+                f"Saved project → {os.path.basename(path)}", 3000)
+
+    def _project_dict(self) -> dict:
+        shape = list(self._image.shape[:2]) if self._image is not None else None
+        return {
+            "app": "PEAR", "version": 1,
+            "image_path": self._image_path,
+            "image_shape": shape,
+            "groups": groups_to_json(self._groups),
+            "rois": rois_to_json(self._rois),
+            "next_rid": self._next_rid,
+            "metrics": list(self._metrics),
+            "show_metric": self._show_metric,
+            "heatmap": self._heatmap,
+            "flag_outliers": self._flag_outliers,
+            "cmp_mode": self._cmp_mode,
+            "within_gid": self._within_gid,
+            "active_gid": self._active_gid,
+        }
+
+    def save_project(self, path: str) -> str:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self._project_dict(), fh, indent=2, ensure_ascii=False)
+        return path
+
+    def open_project(self, path: str) -> Optional[str]:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        ipath = data.get("image_path")
+        if ipath and os.path.exists(ipath):
+            try:
+                self.set_image(load_image(ipath), os.path.basename(ipath))
+                self._image_path = ipath
+            except Exception:  # noqa: BLE001
+                pass
+        if self._image is None:
+            QMessageBox.warning(
+                self, "Open project",
+                "The project's image was not found. Load the image first, "
+                "then open the project again.")
+            return None
+        self._restore_project(data)
+        return path
+
+    def _restore_project(self, data: dict) -> None:
+        self._groups = groups_from_json(data.get("groups"))
+        self._rois = rois_from_json(data.get("rois"))
+        self._next_rid = int(data.get("next_rid")
+                             or (max((r.rid for r in self._rois), default=0) + 1))
+        self._metrics = list(data.get("metrics") or ["glv_mean", "glv_median"])
+        self._show_metric = data.get("show_metric") or ""
+        self._heatmap = bool(data.get("heatmap", False))
+        self._flag_outliers = bool(data.get("flag_outliers", False))
+        self._cmp_mode = data.get("cmp_mode", "between")
+        self._within_gid = data.get("within_gid")
+        self._active_gid = (data.get("active_gid")
+                            or (self._groups[0].gid if self._groups else None))
+        self._active_rid = None
+        self._selected_rids = set()
+        self.rail.set_metric_state(self._metrics, self._show_metric,
+                                   self._heatmap, self._flag_outliers)
+        self._refresh()
 
     # ------------------------------------------------------------------ #
     # export
     # ------------------------------------------------------------------ #
     def export_csv(self, path: Optional[str] = None) -> Optional[str]:
-        region = self._active_region()
-        if region is None or not region.records:
+        if self._image is None or not self._rois:
             return None
         if not path:
             path, _ = QFileDialog.getSaveFileName(
-                self, "Export CSV", f"{region.name}.csv", "CSV (*.csv)")
+                self, "Export CSV", "group_analysis.csv", "CSV (*.csv)")
             if not path:
                 return None
-        self._write_csv(path, region)
+        self._write_csv(path)
         return path
 
-    def _write_csv(self, path: str, region: Region) -> None:
-        # UTF-8 with BOM for Excel friendliness.
+    def _write_csv(self, path: str) -> None:
         with open(path, "w", newline="", encoding="utf-8-sig") as fh:
             w = csv.writer(fh)
-            w.writerow([f"region: {region.name}"])
-            w.writerow([f"mode: {self._mode}"])
+            w.writerow(["PEAR group & ROI analysis"])
             w.writerow([])
-
-            if self._mode == "labelled" and region.sep_ranking:
-                w.writerow(["attribute", "separation_score", "auc", "cnr",
-                            "cohens_d", "threshold", "direction",
-                            "catch_rate", "false_alarm"])
-                for s in region.sep_ranking:
-                    w.writerow([ATTR_LABELS.get(s.attr, s.attr),
-                                f"{s.separation_score:.6g}", f"{s.auc:.6g}",
-                                f"{s.cnr:.6g}", f"{s.cohens_d:.6g}",
-                                f"{s.threshold:.6g}", s.direction,
-                                f"{s.catch_rate:.6g}", f"{s.false_alarm:.6g}"])
-            else:
-                w.writerow(["attribute", "max_abs_z", "n_outliers"])
-                for s in region.ranking:
-                    w.writerow([ATTR_LABELS.get(s.attr, s.attr),
-                                f"{s.max_abs_z:.6g}", s.n_outliers])
-            w.writerow([])
-
-            attr_ids = [k for k in ATTR_LABELS
-                        if region.records and k in region.records[0]]
-            target = set(region.target_idx)
-            header = (["row", "col", "x", "y", "w", "h", "is_target"]
-                      + attr_ids)
+            header = ["group", "roi", "role", "x", "y", "w", "h"] + \
+                     [metric_label(m) for m in self._metrics]
             w.writerow(header)
-            for i, rec in enumerate(region.records):
-                row = [rec["row"], rec["col"], rec["x"], rec["y"],
-                       rec["w"], rec["h"], int(i in target)]
-                row += [f"{rec.get(k, ''):.6g}" if isinstance(rec.get(k), float)
-                        else rec.get(k, "") for k in attr_ids]
-                w.writerow(row)
+            for g in self._groups:
+                grois = group_rois(self._rois, g.gid)
+                gsnr = group_snr(self._image, grois, g.target_rid)
+                for roi in grois:
+                    x, y, wid, hei = roi.rect
+                    role = ("T" if roi.rid == g.target_rid
+                            else ("R" if g.target_rid is not None else ""))
+                    row = [g.name, roi.label, role, x, y, wid, hei]
+                    for mid in self._metrics:
+                        if mid == SNR_ID:
+                            # SNR is per group; report it on the target row only
+                            row.append(f"{gsnr:.6g}" if (roi.rid == g.target_rid
+                                       and gsnr is not None) else "")
+                        else:
+                            row.append(f"{roi_metric(self._image, roi, mid):.6g}")
+                    w.writerow(row)
+            w.writerow([])
+            w.writerow(["summary"])
+            w.writerow(["group", "ROIs"] + [metric_label(m) for m in self._metrics])
+            for g in self._groups:
+                grois = group_rois(self._rois, g.gid)
+                if not grois:
+                    continue
+                line = [g.name, len(grois)]
+                for mid in self._metrics:
+                    if mid == SNR_ID:
+                        s = group_snr(self._image, grois, g.target_rid)
+                        line.append(f"{s:.6g}" if s is not None else "")
+                    else:
+                        vals = np.array([roi_metric(self._image, r, mid)
+                                         for r in grois])
+                        line.append(f"{summarize(vals)['mean']:.6g}")
+                w.writerow(line)

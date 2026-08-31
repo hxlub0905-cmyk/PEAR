@@ -1,8 +1,11 @@
-"""Image stage: load, zoom/pan, draw/move/resize ROIs, and overlays.
+"""Image stage: zoom/pan and place / move / resize ROIs.
 
-A hand-painted canvas (QWidget + QPainter). It owns no analysis logic; it
-emits intent signals (region created / modified / selected) and renders
-whatever regions, period grid, and outlier markers it is given.
+ROIs belong to groups and are drawn in their group's colour.
+
+Adding ROIs (à la the sibling Perspective-Combination tool):
+  * **single** — click to drop a default box (or drag to size it).
+  * **grid**   — click the top-left, then the bottom-right anchor; a live
+                 row×col preview follows; press Enter / Add grid to commit.
 """
 
 from __future__ import annotations
@@ -10,33 +13,35 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import (QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap,
-                           QWheelEvent)
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (QColor, QImage, QKeyEvent, QLinearGradient,
+                           QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent)
 from PySide6.QtWidgets import QWidget
 
-from pear.core.analysis import PeriodInfo, Region, outlier_instances
-from pear.core.attributes import ATTR_LABELS
-from pear.core.separability import modified_zscores
+from pear.core.analysis import ROI, Group, grid_between, heat_color
 from pear.ui import theme
 
 Rect = Tuple[int, int, int, int]
-
-_HANDLE = 8           # corner-handle size in widget pixels
-_MIN_ROI = 4          # minimum ROI edge in image pixels
+_HANDLE = 8
+_MIN_ROI = 4
+_DEFAULT = 28          # default single-ROI size (px) for a plain click
 
 
 class ImageView(QWidget):
-    """Interactive SEM image stage."""
-
-    region_created = Signal(object)            # roi Rect
-    region_modified = Signal(int, object)      # rid, roi Rect
-    region_selected = Signal(int)              # rid
-    cell_tag_toggled = Signal(int)             # active-region instance index
-    draw_without_region = Signal()             # dragged with no active region
-    cell_focused = Signal(int)                 # clicked active-region cell
-    zoom_changed = Signal(float)               # new scale factor
-    cursor_info = Signal(str)                   # status-bar cursor readout
+    roi_created = Signal(object)            # rect (single ROI into active group)
+    grid_committed = Signal(object)         # list[rect] (a row×col grid)
+    grid_ready = Signal(bool)               # both grid anchors placed
+    roi_modified = Signal(int, object)      # rid, rect
+    roi_selected = Signal(int)              # rid
+    roi_delete_requested = Signal(int)      # rid (Delete key on selected ROI)
+    rois_selected = Signal(object)          # list[rid] (marquee multi-select)
+    rois_delete_requested = Signal(object)  # list[rid] (Delete on a selection)
+    roi_hovered = Signal(int)               # rid under the cursor (-1 = none)
+    roi_duplicate_requested = Signal(int)   # rid (Ctrl+D)
+    roi_inspect_requested = Signal(int)     # rid (double-click → pixel inspector)
+    group_index_requested = Signal(int)     # switch active group by index (1–9)
+    cursor_info = Signal(str)
+    zoom_changed = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,25 +50,33 @@ class ImageView(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
 
         self._image: Optional[np.ndarray] = None
-        self._qimage: Optional[QImage] = None
         self._pixmap: Optional[QPixmap] = None
         self._scale = 1.0
         self._offset = QPointF(0, 0)
 
-        self._period: Optional[PeriodInfo] = None
-        self._regions: List[Region] = []
+        self._groups: List[Group] = []
+        self._active_gid: Optional[str] = None
+        self._rois: List[ROI] = []
         self._active_rid: Optional[int] = None
-        self._labelled = False     # display mode: labelled compare vs unsup.
-        self._tag_mode = False     # clicking a cell toggles its target tag
-        self._hover_idx: Optional[int] = None   # cell under cursor (readout)
-        self._focus_idx: Optional[int] = None   # clicked/inspected cell
-        self._mouse_pos = QPointF()
-        self._press_idx: Optional[int] = None
+        self._selection: set = set()           # rids marquee-selected
+        self._marquee: Optional[QRectF] = None  # selection rect (image coords)
+        self._heat: dict = {}                  # rid -> hex colour (heatmap)
+        self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
+        self._outliers: set = set()            # rids flagged as outliers
+        self._hover_rid: int = -1              # rid under the cursor
 
-        # interaction state
-        self._mode: Optional[str] = None   # "draw" | "move" | "resize" | "pan"
+        self._grid_mode = False
+        self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
+        self._grid_tl: Optional[QPointF] = None   # centre of top-left ROI
+        self._grid_br: Optional[QPointF] = None   # centre of bottom-right ROI
+        self._grid_rows, self._grid_cols = 3, 3
+        self._roi_w, self._roi_h = _DEFAULT, _DEFAULT   # size for click / grid
+        self._cursor_img = QPointF()
+        self._roi_values: dict = {}        # rid -> short text drawn on the ROI
+
+        self._interact: Optional[str] = None   # draw|move|resize|pan
         self._drag_start = QPointF()
-        self._draw_rect: Optional[QRectF] = None  # in image coords
+        self._draw_rect: Optional[QRectF] = None
         self._resize_handle: Optional[int] = None
         self._roi_at_press: Optional[Rect] = None
         self._pan_at_press = QPointF()
@@ -72,38 +85,79 @@ class ImageView(QWidget):
     # public API
     # ------------------------------------------------------------------ #
     def set_image(self, image: np.ndarray) -> None:
-        """Set the grayscale image (uint8 2-D) and fit it to the view."""
         self._image = np.ascontiguousarray(image)
         h, w = image.shape[:2]
-        self._qimage = QImage(self._image.data, w, h, w, QImage.Format_Grayscale8)
-        self._pixmap = QPixmap.fromImage(self._qimage)
-        self._period = None
+        qimg = QImage(self._image.data, w, h, w, QImage.Format_Grayscale8)
+        self._pixmap = QPixmap.fromImage(qimg.copy())
         self.fit()
 
-    def set_period(self, period: Optional[PeriodInfo]) -> None:
-        self._period = period
+    def set_groups(self, groups, active_gid) -> None:
+        self._groups = groups
+        self._active_gid = active_gid
         self.update()
 
-    def set_regions(self, regions: List[Region], active_rid: Optional[int]) -> None:
-        self._regions = regions
+    def set_rois(self, rois, active_rid) -> None:
+        self._rois = rois
         self._active_rid = active_rid
         self.update()
 
-    def set_display_mode(self, labelled: bool) -> None:
-        self._labelled = labelled
-        if not labelled:
-            self._tag_mode = False
+    def set_roi_values(self, values: dict) -> None:
+        """Map of rid -> short text drawn centred on each ROI (live metric)."""
+        self._roi_values = values or {}
         self.update()
 
-    def set_tag_mode(self, on: bool) -> None:
-        self._tag_mode = bool(on)
+    def set_selection(self, rids) -> None:
+        """Highlight a set of ROIs (kept in sync with the rail's selection)."""
+        self._selection = set(rids or [])
+        self.update()
+
+    def set_heatmap(self, colors: dict, legend=None) -> None:
+        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label)."""
+        self._heat = colors or {}
+        self._heat_legend = legend
+        self.update()
+
+    def set_outliers(self, rids) -> None:
+        self._outliers = set(rids or [])
+        self.update()
+
+    def set_hover(self, rid: int) -> None:
+        """Highlight the hovered ROI (list → canvas hover sync)."""
+        rid = -1 if rid is None else int(rid)
+        if rid != self._hover_rid:
+            self._hover_rid = rid
+            self.update()
+
+    def set_grid_mode(self, on: bool) -> None:
+        self._grid_mode = bool(on)
+        self._reset_grid()
+        self.setFocus()
+        self.update()
+
+    def set_grid_shape(self, rows: int, cols: int) -> None:
+        self._grid_rows, self._grid_cols = max(1, rows), max(1, cols)
+        self.update()
+
+    def set_roi_size(self, w: int, h: int) -> None:
+        self._roi_w, self._roi_h = max(_MIN_ROI, int(w)), max(_MIN_ROI, int(h))
+        self.update()
+
+    def commit_grid(self) -> None:
+        if self._grid_stage == 2:
+            rects = self._grid_rects()
+            if rects:
+                self.grid_committed.emit(rects)
+        self._reset_grid()
+        self.update()
+
+    def cancel_grid(self) -> None:
+        self._reset_grid()
         self.update()
 
     def has_image(self) -> bool:
         return self._image is not None
 
     def fit(self) -> None:
-        """Scale the image to fit the viewport, centered."""
         if self._pixmap is None:
             return
         vw, vh = self.width(), self.height()
@@ -117,31 +171,30 @@ class ImageView(QWidget):
         self.zoom_changed.emit(self._scale)
 
     def zoom_by(self, factor: float, anchor: Optional[QPointF] = None) -> None:
-        """Scale by ``factor`` keeping the point under ``anchor`` fixed."""
         if self._image is None:
             return
         if anchor is None:
             anchor = QPointF(self.width() / 2.0, self.height() / 2.0)
-        img_anchor = self._to_image(anchor)
+        ia = self._to_image(anchor)
         self._scale = float(np.clip(self._scale * factor, 0.05, 40.0))
-        self._offset = QPointF(anchor.x() - img_anchor.x() * self._scale,
-                               anchor.y() - img_anchor.y() * self._scale)
+        self._offset = QPointF(anchor.x() - ia.x() * self._scale,
+                               anchor.y() - ia.y() * self._scale)
         self.update()
         self.zoom_changed.emit(self._scale)
 
-    def zoom_in(self) -> None:
+    def zoom_in(self):
         self.zoom_by(1.25)
 
-    def zoom_out(self) -> None:
+    def zoom_out(self):
         self.zoom_by(0.8)
 
     def zoom_percent(self) -> int:
         return int(round(self._scale * 100))
 
     # ------------------------------------------------------------------ #
-    # coordinate transforms
+    # transforms
     # ------------------------------------------------------------------ #
-    def _to_widget(self, x: float, y: float) -> QPointF:
+    def _to_widget(self, x, y) -> QPointF:
         return QPointF(self._offset.x() + x * self._scale,
                        self._offset.y() + y * self._scale)
 
@@ -154,258 +207,241 @@ class ImageView(QWidget):
         tl = self._to_widget(x, y)
         return QRectF(tl.x(), tl.y(), w * self._scale, h * self._scale)
 
-    def _qrectf_to_widget(self, qr: QRectF) -> QRectF:
-        """Map a QRectF given in image coordinates to widget coordinates."""
-        tl = self._to_widget(qr.left(), qr.top())
-        return QRectF(tl.x(), tl.y(),
-                      qr.width() * self._scale, qr.height() * self._scale)
+    def _gcolor(self, gid: str) -> QColor:
+        for g in self._groups:
+            if g.gid == gid:
+                return QColor(g.color)
+        return QColor(theme.INK3)
 
     # ------------------------------------------------------------------ #
     # painting
     # ------------------------------------------------------------------ #
-    def paintEvent(self, _event) -> None:
+    def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.fillRect(self.rect(), QColor(theme.STAGE))
-
         if self._pixmap is None:
-            self._paint_placeholder(p)
+            p.setPen(QColor(theme.INK3))
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "Load an 8-bit grayscale image to begin.")
             p.end()
             return
-
         target = QRectF(self._offset.x(), self._offset.y(),
                         self._pixmap.width() * self._scale,
                         self._pixmap.height() * self._scale)
         p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
-
-        self._paint_grid(p)
-        self._paint_regions(p)
-        self._paint_focus(p)
-        self._paint_draw_rubberband(p)
-        self._paint_readout(p)
+        self._paint_rois(p)
+        self._paint_rubberband(p)
+        self._paint_marquee(p)
+        self._paint_grid_preview(p)
+        self._paint_colorbar(p)
+        self._paint_hud(p)
         p.end()
 
-    def _paint_placeholder(self, p: QPainter) -> None:
-        p.setPen(QColor(theme.FAINT))
-        p.drawText(self.rect(), Qt.AlignCenter,
-                   "Load an 8-bit grayscale image to begin.")
+    def _paint_rois(self, p: QPainter) -> None:
+        targets = {g.gid: g.target_rid for g in self._groups}
+        for roi in self._rois:
+            active_grp = roi.gid == self._active_gid
+            selected = roi.rid == self._active_rid
+            in_sel = roi.rid in self._selection
+            color = self._gcolor(roi.gid)
+            r = self._rect_to_widget(roi.rect)
+            heat = self._heat.get(roi.rid)
+            if heat is not None:                     # value heatmap fill
+                fill = QColor(heat)
+                fill.setAlpha(175)
+            else:
+                fill = QColor(color)
+                fill.setAlpha(64 if active_grp else 26)
+            stroke = QColor(color)
+            stroke.setAlpha(255 if active_grp else 130)
+            pen = QPen(stroke, 2.4 if selected else (1.8 if active_grp else 1.2))
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.setBrush(fill)
+            p.drawRect(r)
+            if roi.rid == self._hover_rid:
+                self._paint_hover_ring(p, r)
+            if in_sel:
+                self._paint_selection_ring(p, r)
+            if roi.rid in self._outliers:
+                self._paint_outlier(p, r)
+            if targets.get(roi.gid) == roi.rid:
+                self._paint_badge(p, r, "T", color)
+            val = self._roi_values.get(roi.rid)
+            if val is not None:
+                self._paint_value(p, r, val)
+            if selected and not self._grid_mode:
+                self._paint_handles(p, r, color)
 
-    def _paint_grid(self, p: QPainter) -> None:
-        # The cell grid is always drawn once a period exists.
-        if self._period is None or self._image is None:
-            return
-        px, py = self._period.px, self._period.py
-        if px < 1 or py < 1:
-            return
-        h, w = self._image.shape[:2]
-        ox, oy = self._period.origin
-        grid = QColor(*theme.GRID_RGBA)
-        pen = QPen(grid, 1)
+    def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
+        pen = QPen(QColor(255, 255, 255, 210), 1.4)
         pen.setCosmetic(True)
         p.setPen(pen)
-        x = ox
-        while x <= w:
-            a = self._to_widget(x, 0)
-            b = self._to_widget(x, h)
-            p.drawLine(a, b)
-            x += px
-        y = oy
-        while y <= h:
-            a = self._to_widget(0, y)
-            b = self._to_widget(w, y)
-            p.drawLine(a, b)
-            y += py
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-3, -3, 3, 3))
 
-    def _paint_regions(self, p: QPainter) -> None:
-        for region in self._regions:
-            active = region.rid == self._active_rid
-            base = QColor(region.color)
+    def _paint_outlier(self, p: QPainter, r: QRectF) -> None:
+        pen = QPen(QColor(theme.WARNING), 2.0)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-1, -1, 1, 1))
+        self._paint_badge(p, r, "!", QColor(theme.WARNING), corner="tr")
 
-            # Instances: a soft glow underlay + a crisp stroke, with a
-            # faint tint fill so the cells read clearly on the dark stage.
-            glow = QColor(base)
-            glow.setAlpha(70 if active else 30)
-            stroke = QColor(base)
-            stroke.setAlpha(255 if active else 120)
-            fill = QColor(base)
-            fill.setAlpha(40 if active else 16)
+    def _paint_colorbar(self, p: QPainter) -> None:
+        if not self._heat_legend or not self._heat:
+            return
+        vmin, vmax, label = self._heat_legend
+        x, y, w, h = 14, self.height() - 42, 150, 12
+        grad = QLinearGradient(float(x), 0.0, float(x + w), 0.0)
+        for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+            grad.setColorAt(t, QColor(heat_color(t)))
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawRoundedRect(QRectF(x, y, w, h), 3, 3)
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(x, y, w, h), 3, 3)
+        p.setPen(QColor("#FFFFFF"))
+        p.setFont(theme.mono_font(8, weight=700))
+        p.drawText(int(x), int(y - 4), label)
+        p.setFont(theme.mono_font(8))
+        p.drawText(QRectF(x, y + h + 1, w, 12), Qt.AlignLeft, f"{vmin:.3g}")
+        p.drawText(QRectF(x, y + h + 1, w, 12), Qt.AlignRight, f"{vmax:.3g}")
 
-            glow_pen = QPen(glow, 5 if active else 3)
-            glow_pen.setCosmetic(True)
-            crisp_pen = QPen(stroke, 2 if active else 1)
-            crisp_pen.setCosmetic(True)
+    def _paint_selection_ring(self, p: QPainter, r: QRectF) -> None:
+        pen = QPen(QColor("#FFFFFF"), 1.6)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r.adjusted(-2, -2, 2, 2))
 
-            for inst in region.instances:
-                r = self._rect_to_widget(inst)
-                p.setPen(glow_pen)
-                p.setBrush(Qt.NoBrush)
-                p.drawRect(r)
-                p.setPen(crisp_pen)
-                p.setBrush(fill)
-                p.drawRect(r)
+    def _paint_badge(self, p: QPainter, r: QRectF, text: str,
+                     color: QColor, corner: str = "tl") -> None:
+        p.setFont(theme.mono_font(8, weight=700))
+        fm = p.fontMetrics()
+        bw = fm.horizontalAdvance(text) + 8
+        bh = fm.height() + 2
+        by = r.top() - bh if r.top() - bh >= 0 else r.top()
+        bx = r.left() if corner == "tl" else r.right() - bw
+        bg = QRectF(bx, by, bw, bh)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        p.drawRoundedRect(bg, 3, 3)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(bg, Qt.AlignCenter, text)
 
-            # The reference ROI itself, emphasized with a bright dashed edge.
-            ref_rect = self._rect_to_widget(region.roi)
-            ref_pen = QPen(QColor(base), 2.4)
-            ref_pen.setCosmetic(True)
-            ref_pen.setStyle(Qt.SolidLine if active else Qt.DashLine)
-            p.setPen(ref_pen)
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(ref_rect)
-
-            if self._labelled:
-                self._paint_targets(p, region, active)
-            elif active:
-                self._paint_markers(p, region)
-
-            if active and not self._tag_mode:
-                self._paint_handles(p, ref_rect, QColor(base))
+    def _paint_value(self, p: QPainter, r: QRectF, text: str) -> None:
+        p.setFont(theme.mono_font(9, weight=700))
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(text)
+        cx, cy = r.center().x(), r.center().y()
+        bg = QRectF(cx - tw / 2 - 3, cy - fm.height() / 2, tw + 6, fm.height())
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(17, 24, 39, 200))
+        p.drawRoundedRect(bg, 3, 3)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(bg, Qt.AlignCenter, text)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
-        p.setPen(QPen(QColor(theme.PANEL), 1.5))
+        p.setPen(QPen(QColor("#FFFFFF"), 1.4))
         p.setBrush(color)
         for c in self._handle_centers(rect):
             p.drawRect(QRectF(c.x() - _HANDLE / 2, c.y() - _HANDLE / 2,
                               _HANDLE, _HANDLE))
 
-    def _paint_markers(self, p: QPainter, region: Region) -> None:
-        # Amber outlier markers for the active region + selected attribute.
-        # A glow + bright stroke + corner ticks make them read as "look
-        # here" without implying a verdict.
-        bright = QColor("#FFC44D")
-        glow = QColor(theme.FLAG)
-        glow.setAlpha(90)
-        fill = QColor(theme.FLAG)
-        fill.setAlpha(55)
-        for inst in outlier_instances(region):
-            r = self._rect_to_widget(inst)
-            gpen = QPen(glow, 6)
-            gpen.setCosmetic(True)
-            p.setPen(gpen)
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(r)
-            spen = QPen(bright, 2.4)
-            spen.setCosmetic(True)
-            p.setPen(spen)
-            p.setBrush(fill)
-            p.drawRect(r)
-            self._paint_corner_ticks(p, r, bright)
-
-    def _paint_targets(self, p: QPainter, region: Region, active: bool) -> None:
-        # Labelled compare: tagged target cells get a bold filled overlay;
-        # the rest of the region's instances read as reference (the outline
-        # already drawn). Target uses the region colour, brightened.
-        target = QColor("#FF3B30") if active else QColor("#FF7A70")
-        fill = QColor(target)
-        fill.setAlpha(70)
-        pen = QPen(target, 2.6 if active else 1.6)
-        pen.setCosmetic(True)
-        for i in sorted(region.target_idx):
-            if 0 <= i < len(region.instances):
-                r = self._rect_to_widget(region.instances[i])
-                p.setPen(pen)
-                p.setBrush(fill)
-                p.drawRect(r)
-                if active:
-                    self._paint_corner_ticks(p, r, target)
-
-    @staticmethod
-    def _paint_corner_ticks(p: QPainter, r: QRectF, color: QColor) -> None:
-        t = max(4.0, min(10.0, r.width() * 0.22))
-        pen = QPen(color, 2.6)
-        pen.setCosmetic(True)
-        p.setPen(pen)
-        for cx, cy, sx, sy in (
-            (r.left(), r.top(), 1, 1), (r.right(), r.top(), -1, 1),
-            (r.left(), r.bottom(), 1, -1), (r.right(), r.bottom(), -1, -1),
-        ):
-            p.drawLine(cx, cy, cx + sx * t, cy)
-            p.drawLine(cx, cy, cx, cy + sy * t)
-
-    def _paint_draw_rubberband(self, p: QPainter) -> None:
+    def _paint_rubberband(self, p: QPainter) -> None:
         if self._draw_rect is None:
             return
-        pen = QPen(QColor(theme.ACCENT_BRIGHT), 2)
+        pen = QPen(QColor(theme.AMBER), 2)
         pen.setCosmetic(True)
         pen.setStyle(Qt.DashLine)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawRect(self._qrectf_to_widget(self._norm_rect(self._draw_rect)))
+        rn = self._draw_rect.normalized()
+        tl = self._to_widget(rn.left(), rn.top())
+        p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+                          rn.height() * self._scale))
 
-    def _paint_focus(self, p: QPainter) -> None:
-        region = self._active_region()
-        if region is None or self._focus_idx is None:
+    def _paint_marquee(self, p: QPainter) -> None:
+        if self._marquee is None:
             return
-        if not (0 <= self._focus_idx < len(region.instances)):
-            return
-        r = self._rect_to_widget(region.instances[self._focus_idx])
-        pen = QPen(QColor(theme.ACCENT_BRIGHT), 2.5)
+        rn = self._marquee.normalized()
+        tl = self._to_widget(rn.left(), rn.top())
+        rect = QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+                      rn.height() * self._scale)
+        fill = QColor(theme.INFO)
+        fill.setAlpha(28)
+        pen = QPen(QColor(theme.INFO), 1.5)
         pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
         p.setPen(pen)
+        p.setBrush(fill)
+        p.drawRect(rect)
+
+    def _grid_rects(self) -> List[Rect]:
+        if self._grid_tl is None:
+            return []
+        br = self._grid_br if self._grid_stage >= 2 else self._cursor_img
+        return grid_between((self._grid_tl.x(), self._grid_tl.y()),
+                            (br.x(), br.y()), self._grid_rows, self._grid_cols,
+                            self._roi_w, self._roi_h)
+
+    def _paint_grid_preview(self, p: QPainter) -> None:
+        if not self._grid_mode or self._grid_stage == 0:
+            return
+        rects = self._grid_rects()
+        if not rects:
+            return
+        color = self._gcolor(self._active_gid)
+        prev = QColor(color)
+        prev.setAlpha(70)
+        pen = QPen(color, 1.4)
+        pen.setCosmetic(True)
+        for i, rect in enumerate(rects):
+            r = self._rect_to_widget(rect)
+            p.setPen(pen)
+            p.setBrush(prev)
+            p.drawRect(r)
+        # emphasise the two corner anchors
+        apen = QPen(QColor(theme.INFO), 2.2)
+        apen.setCosmetic(True)
+        p.setPen(apen)
         p.setBrush(Qt.NoBrush)
-        p.drawRect(r.adjusted(-2, -2, 2, 2))
+        for rect in (rects[0], rects[-1]):
+            p.drawRect(self._rect_to_widget(rect))
 
-    def _cell_readout_lines(self, region: Region, idx: int):
-        """Text lines describing one cell for the hover readout."""
-        rec = region.records[idx]
-        attr = region.sep_sel_attr if self._labelled else region.sel_attr
-        lines = [f"cell (row {rec['row']}, col {rec['col']})"]
-        flag = None
-        if attr is not None and attr in rec:
-            label = ATTR_LABELS.get(attr, attr)
-            lines.append(f"{label}: {rec[attr]:.4g}")
-            if self._labelled:
-                if idx in region.target_idx:
-                    flag = ("TARGET", theme.FLAG)
-                else:
-                    lines.append("reference")
+    def _paint_hud(self, p: QPainter) -> None:
+        if self._grid_mode:
+            if self._grid_stage == 0:
+                msg = "▦ GRID — click the top-left corner"
+            elif self._grid_stage == 1:
+                msg = "▦ GRID — click the bottom-right corner"
             else:
-                vals = np.array([r.get(attr, 0.0) for r in region.records],
-                                dtype=np.float64)
-                z = float(modified_zscores(vals)[idx])
-                lines.append(f"z = {z:+.1f}σ")
-                if abs(z) > 3.5:
-                    flag = ("OUTLIER", theme.FLAG)
-        return lines, flag
-
-    def _paint_readout(self, p: QPainter) -> None:
-        region = self._active_region()
-        if region is None or self._hover_idx is None:
+                msg = (f"▦ GRID {self._grid_rows}×{self._grid_cols} — "
+                       "Enter / Add grid to place · Esc to cancel")
+            self._banner(p, msg, QColor(theme.INFO))
             return
-        if not (0 <= self._hover_idx < len(region.records)):
-            return
-        lines, flag = self._cell_readout_lines(region, self._hover_idx)
-        if flag is not None:
-            lines.append(flag[0])
+        if not self._rois:
+            name = next((g.name for g in self._groups
+                         if g.gid == self._active_gid), None)
+            if name:
+                self._banner(p, f"Click on the image to add an ROI to “{name}”"
+                             " (or drag to size it)", QColor(theme.AMBER))
 
-        p.setFont(theme.mono_font(9))
+    def _banner(self, p: QPainter, text: str, accent: QColor) -> None:
+        p.setFont(theme.display_font(10, weight=700))
         fm = p.fontMetrics()
-        tw = max(fm.horizontalAdvance(s) for s in lines)
-        lh = fm.height()
-        pad = 8
-        w = tw + 2 * pad
-        h = len(lines) * lh + 2 * pad
-
-        x = self._mouse_pos.x() + 16
-        y = self._mouse_pos.y() + 16
-        x = min(x, self.width() - w - 4)
-        y = min(y, self.height() - h - 4)
-
-        box = QRectF(x, y, w, h)
-        p.setPen(QPen(QColor(theme.ACCENT), 1.5))
-        bg = QColor(theme.PANEL)
-        bg.setAlpha(235)
-        p.setBrush(bg)
-        p.drawRect(box)
-
-        ty = y + pad + fm.ascent()
-        for i, s in enumerate(lines):
-            if flag is not None and i == len(lines) - 1:
-                p.setPen(QColor(flag[1]))
-            else:
-                p.setPen(QColor(theme.INK))
-            p.drawText(int(x + pad), int(ty), s)
-            ty += lh
+        w = fm.horizontalAdvance(text) + 24
+        h = fm.height() + 10
+        x = (self.width() - w) / 2
+        p.setPen(QPen(accent, 1.5))
+        p.setBrush(QColor(17, 24, 39, 210))
+        p.drawRoundedRect(QRectF(x, 12, w, h), 8, 8)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(QRectF(x, 12, w, h), Qt.AlignCenter, text)
 
     # ------------------------------------------------------------------ #
     # hit testing
@@ -417,125 +453,250 @@ class ImageView(QWidget):
                 QPointF(rect.right(), rect.bottom()),
                 QPointF(rect.left(), rect.bottom())]
 
-    def _active_region(self) -> Optional[Region]:
-        for r in self._regions:
+    def _active_roi(self) -> Optional[ROI]:
+        for r in self._rois:
             if r.rid == self._active_rid:
                 return r
         return None
 
     def _handle_at(self, pos: QPointF) -> Optional[int]:
-        region = self._active_region()
-        if region is None:
+        roi = self._active_roi()
+        if roi is None:
             return None
-        rect = self._rect_to_widget(region.roi)
+        rect = self._rect_to_widget(roi.rect)
         for i, c in enumerate(self._handle_centers(rect)):
             if abs(pos.x() - c.x()) <= _HANDLE and abs(pos.y() - c.y()) <= _HANDLE:
                 return i
         return None
 
-    def _region_body_at(self, pos: QPointF) -> Optional[int]:
-        # Topmost region whose reference ROI contains pos (active first).
-        ordered = sorted(self._regions,
-                         key=lambda r: r.rid != self._active_rid)
+    def _roi_body_at(self, pos: QPointF) -> Optional[int]:
+        ordered = sorted(self._rois, key=lambda r: (r.rid != self._active_rid,
+                                                    r.gid != self._active_gid))
         for r in ordered:
-            if self._rect_to_widget(r.roi).contains(pos):
+            if self._rect_to_widget(r.rect).contains(pos):
                 return r.rid
         return None
 
-    def _instance_at(self, pos: QPointF) -> Optional[int]:
-        """Index of the active region's instance under ``pos`` (or None)."""
-        region = self._active_region()
-        if region is None:
-            return None
-        for i, inst in enumerate(region.instances):
-            if self._rect_to_widget(inst).contains(pos):
-                return i
-        return None
+    def _marquee_hits(self) -> List[int]:
+        """rids of active-group ROIs intersecting the marquee rectangle."""
+        if self._marquee is None:
+            return []
+        sel = self._marquee.normalized()
+        hits = []
+        for r in self._rois:
+            if r.gid != self._active_gid:
+                continue
+            x, y, w, h = r.rect
+            if sel.intersects(QRectF(x, y, w, h)):
+                hits.append(r.rid)
+        return hits
 
     # ------------------------------------------------------------------ #
-    # mouse / wheel
+    # mouse / key / wheel
     # ------------------------------------------------------------------ #
     def mousePressEvent(self, e: QMouseEvent) -> None:
         pos = QPointF(e.position())
         if e.button() in (Qt.MiddleButton, Qt.RightButton):
-            self._mode = "pan"
+            self._interact = "pan"
             self._drag_start = pos
             self._pan_at_press = QPointF(self._offset)
             self.setCursor(Qt.ClosedHandCursor)
             return
         if e.button() != Qt.LeftButton or self._image is None:
             return
-
-        # Tag mode: a click on an active-region cell toggles its target tag.
-        if self._tag_mode:
-            idx = self._instance_at(pos)
-            if idx is not None:
-                self.cell_tag_toggled.emit(idx)
+        if self._grid_mode:
+            ip = self._to_image(pos)
+            if self._grid_stage == 0:
+                self._grid_tl = ip
+                self._grid_stage = 1
+            elif self._grid_stage == 1:
+                self._grid_br = ip
+                self._grid_stage = 2
+                self.grid_ready.emit(True)
+            else:
+                self.commit_grid()
+            self.update()
             return
-
+        if e.modifiers() & Qt.ShiftModifier:
+            # Shift+drag → marquee select ROIs of the active group
+            ip = self._to_image(pos)
+            self._interact = "marquee"
+            self._drag_start = pos
+            self._marquee = QRectF(ip, ip)
+            self.update()
+            return
+        if self._selection:                       # a plain click clears a marquee
+            self._selection = set()
+            self.rois_selected.emit([])
         handle = self._handle_at(pos)
         if handle is not None:
-            region = self._active_region()
-            self._mode = "resize"
+            self._interact = "resize"
             self._resize_handle = handle
-            self._roi_at_press = region.roi
+            self._roi_at_press = self._active_roi().rect
             self._drag_start = pos
             return
-
-        body_rid = self._region_body_at(pos)
-        if body_rid is not None:
-            if body_rid != self._active_rid:
-                self._active_rid = body_rid
-                self.region_selected.emit(body_rid)
+        body = self._roi_body_at(pos)
+        if body is not None:
+            if body != self._active_rid:
+                self._active_rid = body
+                self.roi_selected.emit(body)
                 self.update()
                 return
-            region = self._active_region()
-            self._mode = "move"
-            self._roi_at_press = region.roi
+            self._interact = "move"
+            self._roi_at_press = self._active_roi().rect
             self._drag_start = pos
             return
-
-        # Empty space -> draw / redraw the ACTIVE region's ROI. New regions
-        # are created with the "+ Add region" button, not by drawing. A click
-        # (no drag) on a cell instead inspects that cell.
-        if self._active_rid is None:
-            self.draw_without_region.emit()
-            return
-        self._press_idx = self._instance_at(pos)
         ip = self._to_image(pos)
-        self._mode = "draw"
+        self._interact = "draw"
+        self._drag_start = pos
         self._draw_rect = QRectF(ip, ip)
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         pos = QPointF(e.position())
-        self._mouse_pos = pos
+        self._cursor_img = self._to_image(pos)
         self._emit_cursor(pos)
-        if self._mode == "pan":
-            delta = pos - self._drag_start
-            self._offset = self._pan_at_press + delta
+        if self._grid_mode:
+            if self._grid_stage == 1:
+                self.update()
+            return
+        if self._interact == "pan":
+            self._offset = self._pan_at_press + (pos - self._drag_start)
             self.update()
             return
-        if self._mode == "draw" and self._draw_rect is not None:
+        if self._interact == "marquee" and self._marquee is not None:
+            self._marquee.setBottomRight(self._to_image(pos))
+            self.update()
+            return
+        if self._interact == "draw" and self._draw_rect is not None:
             self._draw_rect.setBottomRight(self._to_image(pos))
             self.update()
             return
-        if self._mode == "move":
+        if self._interact == "move":
             self._do_move(pos)
             return
-        if self._mode == "resize":
+        if self._interact == "resize":
             self._do_resize(pos)
             return
-        # Idle hover: track the cell under the cursor for the readout.
-        new_hover = self._instance_at(pos)
-        if new_hover != self._hover_idx:
-            self._hover_idx = new_hover
+        self._update_hover(pos)
         self._update_cursor(pos)
+
+    def mouseReleaseEvent(self, e: QMouseEvent) -> None:
+        if self._interact == "pan":
+            self._interact = None
+            self.unsetCursor()
+            return
+        if self._interact == "marquee":
+            self._interact = None
+            rids = self._marquee_hits()
+            self._marquee = None
+            self._selection = set(rids)
+            self.rois_selected.emit(list(rids))
+            self.update()
+            return
+        if self._grid_mode:
+            self._interact = None
+            return
+        if self._interact == "draw" and self._draw_rect is not None:
+            rect = self._finalize_draw()
+            self._draw_rect = None
+            self._interact = None
+            if rect is not None:
+                self.roi_created.emit(rect)
+            self.update()
+            return
+        if self._interact in ("move", "resize"):
+            roi = self._active_roi()
+            self._interact = None
+            self._resize_handle = None
+            if roi is not None:
+                self.roi_modified.emit(roi.rid, roi.rect)
+        self._interact = None
+
+    _ARROWS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0),
+               Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        key, mods = e.key(), e.modifiers()
+        is_del = key in (Qt.Key_Delete, Qt.Key_Backspace)
+        ctrl = bool(mods & Qt.ControlModifier)
+        if self._grid_mode and key in (Qt.Key_Return, Qt.Key_Enter):
+            self.commit_grid()
+        elif self._grid_mode and key == Qt.Key_Escape:
+            self.cancel_grid()
+        elif self._grid_mode:
+            super().keyPressEvent(e)
+        elif self._selection and is_del:
+            self.rois_delete_requested.emit(list(self._selection))
+        elif self._active_rid is not None and is_del:
+            self.roi_delete_requested.emit(self._active_rid)
+        elif self._selection and key == Qt.Key_Escape:
+            self._selection = set()
+            self.rois_selected.emit([])
+            self.update()
+        elif key in self._ARROWS and self._active_rid is not None:
+            dx, dy = self._ARROWS[key]
+            step = 10 if (mods & Qt.ShiftModifier) else 1
+            self._nudge_active(dx * step, dy * step)
+        elif ctrl and key == Qt.Key_D and self._active_rid is not None:
+            self.roi_duplicate_requested.emit(self._active_rid)
+        elif ctrl and key == Qt.Key_A:
+            rids = [r.rid for r in self._rois if r.gid == self._active_gid]
+            self._selection = set(rids)
+            self.rois_selected.emit(rids)
+            self.update()
+        elif Qt.Key_1 <= key <= Qt.Key_9 and not ctrl:
+            self.group_index_requested.emit(key - Qt.Key_1)
+        else:
+            super().keyPressEvent(e)
+
+    def _nudge_active(self, dx: int, dy: int) -> None:
+        roi = self._active_roi()
+        if roi is None:
+            return
+        x, y, w, h = roi.rect
+        roi.rect = self._clamp((x + dx, y + dy, w, h))
+        self.roi_modified.emit(roi.rid, roi.rect)
         self.update()
 
+    def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
+        if self._image is None or e.button() != Qt.LeftButton or self._grid_mode:
+            return
+        rid = self._roi_body_at(QPointF(e.position()))
+        if rid is not None:
+            if rid != self._active_rid:
+                self._active_rid = rid
+                self.roi_selected.emit(rid)
+            self.roi_inspect_requested.emit(rid)
+
+    def wheelEvent(self, e: QWheelEvent) -> None:
+        if self._image is None:
+            return
+        factor = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
+        self.zoom_by(factor, QPointF(e.position()))
+
     def leaveEvent(self, _e) -> None:
-        self._hover_idx = None
         self.cursor_info.emit("")
-        self.update()
+        if self._hover_rid != -1:
+            self._hover_rid = -1
+            self.roi_hovered.emit(-1)
+            self.update()
+
+    def _update_hover(self, pos: QPointF) -> None:
+        rid = self._roi_body_at(pos)
+        rid = rid if rid is not None else -1
+        if rid != self._hover_rid:
+            self._hover_rid = rid
+            self.roi_hovered.emit(rid)
+            self.update()
+
+    # ------------------------------------------------------------------ #
+    # helpers
+    # ------------------------------------------------------------------ #
+    def _reset_grid(self) -> None:
+        self._grid_stage = 0
+        self._grid_tl = None
+        self._grid_br = None
+        self.grid_ready.emit(False)
 
     def _emit_cursor(self, pos: QPointF) -> None:
         if self._image is None:
@@ -545,138 +706,74 @@ class ImageView(QWidget):
         x, y = int(np.floor(ip.x())), int(np.floor(ip.y()))
         h, w = self._image.shape[:2]
         if 0 <= x < w and 0 <= y < h:
-            s = f"x {x}  y {y}  ·  gray {int(self._image[y, x])}"
-            if self._period is not None:
-                s += f"  ·  cell ({y // self._period.py}, {x // self._period.px})"
-            self.cursor_info.emit(s)
+            self.cursor_info.emit(f"x {x}  y {y}  ·  gray {int(self._image[y, x])}")
         else:
             self.cursor_info.emit("")
 
-    def mouseReleaseEvent(self, e: QMouseEvent) -> None:
-        if self._mode == "pan":
-            self._mode = None
-            self.unsetCursor()
-            return
-        if self._mode == "draw" and self._draw_rect is not None:
-            roi = self._finalize_draw()
-            self._draw_rect = None
-            self._mode = None
-            if roi is not None and self._active_rid is not None:
-                # The drawn rectangle (re)defines the active region's ROI.
-                self.region_modified.emit(self._active_rid, roi)
-            elif self._press_idx is not None:
-                # A click (no real drag) on a cell inspects it.
-                self._focus_idx = self._press_idx
-                self.cell_focused.emit(self._press_idx)
-            self._press_idx = None
-            self.update()
-            return
-        if self._mode in ("move", "resize"):
-            region = self._active_region()
-            self._mode = None
-            self._resize_handle = None
-            if region is not None:
-                self.region_modified.emit(region.rid, region.roi)
-        self._mode = None
-
-    def wheelEvent(self, e: QWheelEvent) -> None:
-        if self._image is None:
-            return
-        factor = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
-        self.zoom_by(factor, QPointF(e.position()))
-
-    # ------------------------------------------------------------------ #
-    # interaction helpers
-    # ------------------------------------------------------------------ #
-    def _cell_footprint(self) -> Tuple[int, int]:
-        if self._period is not None:
-            return self._period.px, self._period.py
-        if self._image is not None:
-            h, w = self._image.shape[:2]
-            return w, h
-        return 1, 1
-
     def _do_move(self, pos: QPointF) -> None:
-        region = self._active_region()
-        if region is None or self._roi_at_press is None:
+        roi = self._active_roi()
+        if roi is None or self._roi_at_press is None:
             return
         delta = self._to_image(pos) - self._to_image(self._drag_start)
         x0, y0, w, h = self._roi_at_press
-        nx = int(round(x0 + delta.x()))
-        ny = int(round(y0 + delta.y()))
-        region.roi = self._clamp_roi((nx, ny, w, h))
+        roi.rect = self._clamp((int(round(x0 + delta.x())),
+                                int(round(y0 + delta.y())), w, h))
         self.update()
 
     def _do_resize(self, pos: QPointF) -> None:
-        region = self._active_region()
-        if region is None or self._roi_at_press is None:
+        roi = self._active_roi()
+        if roi is None or self._roi_at_press is None:
             return
         x, y, w, h = self._roi_at_press
         ip = self._to_image(pos)
         left, top, right, bottom = x, y, x + w, y + h
-        if self._resize_handle in (0, 3):       # left edge
+        if self._resize_handle in (0, 3):
             left = ip.x()
-        if self._resize_handle in (1, 2):       # right edge
+        if self._resize_handle in (1, 2):
             right = ip.x()
-        if self._resize_handle in (0, 1):       # top edge
+        if self._resize_handle in (0, 1):
             top = ip.y()
-        if self._resize_handle in (2, 3):       # bottom edge
+        if self._resize_handle in (2, 3):
             bottom = ip.y()
         nx, ny = int(round(min(left, right))), int(round(min(top, bottom)))
         nw = max(_MIN_ROI, int(round(abs(right - left))))
         nh = max(_MIN_ROI, int(round(abs(bottom - top))))
-        region.roi = self._clamp_roi((nx, ny, nw, nh))
+        roi.rect = self._clamp((nx, ny, nw, nh))
         self.update()
 
     def _finalize_draw(self) -> Optional[Rect]:
-        r = self._norm_rect(self._draw_rect)
-        x, y, w, h = (int(round(r.x())), int(round(r.y())),
-                      int(round(r.width())), int(round(r.height())))
+        r = self._draw_rect.normalized()
+        w, h = int(round(r.width())), int(round(r.height()))
         if w < _MIN_ROI or h < _MIN_ROI:
-            return None
-        return self._clamp_roi((x, y, w, h))
+            # plain click -> place a box of the configured W×H centred on it
+            c = self._to_image(self._drag_start)
+            return self._clamp((int(round(c.x() - self._roi_w / 2)),
+                                int(round(c.y() - self._roi_h / 2)),
+                                self._roi_w, self._roi_h))
+        return self._clamp((int(round(r.x())), int(round(r.y())), w, h))
 
-    def _clamp_roi(self, roi: Rect) -> Rect:
-        """Clamp the ROI size to one cell footprint and keep it in the image.
-
-        The position is left free: the ROI may straddle a cell boundary
-        (every instance then samples the same relative sub-region; only the
-        C2C attributes drop out gracefully). Only the size is capped to the
-        cell so replicated instances never overlap their neighbours.
-        """
+    def _clamp(self, roi: Rect) -> Rect:
         x, y, w, h = roi
         if self._image is None:
             return roi
         ih, iw = self._image.shape[:2]
-        cpx, cpy = self._cell_footprint()
-        w = max(_MIN_ROI, min(w, cpx, iw))
-        h = max(_MIN_ROI, min(h, cpy, ih))
+        w = max(_MIN_ROI, min(w, iw))
+        h = max(_MIN_ROI, min(h, ih))
         x = max(0, min(x, iw - w))
         y = max(0, min(y, ih - h))
         return (x, y, w, h)
-
-    @staticmethod
-    def _norm_rect(r: QRectF) -> QRectF:
-        return r.normalized()
 
     def _update_cursor(self, pos: QPointF) -> None:
         if self._image is None:
             self.unsetCursor()
             return
-        if self._tag_mode:
-            self.setCursor(Qt.PointingHandCursor
-                           if self._instance_at(pos) is not None
-                           else Qt.ArrowCursor)
-            return
         if self._handle_at(pos) is not None:
             self.setCursor(Qt.SizeFDiagCursor)
-        elif self._region_body_at(pos) == self._active_rid and \
-                self._active_rid is not None:
+        elif self._roi_body_at(pos) is not None:
             self.setCursor(Qt.SizeAllCursor)
         else:
             self.setCursor(Qt.CrossCursor)
 
     def resizeEvent(self, _e) -> None:
-        # Keep a freshly loaded image fitted until the user interacts.
-        if self._pixmap is not None and self._mode is None:
+        if self._pixmap is not None and self._interact is None:
             self.update()
