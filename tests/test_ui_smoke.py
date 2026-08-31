@@ -792,6 +792,17 @@ def test_distribution_charts_keep_a_printable_shape(app):
     c = charts[-1]
     assert 340 <= c.width() <= 720                     # capped, not stretched
     assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
+    # a profile runs the full width, so it needs a ratio of its own or it
+    # comes out as a letterbox where a tilt and a flat line look alike
+    win.analysis._pick_ctype("position")
+    app.processEvents()
+    app.processEvents()
+    prof = [c for c in win.analysis.body.findChildren(DistributionChart)
+            if c._ctype == "position" and c.isVisible()]
+    assert prof
+    c = prof[-1]
+    assert c.hasHeightForWidth()
+    assert c.height() >= 300 and c.height() >= c.width() * 0.5
 
 
 def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):

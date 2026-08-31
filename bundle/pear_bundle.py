@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 455e9bf6d0dd31852fb0281ae12447f9be32a2ba 272 README.md
+#F d725a7f0000a5e0a91c4411466e81c203864a02b 280 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -362,6 +362,10 @@ if __name__ == "__main__":
 #groups, scored by η² (variance explained) and Cohen's d — and a **group ×
 #metric heatmap** for an at-a-glance overview, plus a summary table.
 #
+#Every chart keeps a readable shape — a distribution at roughly 4:3, a profile
+#or a map wider but never a letterbox, where a real tilt and a flat line would
+#look alike.
+#
 #The results read as one page, not two: the **figures fill the left column**,
 #one per row and as large as the column allows, vertically centred; the numbers
 #that annotate them — ranking, group × metric heatmap, summary table — stack
@@ -414,7 +418,10 @@ if __name__ == "__main__":
 #  - **dots** — one per ROI, at its own position.
 #  - **profile** (solid, the group's colour darkened) — the **mean of the ROIs
 #    at each position**; a column of ROIs sharing an X collapses into one point
-#    of it. This is the line you read flatness off.
+#    of it, and centres that miss each other by a few pixels count as the same
+#    column (the same jitter tolerance the field tiling uses), so a hand-placed
+#    grid gives one clean vertex per column instead of a kink per ROI. This is
+#    the line you read flatness off.
 #  - **trend** (dashed, amber) — the **least-squares fit** through every ROI.
 #    Its slope is quoted as *slope per 100 px*; 0 means no tilt.
 #  - **group mean** (dashed, faint, the group's colour) — where a perfectly
@@ -489,7 +496,8 @@ if __name__ == "__main__":
 #
 #- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
 #  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
-#  jitter tolerance, per-ROI field cells, ROI alignment / spacing,
+#  jitter tolerance (field tiling and profile grouping alike), per-ROI field
+#  cells, ROI alignment / spacing,
 #  attribute separability / ranking, pixel histogram, ROI positions / linear
 #  trend / uniformity, project (de)serialize, between/within comparison,
 #  snapshot isolation.
@@ -838,7 +846,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F 99c197bf536733b86cbc75dc8a5b2121ebbe5420 714 pear/core/analysis.py
+#F e2f51545463880b61edefa6d8d98f9ce51c8953a 730 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -1267,12 +1275,18 @@ if __name__ == "__main__":
 #    return out
 #
 #
-#def profile_by_position(positions, values, decimals: int = 0):
+#def profile_by_position(positions, values, decimals: int = 0,
+#                        tol: Optional[float] = None):
 #    """Collapse ROIs that share a position into one mean value.
 #
 #    A grid of ROIs puts several boxes at the same X; averaging them gives the
-#    single profile line you read flatness off. Returns ``(pos, mean)`` sorted
-#    by position.
+#    single profile line you read flatness off. Boxes placed by hand miss that
+#    shared X by a pixel or two, which splits one column into several and puts
+#    a kink in the line for every one of them — so centres within ``tol`` count
+#    as the same position. ``tol=None`` measures it from the data
+#    (:func:`jitter_tolerance`); pass 0 to group only exact matches.
+#
+#    Returns ``(pos, mean)`` sorted by position.
 #    """
 #    px = np.asarray(positions, dtype=np.float64)
 #    v = np.asarray(values, dtype=np.float64)
@@ -1281,12 +1295,22 @@ if __name__ == "__main__":
 #    if px.size == 0:
 #        return np.empty(0), np.empty(0)
 #    keys = np.round(px, decimals)
-#    uniq = np.unique(keys)
-#    means = np.asarray([float(v[keys == k].mean()) for k in uniq],
-#                       dtype=np.float64)
-#    centers = np.asarray([float(px[keys == k].mean()) for k in uniq],
-#                         dtype=np.float64)
-#    return centers, means
+#    if tol is None:
+#        tol = jitter_tolerance(np.unique(keys))
+#    slots = cluster_positions(keys, tol)
+#    if slots.size == 0:
+#        return np.empty(0), np.empty(0)
+#    # each ROI joins the slot it is nearest to
+#    idx = np.abs(keys[:, None] - slots[None, :]).argmin(axis=1)
+#    centers, means = [], []
+#    for k in range(slots.size):
+#        sel = idx == k
+#        if not sel.any():
+#            continue
+#        centers.append(float(px[sel].mean()))
+#        means.append(float(v[sel].mean()))
+#    return (np.asarray(centers, dtype=np.float64),
+#            np.asarray(means, dtype=np.float64))
 #
 #
 ## --------------------------------------------------------------------------- #
@@ -3788,7 +3812,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 8310ae5d774365af9eafb080994242d12edf0bef 2553 pear/ui/widgets.py
+#F 1cac49688e85023e3e3f716e8136aec11e0be90d 2563 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3970,9 +3994,9 @@ if __name__ == "__main__":
 #            clean.append(item)
 #        self._series = clean
 #        if ctype == "position":
-#            self.setMinimumHeight(230 + 15 * len(clean))
+#            self.setMinimumHeight(300 + 15 * len(clean))
 #        elif ctype == "map":
-#            self.setMinimumHeight(300)
+#            self.setMinimumHeight(320)
 #        else:
 #            self.setMinimumHeight(212)
 #        self.update()
@@ -3981,14 +4005,24 @@ if __name__ == "__main__":
 #        # without one, a layout column with no stretch falls back to the
 #        # minimum and the figure comes out as narrow as it is allowed to be
 #        w = 720
-#        return QSize(w, self.heightForWidth(w) if self.hasHeightForWidth()
-#                     else self.minimumHeight())
+#        return QSize(w, self.heightForWidth(w))
 #
 #    def hasHeightForWidth(self) -> bool:
-#        return self._ctype in ("box", "hist")
+#        return True
 #
 #    def heightForWidth(self, w: int) -> int:
-#        return int(max(240, min(w * 0.78, 560)))
+#        """Every chart keeps a shape you can read.
+#
+#        A distribution wants roughly 4:3. A profile or a map runs the width of
+#        the column, and at a fixed height that turns into a letterbox: the
+#        values are squeezed into a band a few pixels tall, where a real tilt
+#        and a flat line look the same.
+#        """
+#        if self._ctype in ("box", "hist"):
+#            h = min(w * 0.78, 560)
+#        else:
+#            h = min(w * 0.58, 640)
+#        return int(max(self.minimumHeight(), h))
 #
 #    # -- style overrides (title, axis names, tick counts, ranges) ------ #
 #    def _st(self, key: str, default=None):
@@ -6512,7 +6546,7 @@ if __name__ == "__main__":
 #    body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
 #    compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
 #
-#F aea4748396c784725311012d02f127940323eb3b 343 tests/test_core.py
+#F 1a85608e188451ae3438d83f5a05c19660d2d041 359 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -6588,6 +6622,22 @@ if __name__ == "__main__":
 #    b = summarize(group_values(img, group_rois(rois, "bright"), "glv_mean"))
 #    d = summarize(group_values(img, group_rois(rois, "dark"), "glv_mean"))
 #    assert b["mean"] - d["mean"] > 50 and b["n"] == 4 and d["n"] == 4
+#
+#
+#def test_profile_by_position_groups_hand_jitter_into_one_point():
+#    """A column of ROIs a few pixels apart is one position, not five."""
+#    rng = np.random.default_rng(5)
+#    px = np.array([40 + c * 90 + int(rng.integers(-3, 4))
+#                   for _r in range(5) for c in range(6)], dtype=float)
+#    vals = np.array([100.0 + c * 4 for _r in range(5) for c in range(6)])
+#    pos, mean = profile_by_position(px, vals)
+#    assert pos.size == 6                      # one point per column…
+#    assert list(np.diff(pos) > 0) == [True] * 5          # …sorted
+#    assert list(mean) == pytest.approx([100, 104, 108, 112, 116, 120])
+#    # every ROI still counts: the slot means average their own members
+#    assert float(mean.mean()) == pytest.approx(float(vals.mean()))
+#    # exact-match grouping is still available, and still sees 23 positions
+#    assert profile_by_position(px, vals, tol=0)[0].size == np.unique(px).size
 #
 #
 #def test_grid_between_interpolates_anchor_centers():
@@ -6856,7 +6906,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F b146c933afeca835d67679e731550cf9b5e18c42 1059 tests/test_ui_smoke.py
+#F 1f24b5ab0ee5b1e749db9412695ff4b8a65abff0 1070 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7651,6 +7701,17 @@ if __name__ == "__main__":
 #    c = charts[-1]
 #    assert 340 <= c.width() <= 720                     # capped, not stretched
 #    assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
+#    # a profile runs the full width, so it needs a ratio of its own or it
+#    # comes out as a letterbox where a tilt and a flat line look alike
+#    win.analysis._pick_ctype("position")
+#    app.processEvents()
+#    app.processEvents()
+#    prof = [c for c in win.analysis.body.findChildren(DistributionChart)
+#            if c._ctype == "position" and c.isVisible()]
+#    assert prof
+#    c = prof[-1]
+#    assert c.hasHeightForWidth()
+#    assert c.height() >= 300 and c.height() >= c.width() * 0.5
 #
 #
 #def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):

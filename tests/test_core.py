@@ -75,6 +75,22 @@ def test_group_values_distributions_separate():
     assert b["mean"] - d["mean"] > 50 and b["n"] == 4 and d["n"] == 4
 
 
+def test_profile_by_position_groups_hand_jitter_into_one_point():
+    """A column of ROIs a few pixels apart is one position, not five."""
+    rng = np.random.default_rng(5)
+    px = np.array([40 + c * 90 + int(rng.integers(-3, 4))
+                   for _r in range(5) for c in range(6)], dtype=float)
+    vals = np.array([100.0 + c * 4 for _r in range(5) for c in range(6)])
+    pos, mean = profile_by_position(px, vals)
+    assert pos.size == 6                      # one point per column…
+    assert list(np.diff(pos) > 0) == [True] * 5          # …sorted
+    assert list(mean) == pytest.approx([100, 104, 108, 112, 116, 120])
+    # every ROI still counts: the slot means average their own members
+    assert float(mean.mean()) == pytest.approx(float(vals.mean()))
+    # exact-match grouping is still available, and still sees 23 positions
+    assert profile_by_position(px, vals, tol=0)[0].size == np.unique(px).size
+
+
 def test_grid_between_interpolates_anchor_centers():
     g = grid_between((20, 20), (200, 140), 2, 3, 28, 28)
     assert len(g) == 6

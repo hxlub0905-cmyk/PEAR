@@ -84,6 +84,10 @@ also gives an **attribute-ranking** table — which metric best separates the
 groups, scored by η² (variance explained) and Cohen's d — and a **group ×
 metric heatmap** for an at-a-glance overview, plus a summary table.
 
+Every chart keeps a readable shape — a distribution at roughly 4:3, a profile
+or a map wider but never a letterbox, where a real tilt and a flat line would
+look alike.
+
 The results read as one page, not two: the **figures fill the left column**,
 one per row and as large as the column allows, vertically centred; the numbers
 that annotate them — ranking, group × metric heatmap, summary table — stack
@@ -136,7 +140,10 @@ one number everywhere.
   - **dots** — one per ROI, at its own position.
   - **profile** (solid, the group's colour darkened) — the **mean of the ROIs
     at each position**; a column of ROIs sharing an X collapses into one point
-    of it. This is the line you read flatness off.
+    of it, and centres that miss each other by a few pixels count as the same
+    column (the same jitter tolerance the field tiling uses), so a hand-placed
+    grid gives one clean vertex per column instead of a kink per ROI. This is
+    the line you read flatness off.
   - **trend** (dashed, amber) — the **least-squares fit** through every ROI.
     Its slope is quoted as *slope per 100 px*; 0 means no tilt.
   - **group mean** (dashed, faint, the group's colour) — where a perfectly
@@ -211,7 +218,8 @@ pytest                              # headless core + offscreen UI smoke
 
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
   grid interpolation, outlier detection, heat colormap, heat-map cell edges,
-  jitter tolerance, per-ROI field cells, ROI alignment / spacing,
+  jitter tolerance (field tiling and profile grouping alike), per-ROI field
+  cells, ROI alignment / spacing,
   attribute separability / ranking, pixel histogram, ROI positions / linear
   trend / uniformity, project (de)serialize, between/within comparison,
   snapshot isolation.

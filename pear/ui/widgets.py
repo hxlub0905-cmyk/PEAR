@@ -179,9 +179,9 @@ class DistributionChart(QWidget):
             clean.append(item)
         self._series = clean
         if ctype == "position":
-            self.setMinimumHeight(230 + 15 * len(clean))
+            self.setMinimumHeight(300 + 15 * len(clean))
         elif ctype == "map":
-            self.setMinimumHeight(300)
+            self.setMinimumHeight(320)
         else:
             self.setMinimumHeight(212)
         self.update()
@@ -190,14 +190,24 @@ class DistributionChart(QWidget):
         # without one, a layout column with no stretch falls back to the
         # minimum and the figure comes out as narrow as it is allowed to be
         w = 720
-        return QSize(w, self.heightForWidth(w) if self.hasHeightForWidth()
-                     else self.minimumHeight())
+        return QSize(w, self.heightForWidth(w))
 
     def hasHeightForWidth(self) -> bool:
-        return self._ctype in ("box", "hist")
+        return True
 
     def heightForWidth(self, w: int) -> int:
-        return int(max(240, min(w * 0.78, 560)))
+        """Every chart keeps a shape you can read.
+
+        A distribution wants roughly 4:3. A profile or a map runs the width of
+        the column, and at a fixed height that turns into a letterbox: the
+        values are squeezed into a band a few pixels tall, where a real tilt
+        and a flat line look the same.
+        """
+        if self._ctype in ("box", "hist"):
+            h = min(w * 0.78, 560)
+        else:
+            h = min(w * 0.58, 640)
+        return int(max(self.minimumHeight(), h))
 
     # -- style overrides (title, axis names, tick counts, ranges) ------ #
     def _st(self, key: str, default=None):

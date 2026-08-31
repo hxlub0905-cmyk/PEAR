@@ -426,12 +426,18 @@ def heat_cells(rois: List[ROI], bounds=None) -> Dict[int, Tuple[float, float,
     return out
 
 
-def profile_by_position(positions, values, decimals: int = 0):
+def profile_by_position(positions, values, decimals: int = 0,
+                        tol: Optional[float] = None):
     """Collapse ROIs that share a position into one mean value.
 
     A grid of ROIs puts several boxes at the same X; averaging them gives the
-    single profile line you read flatness off. Returns ``(pos, mean)`` sorted
-    by position.
+    single profile line you read flatness off. Boxes placed by hand miss that
+    shared X by a pixel or two, which splits one column into several and puts
+    a kink in the line for every one of them — so centres within ``tol`` count
+    as the same position. ``tol=None`` measures it from the data
+    (:func:`jitter_tolerance`); pass 0 to group only exact matches.
+
+    Returns ``(pos, mean)`` sorted by position.
     """
     px = np.asarray(positions, dtype=np.float64)
     v = np.asarray(values, dtype=np.float64)
@@ -440,12 +446,22 @@ def profile_by_position(positions, values, decimals: int = 0):
     if px.size == 0:
         return np.empty(0), np.empty(0)
     keys = np.round(px, decimals)
-    uniq = np.unique(keys)
-    means = np.asarray([float(v[keys == k].mean()) for k in uniq],
-                       dtype=np.float64)
-    centers = np.asarray([float(px[keys == k].mean()) for k in uniq],
-                         dtype=np.float64)
-    return centers, means
+    if tol is None:
+        tol = jitter_tolerance(np.unique(keys))
+    slots = cluster_positions(keys, tol)
+    if slots.size == 0:
+        return np.empty(0), np.empty(0)
+    # each ROI joins the slot it is nearest to
+    idx = np.abs(keys[:, None] - slots[None, :]).argmin(axis=1)
+    centers, means = [], []
+    for k in range(slots.size):
+        sel = idx == k
+        if not sel.any():
+            continue
+        centers.append(float(px[sel].mean()))
+        means.append(float(v[sel].mean()))
+    return (np.asarray(centers, dtype=np.float64),
+            np.asarray(means, dtype=np.float64))
 
 
 # --------------------------------------------------------------------------- #
