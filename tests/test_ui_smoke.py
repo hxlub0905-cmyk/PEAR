@@ -941,6 +941,50 @@ def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):
                                   "line_width": 2.2}
 
 
+def test_locked_scales_reach_the_profile_and_the_map(app):
+    """The value lock was a histogram-only thing; every chart honours it now."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import ChartSettingsDialog
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win, 3, 4)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+
+    dlg = ChartSettingsDialog(None, ["GLV mean"], {})
+    dlg.v_auto.setChecked(False)
+    dlg.v_lo.setValue(40.0)
+    dlg.v_hi.setValue(210.0)
+    dlg.x_auto.setChecked(False)
+    dlg.x_lo.setValue(0.0)
+    dlg.x_hi.setValue(500.0)
+    dlg.y_auto.setChecked(False)
+    dlg.y_lo.setValue(0.0)
+    dlg.y_hi.setValue(400.0)
+    style = dlg.result_style()
+    assert (style["vmin"], style["vmax"]) == (40.0, 210.0)
+    assert (style["xmin"], style["xmax"]) == (0.0, 500.0)
+    ap.set_chart_style(style)
+
+    for ctype in ("position", "map", "box", "hist"):
+        ap._pick_ctype(ctype)
+        app.processEvents()
+        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+        assert c._locked(1.0, 2.0, "vmin", "vmax") == (40.0, 210.0)
+        assert c._locked(1.0, 2.0, "xmin", "xmax") == (0.0, 500.0)
+        assert c._locked(1.0, 2.0, "ymin", "ymax") == (0.0, 400.0)
+        c.grab()                       # every painter draws with them
+    assert c._range() == (40.0, 210.0)
+    # a nonsense range (hi below lo) is ignored rather than inverting an axis
+    ap.set_chart_style({"vmin": 9.0, "vmax": 1.0})
+    app.processEvents()
+    c = [x for x in ap._chart_widgets if x._ctype == "hist"][-1]
+    assert c._locked(3.0, 4.0, "vmin", "vmax") == (3.0, 4.0)
+
+
 def test_heat_scale_locks_the_image_overlay(app, tmp_path):
     """A locked range makes the same colour mean the same grey level."""
     import json

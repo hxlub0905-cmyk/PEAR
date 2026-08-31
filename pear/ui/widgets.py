@@ -337,6 +337,16 @@ class DistributionChart(QWidget):
         except (TypeError, ValueError):
             return default
 
+    def _locked(self, lo, hi, kmin: str, kmax: str):
+        """The range the user pinned, or the one the data suggested."""
+        vmin, vmax = self._st(kmin), self._st(kmax)
+        try:
+            if vmin is not None and vmax is not None and float(vmax) > float(vmin):
+                return float(vmin), float(vmax)
+        except (TypeError, ValueError):
+            pass
+        return lo, hi
+
     def _range(self):
         vmin, vmax = self._st("vmin"), self._st("vmax")
         if vmin is not None and vmax is not None and float(vmax) > float(vmin):
@@ -495,11 +505,15 @@ class DistributionChart(QWidget):
             lo, hi = lo - 0.5, hi + 0.5
         pad = (hi - lo) * 0.12
         lo, hi = lo - pad, hi + pad
+        lo, hi = self._locked(lo, hi, "vmin", "vmax")
         xlo, xhi = float(allx.min()), float(allx.max())
         if xhi - xlo < 1e-9:
             xlo, xhi = xlo - 1.0, xhi + 1.0
         xpad = (xhi - xlo) * 0.04
         xlo, xhi = xlo - xpad, xhi + xpad
+        # the position axis locks too: two runs of the same field only line up
+        # if both are drawn across the same span of the image
+        xlo, xhi = self._locked(xlo, xhi, "xmin", "xmax")
 
         # value labels can need many decimals on a near-flat profile, so size
         # the gutter from the widest one rather than a fixed guess
@@ -665,6 +679,8 @@ class DistributionChart(QWidget):
                 ye, ch = np.asarray([yc[0] - cw / 2, yc[0] + cw / 2]), cw
             xlo, xhi = float(xe[0]), float(xe[-1])   # cells fill the plot box
             ylo, yhi = float(ye[0]), float(ye[-1])
+            xlo, xhi = self._locked(xlo, xhi, "xmin", "xmax")
+            ylo, yhi = self._locked(ylo, yhi, "ymin", "ymax")
             if xhi - xlo < 1e-9:
                 xlo, xhi = xlo - 1.0, xhi + 1.0
             if yhi - ylo < 1e-9:
@@ -678,8 +694,8 @@ class DistributionChart(QWidget):
                     v0, v1 = v0 - 1.0, v1 + 1.0
                 return v0, v1
 
-            xlo, xhi = span(allx)
-            ylo, yhi = span(ally)
+            xlo, xhi = self._locked(*span(allx), "xmin", "xmax")
+            ylo, yhi = self._locked(*span(ally), "ymin", "ymax")
 
         top, left = 34, 52
         cbar_w = 54
@@ -1639,12 +1655,22 @@ class ChartSettingsDialog(QDialog):
         root.addWidget(head)
         vrow, self.v_auto, self.v_lo, self.v_hi = _num_row(
             "value axis", style, "vmin", "vmax")
+        xrow, self.x_auto, self.x_lo, self.x_hi = _num_row(
+            "position X", style, "xmin", "xmax", " px")
+        yrow, self.y_auto, self.y_lo, self.y_hi = _num_row(
+            "position Y", style, "ymin", "ymax", " px")
         hrow, self.h_auto, self.h_lo, self.h_hi = _num_row(
             "heat colours", style, "heat_vmin", "heat_vmax")
         root.addLayout(vrow)
+        root.addLayout(xrow)
+        root.addLayout(yrow)
         root.addLayout(hrow)
-        hint = QLabel("Locked scales are what make two images, two lots or two "
-                      "days comparable — with auto, each picks its own range.")
+        hint = QLabel("The value axis is the metric — the box plot's Y, the "
+                      "histogram's X, the profile's Y. Position X / Y are the "
+                      "image coordinates the profile and the heat map are "
+                      "drawn across. Locked scales are what make two images, "
+                      "two lots or two days comparable — with auto, each picks "
+                      "its own range.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -1691,8 +1717,8 @@ class ChartSettingsDialog(QDialog):
             ed.clear()
         self.xt_spin.setValue(5)
         self.yt_spin.setValue(5)
-        self.v_auto.setChecked(True)
-        self.h_auto.setChecked(True)
+        for auto in (self.v_auto, self.x_auto, self.y_auto, self.h_auto):
+            auto.setChecked(True)
         self.font_spin.setValue(8.0)
         self.label_spin.setValue(8.0)
         self.tick_bold_chk.setChecked(False)
@@ -1723,11 +1749,13 @@ class ChartSettingsDialog(QDialog):
         for key, state in self._colors.items():
             if not state["box"].isChecked():
                 out[key] = state["color"]
-        if not self.v_auto.isChecked() and self.v_hi.value() > self.v_lo.value():
-            out["vmin"], out["vmax"] = self.v_lo.value(), self.v_hi.value()
-        if not self.h_auto.isChecked() and self.h_hi.value() > self.h_lo.value():
-            out["heat_vmin"], out["heat_vmax"] = (self.h_lo.value(),
-                                                  self.h_hi.value())
+        for auto, lo, hi, kmin, kmax in (
+                (self.v_auto, self.v_lo, self.v_hi, "vmin", "vmax"),
+                (self.x_auto, self.x_lo, self.x_hi, "xmin", "xmax"),
+                (self.y_auto, self.y_lo, self.y_hi, "ymin", "ymax"),
+                (self.h_auto, self.h_lo, self.h_hi, "heat_vmin", "heat_vmax")):
+            if not auto.isChecked() and hi.value() > lo.value():
+                out[kmin], out[kmax] = lo.value(), hi.value()
         return out
 
 
