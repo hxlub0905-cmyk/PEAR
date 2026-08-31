@@ -59,12 +59,20 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
 Charts render four ways, switched by one toggle: **vertical box-and-strip**
 plots (toggle **whiskers** / strip **points**, and **own scale** to give each
 group its own value range — printed under the lane — when one group's spread
-is too small to see on the shared axis), an overlaid **histogram**, a
-**position profile**, or a **heat map**. Between-group mode
+is too small to see on the shared axis), an overlaid **histogram** (framed and
+ticked axes, a legend carrying each group's *n*, a **bins** count, and **%**
+to plot each group's share of its own *n* so groups of different size
+compare), a **position profile**, or a **heat map**. Between-group mode
 also gives an **attribute-ranking** table — which metric best separates the
 groups, scored by η² (variance explained) and Cohen's d — and a **group ×
-metric heatmap** for an at-a-glance overview, plus a summary table. **CSV
-export** carries every ROI's metrics and a per-group summary.
+metric heatmap** for an at-a-glance overview, plus a summary table.
+
+Charts are laid out as figures — a printable shape, capped in width and
+centred, rather than stretched across the window. **Export image** saves the
+chart sheet alone (no window chrome, no layout margin) as **PNG at 3×** for
+slides or **SVG** for a paper — the plots are hand-painted with QPainter, so
+the SVG comes out as real curves and text, not a bitmap in a wrapper. **CSV export** carries every ROI's metrics and a
+per-group summary.
 
 ## Uniformity — is the GLV flat across the field?
 
@@ -73,9 +81,17 @@ you ask when every box sits on the same layer (all on EPI, say) and you expect
 one number everywhere.
 
 - **Position profile** — the metric on Y against the ROI's **centre X or Y** on
-  X (switchable). Every ROI is a dot; ROIs sharing a position collapse into the
-  profile line; a dashed **least-squares trend** shows the tilt and a faint
-  dashed line marks the group mean. **A uniform field reads as a flat line.**
+  X (switchable). Three lines, keyed in the chart's top-right corner:
+  - **dots** — one per ROI, at its own position.
+  - **profile** (solid, the group's colour darkened) — the **mean of the ROIs
+    at each position**; a column of ROIs sharing an X collapses into one point
+    of it. This is the line you read flatness off.
+  - **trend** (dashed, amber) — the **least-squares fit** through every ROI.
+    Its slope is quoted as *slope per 100 px*; 0 means no tilt.
+  - **group mean** (dashed, faint, the group's colour) — where a perfectly
+    flat profile would sit, for the profile to be compared against.
+
+  **A uniform field reads as a flat line.**
 - **Heat map** — the ROIs at their own **(x, y)**, each coloured by the
   metric, with a colour bar. As **cells** (the default) every ROI is a block
   reaching the boundary it shares with its neighbour, so the field tiles with
@@ -149,7 +165,8 @@ pytest                              # headless core + offscreen UI smoke
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
   select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-  save/open, CSV export, position profile + heat map (cells / dots / values),
+  save/open, CSV + chart-image export, histogram bins / percent / tick steps,
+  chart aspect, position profile + heat map (cells / dots / values),
   independent ROI overlay toggles, field fill, value-label fitting, fit across
   a resize, ROI list values / ordering, status headline, per-lane box scale,
   list rebuilds leaving no stale rows.
@@ -187,7 +204,8 @@ git add -A && python tools/make_text_bundle.py && git add -A
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
 flagging with per-overlay toggles and a field fill, attribute ranking +
-group×metric heatmap, per-ROI pixel inspector,
+group×metric heatmap, chart image export (PNG / SVG),
+per-ROI pixel inspector,
 between-group and within-group comparison in a separate window (box, histogram,
 position profile, or spatial heat map), project save/open, CSV export.
 

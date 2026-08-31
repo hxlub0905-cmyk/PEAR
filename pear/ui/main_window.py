@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self.analysis.mode_changed.connect(self.on_cmp_mode)
         self.analysis.within_group_changed.connect(self.on_within_group)
         self.analysis.export_requested.connect(self.export_csv)
+        self.analysis.export_image_requested.connect(self.export_chart_image)
 
     # ------------------------------------------------------------------ #
     # image
@@ -794,6 +795,24 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # export
     # ------------------------------------------------------------------ #
+    def export_chart_image(self, path: Optional[str] = None) -> Optional[str]:
+        """Save the chart sheet for a report — PNG at 3×, or SVG for print."""
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(
+                self.analysis_window, "Export chart image", "pear_chart.png",
+                "PNG image (*.png);;SVG vector (*.svg)")
+            if not path:
+                return None
+        out = self.analysis.save_charts_image(path)
+        if out is None:
+            QMessageBox.warning(
+                self, "Export chart image",
+                "Nothing to export — open a chart first. SVG also needs "
+                "PySide6's QtSvg module.")
+            return None
+        self.statusBar().showMessage(f"Chart image written to {out}", 4000)
+        return out
+
     def export_csv(self, path: Optional[str] = None) -> Optional[str]:
         if self._image is None or not self._rois:
             return None

@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 53e1b07cbfb7f8680c4f38e35943695f899b9008 195 README.md
+#F 76aec3c5f74330216e21d68832fe5c69aee32c0d 213 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -337,12 +337,20 @@ if __name__ == "__main__":
 #Charts render four ways, switched by one toggle: **vertical box-and-strip**
 #plots (toggle **whiskers** / strip **points**, and **own scale** to give each
 #group its own value range — printed under the lane — when one group's spread
-#is too small to see on the shared axis), an overlaid **histogram**, a
-#**position profile**, or a **heat map**. Between-group mode
+#is too small to see on the shared axis), an overlaid **histogram** (framed and
+#ticked axes, a legend carrying each group's *n*, a **bins** count, and **%**
+#to plot each group's share of its own *n* so groups of different size
+#compare), a **position profile**, or a **heat map**. Between-group mode
 #also gives an **attribute-ranking** table — which metric best separates the
 #groups, scored by η² (variance explained) and Cohen's d — and a **group ×
-#metric heatmap** for an at-a-glance overview, plus a summary table. **CSV
-#export** carries every ROI's metrics and a per-group summary.
+#metric heatmap** for an at-a-glance overview, plus a summary table.
+#
+#Charts are laid out as figures — a printable shape, capped in width and
+#centred, rather than stretched across the window. **Export image** saves the
+#chart sheet alone (no window chrome, no layout margin) as **PNG at 3×** for
+#slides or **SVG** for a paper — the plots are hand-painted with QPainter, so
+#the SVG comes out as real curves and text, not a bitmap in a wrapper. **CSV export** carries every ROI's metrics and a
+#per-group summary.
 #
 ### Uniformity — is the GLV flat across the field?
 #
@@ -351,9 +359,17 @@ if __name__ == "__main__":
 #one number everywhere.
 #
 #- **Position profile** — the metric on Y against the ROI's **centre X or Y** on
-#  X (switchable). Every ROI is a dot; ROIs sharing a position collapse into the
-#  profile line; a dashed **least-squares trend** shows the tilt and a faint
-#  dashed line marks the group mean. **A uniform field reads as a flat line.**
+#  X (switchable). Three lines, keyed in the chart's top-right corner:
+#  - **dots** — one per ROI, at its own position.
+#  - **profile** (solid, the group's colour darkened) — the **mean of the ROIs
+#    at each position**; a column of ROIs sharing an X collapses into one point
+#    of it. This is the line you read flatness off.
+#  - **trend** (dashed, amber) — the **least-squares fit** through every ROI.
+#    Its slope is quoted as *slope per 100 px*; 0 means no tilt.
+#  - **group mean** (dashed, faint, the group's colour) — where a perfectly
+#    flat profile would sit, for the profile to be compared against.
+#
+#  **A uniform field reads as a flat line.**
 #- **Heat map** — the ROIs at their own **(x, y)**, each coloured by the
 #  metric, with a colour bar. As **cells** (the default) every ROI is a block
 #  reaching the boundary it shares with its neighbour, so the field tiles with
@@ -427,7 +443,8 @@ if __name__ == "__main__":
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
 #  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-#  save/open, CSV export, position profile + heat map (cells / dots / values),
+#  save/open, CSV + chart-image export, histogram bins / percent / tick steps,
+#  chart aspect, position profile + heat map (cells / dots / values),
 #  independent ROI overlay toggles, field fill, value-label fitting, fit across
 #  a resize, ROI list values / ordering, status headline, per-lane box scale,
 #  list rebuilds leaving no stale rows.
@@ -465,7 +482,8 @@ if __name__ == "__main__":
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 #grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
 #flagging with per-overlay toggles and a field fill, attribute ranking +
-#group×metric heatmap, per-ROI pixel inspector,
+#group×metric heatmap, chart image export (PNG / SVG),
+#per-ROI pixel inspector,
 #between-group and within-group comparison in a separate window (box, histogram,
 #position profile, or spatial heat map), project save/open, CSV export.
 #
@@ -2343,7 +2361,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F a52d733a150ac8dda347ee2cbabaa989baf4dacd 852 pear/ui/main_window.py
+#F 8e1df155069e933eb42a4390919c2d038a226058 871 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2603,6 +2621,7 @@ if __name__ == "__main__":
 #        self.analysis.mode_changed.connect(self.on_cmp_mode)
 #        self.analysis.within_group_changed.connect(self.on_within_group)
 #        self.analysis.export_requested.connect(self.export_csv)
+#        self.analysis.export_image_requested.connect(self.export_chart_image)
 #
 #    # ------------------------------------------------------------------ #
 #    # image
@@ -3140,6 +3159,24 @@ if __name__ == "__main__":
 #    # ------------------------------------------------------------------ #
 #    # export
 #    # ------------------------------------------------------------------ #
+#    def export_chart_image(self, path: Optional[str] = None) -> Optional[str]:
+#        """Save the chart sheet for a report — PNG at 3×, or SVG for print."""
+#        if not path:
+#            path, _ = QFileDialog.getSaveFileName(
+#                self.analysis_window, "Export chart image", "pear_chart.png",
+#                "PNG image (*.png);;SVG vector (*.svg)")
+#            if not path:
+#                return None
+#        out = self.analysis.save_charts_image(path)
+#        if out is None:
+#            QMessageBox.warning(
+#                self, "Export chart image",
+#                "Nothing to export — open a chart first. SVG also needs "
+#                "PySide6's QtSvg module.")
+#            return None
+#        self.statusBar().showMessage(f"Chart image written to {out}", 4000)
+#        return out
+#
 #    def export_csv(self, path: Optional[str] = None) -> Optional[str]:
 #        if self._image is None or not self._rois:
 #            return None
@@ -3393,7 +3430,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F fae50381cb161bcb82cb649c25da4b5ee1e8a31e 1805 pear/ui/widgets.py
+#F e9e0b54374ab1ff4d473334bd9464d8d19ee9324 2029 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3406,8 +3443,9 @@ if __name__ == "__main__":
 #from typing import Callable, List, Optional
 #
 #import numpy as np
-#from PySide6.QtCore import Qt, QPointF, QRectF, Signal
-#from PySide6.QtGui import QColor, QImage, QPainter, QPen
+#from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+#from PySide6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,
+#                           QRegion)
 #from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
 #                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
 #                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
@@ -3493,11 +3531,19 @@ if __name__ == "__main__":
 #        self._opts = {"points": True, "whiskers": True, "cells": True}
 #        self._axis = "x"
 #        self._trend = True
+#        self._xlabel = ""
 #        self.setMinimumHeight(212)
+#        # a distribution reads as a figure at roughly 4:3; letterboxed across
+#        # a wide window it flattens and the page looks lopsided
+#        sp = self.sizePolicy()
+#        sp.setHeightForWidth(True)
+#        self.setSizePolicy(sp)
 #
 #    def set_data(self, title: str, series: List[dict], ctype: str = "box",
-#                 opts=None, axis: str = "x", trend: bool = True) -> None:
+#                 opts=None, axis: str = "x", trend: bool = True,
+#                 xlabel: str = "") -> None:
 #        self._title = title
+#        self._xlabel = xlabel or title
 #        self._ctype = ctype
 #        self._opts = {"points": True, "whiskers": True, "cells": True,
 #                      **(opts or {})}
@@ -3527,6 +3573,19 @@ if __name__ == "__main__":
 #        else:
 #            self.setMinimumHeight(212)
 #        self.update()
+#
+#    def sizeHint(self) -> QSize:
+#        # without one, a layout column with no stretch falls back to the
+#        # minimum and the figure comes out as narrow as it is allowed to be
+#        w = 560 if self._ctype in ("box", "hist") else 720
+#        return QSize(w, self.heightForWidth(w) if self.hasHeightForWidth()
+#                     else self.minimumHeight())
+#
+#    def hasHeightForWidth(self) -> bool:
+#        return self._ctype in ("box", "hist")
+#
+#    def heightForWidth(self, w: int) -> int:
+#        return int(max(240, min(w * 0.78, 560)))
 #
 #    def paintEvent(self, _e) -> None:
 #        p = QPainter(self)
@@ -3811,6 +3870,38 @@ if __name__ == "__main__":
 #                       p.fontMetrics().elidedText(txt, Qt.ElideRight,
 #                                                  int(W - 14)))
 #            ly += 15
+#        self._line_key(p, left, top, right)
+#
+#    def _line_key(self, p: QPainter, left, top, right) -> None:
+#        """What each line in the profile means — three of them look alike."""
+#        rows = [("profile — mean at each position",
+#                 QColor(theme.INK2), Qt.SolidLine),
+#                ("trend — least squares fit",
+#                 QColor(theme.AMBER), Qt.DashLine),
+#                ("group mean — where flat would sit",
+#                 QColor(theme.INK3), Qt.DashLine)]
+#        p.setFont(theme.mono_font(8))
+#        fm = p.fontMetrics()
+#        wid = max(fm.horizontalAdvance(t) for t, _c, _st in rows) + 42
+#        hgt = 6 + 13 * len(rows)
+#        x = max(left + 4, right - wid - 4)
+#        box = QRectF(x, top + 4, wid, hgt)
+#        bg = QColor(theme.CARD)
+#        bg.setAlpha(225)
+#        p.setPen(QPen(QColor(theme.LINE), 1))
+#        p.setBrush(bg)
+#        p.drawRect(box)
+#        y = box.top() + 3
+#        for text, color, style in rows:
+#            pen = QPen(color, 1.8)
+#            pen.setStyle(style)
+#            p.setPen(pen)
+#            p.drawLine(QPointF(box.left() + 6, y + 6.5),
+#                       QPointF(box.left() + 30, y + 6.5))
+#            p.setPen(QColor(theme.INK2))
+#            p.drawText(QRectF(box.left() + 36, y, wid - 40, 13),
+#                       Qt.AlignLeft | Qt.AlignVCenter, text)
+#            y += 13
 #
 #    # -- spatial heat map (ROI layout coloured by the metric) ---------- #
 #    def _paint_map(self, p: QPainter) -> None:
@@ -3989,66 +4080,138 @@ if __name__ == "__main__":
 #
 #    # -- overlaid histogram ------------------------------------------- #
 #    def _paint_hist(self, p: QPainter) -> None:
+#        """Overlaid histogram, drawn as a figure rather than a sketch.
+#
+#        This is the chart that ends up in a report, so it is built like a
+#        published one: a framed plot box, both axes labelled and ticked, a
+#        legend carrying each group's n, and counts or per-group percent (which
+#        is what makes groups of different size comparable at all).
+#        """
+#        pct = bool(self._opts.get("hist_pct", False))
 #        lo, hi = self._range()
 #        allv = np.concatenate([s["values"] for s in self._series])
-#        nbins = int(np.clip(int(np.sqrt(allv.size)) + 1, 6, 22))
+#        nbins = int(self._opts.get("bins", 0) or 0)
+#        if nbins <= 0:                          # auto: √n, bounded
+#            nbins = int(np.clip(int(np.sqrt(allv.size)) + 1, 6, 22))
+#        nbins = int(np.clip(nbins, 2, 80))
 #        edges = np.linspace(lo, hi, nbins + 1)
 #        counts = [np.histogram(s["values"], bins=edges)[0] for s in self._series]
-#        max_c = max(1, max(int(c.max()) for c in counts))
-#        top, left = 36, 48
-#        bottom = self.height() - 40
-#        right = self.width() - 12
+#        if pct:
+#            bars = [c / max(1.0, float(c.sum())) * 100.0 for c in counts]
+#        else:
+#            bars = [c.astype(np.float64) for c in counts]
+#        peak = max([float(b.max()) for b in bars] + [0.0])
+#        step = _nice_step(peak if peak > 0 else 1.0, 4)
+#        if not pct:
+#            step = max(1.0, round(step))        # counts are whole numbers
+#        ymax = max(step, float(np.ceil(peak / step) * step))
+#        # ticks land on the step, not on ymax/4 — 0 · 10 · 20 · 30 rather than
+#        # 0 · 7.5 · 15 · 22.5 rounded to "8" and "22" in the label
+#        yticks = [step * k for k in range(int(round(ymax / step)) + 1)]
+#
+#        p.setFont(theme.mono_font(8))
+#        fm = p.fontMetrics()
+#        ylabs = [(f"{v:.0f}%" if pct else f"{v:.0f}") for v in yticks]
+#        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ylabs) + 26,
+#                           44, 120))
+#        top = 38
+#        bottom = self.height() - 44
+#        right = self.width() - 14
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
 #
 #        def X(v):
 #            return left + (v - lo) / (hi - lo) * W
 #
-#        def Yc(c):
-#            return bottom - c / max_c * H
+#        def Y(c):
+#            return bottom - c / ymax * H
 #
-#        p.setPen(QPen(QColor(theme.LINE2), 1))
-#        p.drawLine(left, bottom, right, bottom)
-#        p.setFont(theme.mono_font(8))
-#        p.setPen(QColor(theme.INK3))
-#        for t in range(5):                      # value axis (X)
-#            gx = left + W * t / 4.0
-#            p.drawText(QRectF(gx - 24, bottom + 2, 48, 12),
-#                       Qt.AlignHCenter, _fmt(lo + (hi - lo) * t / 4.0))
-#        for t in range(3):                      # count axis (Y)
-#            gy = bottom - H * t / 2.0
-#            p.drawText(QRectF(16, gy - 6, left - 20, 12),
-#                       Qt.AlignRight | Qt.AlignVCenter, str(int(round(max_c * t / 2.0))))
-#        self._ytitle(p, "count")
-#        p.setPen(QColor(theme.INK3))
-#        p.setFont(theme.mono_font(8))
-#        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter, "value")
-#
-#        for s, c in zip(self._series, counts):  # overlaid bars
+#        # grid + value axis
+#        for v, lab in zip(yticks, ylabs):
+#            gy = Y(v)
+#            p.setPen(QPen(QColor(theme.LINE2), 1))
+#            p.drawLine(left, int(gy), right, int(gy))
+#            p.setPen(QColor(theme.INK3))
+#            p.drawLine(left - 4, int(gy), left, int(gy))        # tick mark
+#            p.drawText(QRectF(8, gy - 6, left - 12, 12),
+#                       Qt.AlignRight | Qt.AlignVCenter, lab)
+#        # bars, back to front so a thin group is never buried
+#        order = sorted(range(len(self._series)),
+#                       key=lambda i: -float(bars[i].sum()))
+#        for i in order:
+#            s, b = self._series[i], bars[i]
 #            col = QColor(s["color"])
 #            fill = QColor(col)
-#            fill.setAlpha(90)
+#            fill.setAlpha(70 if len(self._series) > 1 else 120)
 #            p.setBrush(fill)
-#            p.setPen(QPen(col, 1.2))
-#            for b in range(nbins):
-#                if c[b] == 0:
+#            p.setPen(QPen(col, 1.4))
+#            for k in range(nbins):
+#                if b[k] <= 0:
 #                    continue
-#                x0, x1 = X(edges[b]), X(edges[b + 1])
-#                y = Yc(int(c[b]))
-#                p.drawRect(int(x0) + 1, int(y),
-#                           max(1, int(x1 - x0) - 2), int(bottom - y))
+#                x0, x1 = X(edges[k]), X(edges[k + 1])
+#                y = Y(float(b[k]))
+#                p.drawRect(QRectF(x0, y, max(1.0, x1 - x0), bottom - y))
+#        # frame: only the two axes carry a line, as a figure does
+#        p.setPen(QPen(QColor(theme.INK3), 1.2))
+#        p.setBrush(Qt.NoBrush)
+#        p.drawLine(left, top, left, bottom)
+#        p.drawLine(left, bottom, right, bottom)
+#        # position axis
+#        p.setFont(theme.mono_font(8))
+#        span = hi - lo
+#        for t in range(5):
+#            gx = left + W * t / 4.0
+#            val = lo + span * t / 4.0
+#            p.setPen(QColor(theme.INK3))
+#            p.drawLine(int(gx), bottom, int(gx), bottom + 4)
+#            p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
+#                       _fmt_span(val, span))
+#        p.setPen(QColor(theme.INK2))
+#        p.setFont(theme.mono_font(8, weight=700))
+#        p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
+#                   self._xlabel or "value")
+#        self._ytitle(p, "share of group (%)" if pct else "count")
+#        self._legend(p, left, top, right,
+#                     [(s["label"], s["color"], f"n={s['values'].size}")
+#                      for s in self._series])
 #
-#        lx = left                               # legend
+#    def _legend(self, p: QPainter, left, top, right, rows) -> None:
+#        """Keyed legend, boxed at the top right of the plot area."""
+#        if not rows:
+#            return
 #        p.setFont(theme.mono_font(8, weight=700))
 #        fm = p.fontMetrics()
-#        for s in self._series:
-#            col = QColor(s["color"])
-#            p.setBrush(col)
+#        texts = [f"{lab}  {extra}" if extra else lab for lab, _c, extra in rows]
+#        wid = max(fm.horizontalAdvance(t) for t in texts) + 26
+#        hgt = 6 + 13 * len(rows)
+#        x = max(left + 4, right - wid - 4)
+#        box = QRectF(x, top + 4, wid, hgt)
+#        bg = QColor(theme.CARD)
+#        bg.setAlpha(225)
+#        p.setPen(QPen(QColor(theme.LINE), 1))
+#        p.setBrush(bg)
+#        p.drawRect(box)
+#        y = box.top() + 3
+#        for (lab, color, _extra), txt in zip(rows, texts):
 #            p.setPen(Qt.NoPen)
-#            p.drawRect(int(lx), 25, 8, 8)
+#            p.setBrush(QColor(color))
+#            p.drawRect(QRectF(box.left() + 6, y + 3, 9, 7))
 #            p.setPen(QColor(theme.INK2))
-#            p.drawText(int(lx) + 12, 33, s["label"])
-#            lx += 12 + fm.horizontalAdvance(s["label"]) + 14
+#            p.drawText(QRectF(box.left() + 20, y, wid - 24, 13),
+#                       Qt.AlignLeft | Qt.AlignVCenter, txt)
+#            y += 13
+#
+#
+#def _nice_step(span: float, target: int = 4) -> float:
+#    """A round tick step (1 / 2 / 2.5 / 5 × 10ⁿ) near ``span / target``."""
+#    if not np.isfinite(span) or span <= 0:
+#        return 1.0
+#    raw = span / max(1, target)
+#    mag = 10.0 ** np.floor(np.log10(raw))
+#    for m in (1.0, 2.0, 2.5, 5.0):
+#        if raw <= m * mag:
+#            return float(m * mag)
+#    return float(10.0 * mag)
 #
 #
 #def _fmt(v: float) -> str:
@@ -4681,6 +4844,7 @@ if __name__ == "__main__":
 #    mode_changed = Signal(str)              # "between" | "within"
 #    within_group_changed = Signal(str)
 #    export_requested = Signal()
+#    export_image_requested = Signal()
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
@@ -4730,6 +4894,24 @@ if __name__ == "__main__":
 #            chk.setChecked(True)
 #            chk.toggled.connect(self._on_chart_opts)
 #            head.addWidget(chk)
+#        self.bins_spin = QSpinBox()
+#        self.bins_spin.setRange(0, 80)
+#        self.bins_spin.setValue(0)
+#        self.bins_spin.setPrefix("bins ")
+#        self.bins_spin.setSpecialValueText("bins auto")
+#        self.bins_spin.setFixedWidth(88)
+#        self.bins_spin.setFixedHeight(28)
+#        self.bins_spin.setToolTip("Histogram bin count. 0 = √n, bounded.")
+#        self.bins_spin.valueChanged.connect(self._on_chart_opts)
+#        self.bins_spin.setVisible(False)
+#        head.addWidget(self.bins_spin)
+#        self.pct_chk = QCheckBox("%")
+#        self.pct_chk.setToolTip(
+#            "Plot each group's share of its own n instead of raw counts — the "
+#            "only way two groups of different size compare.")
+#        self.pct_chk.toggled.connect(self._on_chart_opts)
+#        self.pct_chk.setVisible(False)
+#        head.addWidget(self.pct_chk)
 #        self.ownscale_chk = QCheckBox("own scale")
 #        self.ownscale_chk.setToolTip(
 #            "Give every group its own value range, printed under the lane. "
@@ -4775,6 +4957,13 @@ if __name__ == "__main__":
 #        self.sub = QLabel("")
 #        self.sub.setObjectName("Hint")
 #        head.addWidget(self.sub)
+#        self.image_btn = QPushButton("Export image")
+#        self.image_btn.setToolTip(
+#            "Save the charts as a picture — PNG at 3× for slides, or SVG for "
+#            "a paper.")
+#        self.image_btn.clicked.connect(self.export_image_requested)
+#        self.image_btn.setEnabled(False)
+#        head.addWidget(self.image_btn)
 #        self.export_btn = QPushButton("Export CSV")
 #        self.export_btn.setObjectName("Primary")
 #        self.export_btn.clicked.connect(self.export_requested)
@@ -4797,6 +4986,7 @@ if __name__ == "__main__":
 #        self._pos_axis = "x"
 #        self._last_result = None
 #        self._suppress = False
+#        self._chart_host: Optional[QWidget] = None
 #
 #    def _pick_mode(self, mode: str) -> None:
 #        self._mode = mode
@@ -4814,6 +5004,8 @@ if __name__ == "__main__":
 #            chk.setEnabled(t == "box")
 #            chk.setVisible(t not in ("position", "map"))
 #        self.ownscale_chk.setVisible(t == "box")
+#        for w in (self.bins_spin, self.pct_chk):
+#            w.setVisible(t == "hist")
 #        self.axis_box.setVisible(t == "position")
 #        self.trend_chk.setVisible(t == "position")
 #        for chk in (self.cells_chk, self.mapval_chk):
@@ -4874,6 +5066,7 @@ if __name__ == "__main__":
 #            self.selector.setVisible(False)
 #        self._suppress = False
 #        self.export_btn.setEnabled(bool(enabled))
+#        self.image_btn.setEnabled(bool(enabled))
 #
 #    def set_computing(self, on: bool) -> None:
 #        self.busy.setText("· working…" if on else "")
@@ -4884,6 +5077,7 @@ if __name__ == "__main__":
 #
 #    def _render_body(self, result) -> None:
 #        _clear(self.body_lay)
+#        self._chart_host = None
 #        self.sub.setText(result.subtitle)
 #        if result.empty:
 #            self._empty(result.empty)
@@ -4900,6 +5094,58 @@ if __name__ == "__main__":
 #            self._heatmap_card(result.heat)
 #        if result.table_rows:
 #            self._table(result.table_headers, result.table_rows)
+#
+#    def save_charts_image(self, path: str, scale: float = 3.0) -> Optional[str]:
+#        """Save the chart sheet as a picture: SVG if the name says so, else PNG.
+#
+#        PNG is rendered at ``scale`` × the on-screen size — a screenshot of a
+#        chart is unreadable once a projector or a journal column gets hold of
+#        it. SVG stays vector, which is what a paper wants; the charts are
+#        hand-painted with QPainter, so it comes out as real curves and text
+#        rather than a bitmap in a wrapper.
+#        """
+#        host = self._chart_host
+#        charts = (host.findChildren(DistributionChart)
+#                  if host is not None else [])
+#        if not charts:
+#            return None
+#        # only the figures travel — the layout's slack either side of them is
+#        # margin on screen and would be dead white space in a document
+#        area = charts[0].geometry()
+#        for c in charts[1:]:
+#            area = area.united(c.geometry())
+#        w, h = max(1, area.width()), max(1, area.height())
+#        if str(path).lower().endswith(".svg"):
+#            try:
+#                from PySide6.QtSvg import QSvgGenerator
+#            except ImportError:
+#                return None
+#            gen = QSvgGenerator()
+#            gen.setFileName(path)
+#            gen.setSize(QSize(w, h))
+#            gen.setViewBox(area)          # the viewBox does the cropping
+#            gen.setTitle(self._title_for_export())
+#            painter = QPainter()
+#            if not painter.begin(gen):
+#                return None
+#            painter.fillRect(QRectF(area), QColor(theme.CARD))
+#            host.render(painter, QPoint(0, 0), QRegion(area))
+#            painter.end()
+#            return path
+#        scale = float(np.clip(scale, 1.0, 8.0))
+#        full = QPixmap(int(host.width() * scale), int(host.height() * scale))
+#        full.setDevicePixelRatio(scale)
+#        full.fill(QColor(theme.CARD))
+#        host.render(full)
+#        pm = full.copy(QRect(int(area.x() * scale), int(area.y() * scale),
+#                             int(w * scale), int(h * scale)))
+#        pm.setDevicePixelRatio(scale)
+#        return path if pm.save(path) else None
+#
+#    def _title_for_export(self) -> str:
+#        charts = (self._chart_host.findChildren(DistributionChart)
+#                  if self._chart_host is not None else [])
+#        return " · ".join(c._title for c in charts) or "PEAR chart"
 #
 #    def _ranking_card(self, ranking) -> None:
 #        host = QFrame()
@@ -4994,12 +5240,16 @@ if __name__ == "__main__":
 #
 #    def _chart_grid(self, charts) -> None:
 #        grid_host = QWidget()
+#        grid_host.setObjectName("ChartSheet")
+#        self._chart_host = grid_host
 #        grid = QGridLayout(grid_host)
 #        grid.setContentsMargins(0, 0, 0, 0)
 #        grid.setSpacing(10)
 #        opts = {"points": self.points_chk.isChecked(),
 #                "whiskers": self.whiskers_chk.isChecked(),
 #                "own_scale": self.ownscale_chk.isChecked(),
+#                "bins": int(self.bins_spin.value()),
+#                "hist_pct": self.pct_chk.isChecked(),
 #                "cells": self.cells_chk.isChecked(),
 #                "map_values": (self.mapval_chk.isChecked()
 #                               and self.cells_chk.isChecked())}
@@ -5007,11 +5257,22 @@ if __name__ == "__main__":
 #        for i, (title, series) in enumerate(charts):
 #            chart = DistributionChart()
 #            chart.set_data(title, series, self._chart_type, opts,
-#                           axis=self._pos_axis, trend=self.trend_chk.isChecked())
+#                           axis=self._pos_axis, trend=self.trend_chk.isChecked(),
+#                           xlabel=title)
 #            if wide:
-#                grid.addWidget(chart, i, 0, 1, 2)
-#            else:
-#                grid.addWidget(chart, i // 2, i % 2)
+#                grid.addWidget(chart, i, 0, 1, 4)
+#                continue
+#            # A distribution is a figure, not a banner: cap its width so it
+#            # keeps a printable shape instead of stretching across the window
+#            # and leaving everything under it looking bottom-heavy.
+#            chart.setMinimumWidth(340)   # or the stretch columns eat it all
+#            chart.setMaximumWidth(560)
+#            grid.addWidget(chart, i // 2, 1 + i % 2)
+#        if not wide:
+#            # the slack sits either side, so one figure reads as a plate on a
+#            # page rather than a banner pinned to the left margin
+#            grid.setColumnStretch(0, 1)
+#            grid.setColumnStretch(3, 1)
 #        self.body_lay.addWidget(grid_host)
 #
 #    def _table(self, headers, rows) -> None:
@@ -5672,7 +5933,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F c2c523c385f037d958cfeab91a6b96f3cae090a3 723 tests/test_ui_smoke.py
+#F 521fe22557c69d1f3c81020f8364362bcc3ae986 814 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -6344,6 +6605,97 @@ if __name__ == "__main__":
 #    assert win2.stage_bar.alpha_spin.value() == 30
 #    assert win2.image_view._roi_values == {}
 #    assert win2.image_view._heat_alpha == round(30 * 2.55)
+#
+#
+#def test_nice_step_lands_on_round_numbers():
+#    from pear.ui.widgets import _nice_step
+#    assert _nice_step(30, 4) == 10.0            # 0 · 10 · 20 · 30, not 7.5
+#    assert _nice_step(100, 4) == 25.0
+#    assert _nice_step(8, 4) == 2.0
+#    assert _nice_step(0.4, 4) == 0.1
+#    assert _nice_step(0, 4) == 1.0              # degenerate input never breaks
+#    assert _nice_step(float("nan"), 4) == 1.0
+#
+#
+#def test_histogram_bins_and_percent_are_render_only(app):
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("hist")
+#    app.processEvents()
+#    assert not ap.bins_spin.isHidden() and not ap.pct_chk.isHidden()
+#    ap.bins_spin.setValue(12)
+#    ap.pct_chk.setChecked(True)
+#    app.processEvents()
+#    hists = [c for c in ap.body.findChildren(DistributionChart)
+#             if c._ctype == "hist" and c._opts.get("bins") == 12]
+#    assert hists and hists[-1]._opts["hist_pct"] is True
+#    for c in hists:
+#        c.grab()                       # exercises the percent painter
+#    ap._pick_ctype("box")              # bins/% belong to the histogram alone
+#    assert ap.bins_spin.isHidden() and ap.pct_chk.isHidden()
+#
+#
+#def test_distribution_charts_keep_a_printable_shape(app):
+#    """A figure at 4:3-ish, not a banner stretched across the window."""
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    win.analysis_window.resize(1400, 900)
+#    win.analysis_window.show()
+#    win.analysis._pick_ctype("hist")
+#    app.processEvents()
+#    app.processEvents()
+#    charts = [c for c in win.analysis.body.findChildren(DistributionChart)
+#              if c._ctype == "hist" and c.isVisible()]
+#    assert charts
+#    c = charts[-1]
+#    assert 340 <= c.width() <= 560                     # capped, not stretched
+#    assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
+#
+#
+#def test_export_chart_image_writes_png_and_svg(app, tmp_path):
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    win.analysis_window.resize(1200, 800)
+#    win.analysis_window.show()
+#    ap._pick_ctype("hist")
+#    app.processEvents()
+#    app.processEvents()
+#    assert ap.image_btn.isEnabled()
+#
+#    png = tmp_path / "fig.png"
+#    assert win.export_chart_image(str(png)) == str(png)
+#    from PySide6.QtGui import QImage
+#    img = QImage(str(png))
+#    chart = [c for c in ap.body.findChildren(DistributionChart)
+#             if c._ctype == "hist" and c.isVisible()][-1]
+#    # only the figure travels, at 3× — no dead margin from the layout's slack
+#    assert img.width() == chart.width() * 3
+#    assert img.height() == chart.height() * 3
+#
+#    svg = tmp_path / "fig.svg"
+#    if win.export_chart_image(str(svg)) is not None:    # QtSvg is optional
+#        text = svg.read_text(encoding="utf-8")
+#        assert "<svg" in text and f"{chart.width()} {chart.height()}" in text
 #
 #
 #def test_position_chart_without_positions_is_safe(app):

@@ -671,6 +671,97 @@ def test_overlay_toggles_are_independent(app, tmp_path):
     assert win2.image_view._heat_alpha == round(30 * 2.55)
 
 
+def test_nice_step_lands_on_round_numbers():
+    from pear.ui.widgets import _nice_step
+    assert _nice_step(30, 4) == 10.0            # 0 · 10 · 20 · 30, not 7.5
+    assert _nice_step(100, 4) == 25.0
+    assert _nice_step(8, 4) == 2.0
+    assert _nice_step(0.4, 4) == 0.1
+    assert _nice_step(0, 4) == 1.0              # degenerate input never breaks
+    assert _nice_step(float("nan"), 4) == 1.0
+
+
+def test_histogram_bins_and_percent_are_render_only(app):
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("hist")
+    app.processEvents()
+    assert not ap.bins_spin.isHidden() and not ap.pct_chk.isHidden()
+    ap.bins_spin.setValue(12)
+    ap.pct_chk.setChecked(True)
+    app.processEvents()
+    hists = [c for c in ap.body.findChildren(DistributionChart)
+             if c._ctype == "hist" and c._opts.get("bins") == 12]
+    assert hists and hists[-1]._opts["hist_pct"] is True
+    for c in hists:
+        c.grab()                       # exercises the percent painter
+    ap._pick_ctype("box")              # bins/% belong to the histogram alone
+    assert ap.bins_spin.isHidden() and ap.pct_chk.isHidden()
+
+
+def test_distribution_charts_keep_a_printable_shape(app):
+    """A figure at 4:3-ish, not a banner stretched across the window."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    win.analysis_window.resize(1400, 900)
+    win.analysis_window.show()
+    win.analysis._pick_ctype("hist")
+    app.processEvents()
+    app.processEvents()
+    charts = [c for c in win.analysis.body.findChildren(DistributionChart)
+              if c._ctype == "hist" and c.isVisible()]
+    assert charts
+    c = charts[-1]
+    assert 340 <= c.width() <= 560                     # capped, not stretched
+    assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
+
+
+def test_export_chart_image_writes_png_and_svg(app, tmp_path):
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    win.analysis_window.resize(1200, 800)
+    win.analysis_window.show()
+    ap._pick_ctype("hist")
+    app.processEvents()
+    app.processEvents()
+    assert ap.image_btn.isEnabled()
+
+    png = tmp_path / "fig.png"
+    assert win.export_chart_image(str(png)) == str(png)
+    from PySide6.QtGui import QImage
+    img = QImage(str(png))
+    chart = [c for c in ap.body.findChildren(DistributionChart)
+             if c._ctype == "hist" and c.isVisible()][-1]
+    # only the figure travels, at 3× — no dead margin from the layout's slack
+    assert img.width() == chart.width() * 3
+    assert img.height() == chart.height() * 3
+
+    svg = tmp_path / "fig.svg"
+    if win.export_chart_image(str(svg)) is not None:    # QtSvg is optional
+        text = svg.read_text(encoding="utf-8")
+        assert "<svg" in text and f"{chart.width()} {chart.height()}" in text
+
+
 def test_position_chart_without_positions_is_safe(app):
     """SNR has no per-ROI position — the chart says so instead of crashing."""
     from pear.ui.main_window import MainWindow
