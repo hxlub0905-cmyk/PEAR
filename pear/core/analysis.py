@@ -391,6 +391,71 @@ def profile_by_position(positions, values, decimals: int = 0):
 
 
 # --------------------------------------------------------------------------- #
+# Tidying a selection — alignment and spacing
+# --------------------------------------------------------------------------- #
+ALIGN_MODES = ("left", "hcenter", "right", "top", "vcenter", "bottom")
+
+
+def align_rects(rects: List[Rect], mode: str) -> List[Rect]:
+    """Pull rectangles onto one edge (or one centre line) of their bounding box.
+
+    ROIs dropped by hand sit a few pixels off each other, which is invisible
+    until the field heat map tiles them: the cell boundaries fall midway
+    between centres, so a stray pixel of offset turns a clean grid into a
+    staircase. Order is preserved and anything under two rects is returned
+    unchanged.
+    """
+    if len(rects) < 2 or mode not in ALIGN_MODES:
+        return list(rects)
+    xs = [r[0] for r in rects]
+    ys = [r[1] for r in rects]
+    rights = [r[0] + r[2] for r in rects]
+    bottoms = [r[1] + r[3] for r in rects]
+    out: List[Rect] = []
+    for x, y, w, h in rects:
+        if mode == "left":
+            x = min(xs)
+        elif mode == "right":
+            x = max(rights) - w
+        elif mode == "hcenter":
+            x = int(round((min(xs) + max(rights)) / 2.0 - w / 2.0))
+        elif mode == "top":
+            y = min(ys)
+        elif mode == "bottom":
+            y = max(bottoms) - h
+        elif mode == "vcenter":
+            y = int(round((min(ys) + max(bottoms)) / 2.0 - h / 2.0))
+        out.append((int(x), int(y), int(w), int(h)))
+    return out
+
+
+def distribute_rects(rects: List[Rect], axis: str = "x") -> List[Rect]:
+    """Even the spacing of rect centres between the two outermost ones.
+
+    The heat map's cells are as wide as the gap to the next ROI, so uneven
+    spacing reads as cells of uneven size — a pattern in the picture that is
+    not in the measurement. Fewer than three rects have no gap to even out.
+    """
+    if len(rects) < 3:
+        return list(rects)
+    i = 1 if str(axis).lower() == "y" else 0
+    centers = [roi_center(r)[i] for r in rects]
+    order = sorted(range(len(rects)), key=lambda k: centers[k])
+    lo, hi = centers[order[0]], centers[order[-1]]
+    step = (hi - lo) / (len(rects) - 1)
+    out = list(rects)
+    for slot, k in enumerate(order):
+        x, y, w, h = rects[k]
+        want = lo + step * slot
+        if i == 0:
+            x = int(round(want - w / 2.0))
+        else:
+            y = int(round(want - h / 2.0))
+        out[k] = (int(x), int(y), int(w), int(h))
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Multi-add helpers
 # --------------------------------------------------------------------------- #
 def grid_between(tl_center: Tuple[float, float], br_center: Tuple[float, float],

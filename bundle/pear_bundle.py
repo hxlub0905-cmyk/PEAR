@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F f11089a40f4d704a9982e456aeb86eded42e86ac 232 README.md
+#F 4848de0afcc4377af24d250ab599d490c5219a35 251 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -308,6 +308,12 @@ if __name__ == "__main__":
 #  - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
 #    duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
 #    group.
+#  - **align** — pull the selection (or the whole active group, with nothing
+#    selected) onto one edge — left / centre / right, top / middle / bottom —
+#    or even out its horizontal / vertical spacing. Hand-placed ROIs sit a few
+#    pixels off each other, which is invisible until *fill field* tiles them:
+#    the cell edges fall midway between centres, so a stray offset turns a
+#    clean grid into a staircase.
 #  - The ROI list carries each ROI's shown metric and sorts by it (**order**:
 #    as placed / value ↑ / value ↓), so the odd one out is one glance away.
 #- **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
@@ -328,6 +334,11 @@ if __name__ == "__main__":
 #    box stays outlined on top.
 #  - **flag outliers** — Tukey fences within each group.
 #
+#  Under a heat overlay colour means one thing — the value — so the ROI
+#  outlines drop to neutral ink over a white halo rather than the group's
+#  colour, which would otherwise read as a point on the scale (an amber group
+#  against the ramp's amber midpoint especially).
+#
 ### Comparisons (in a separate Analysis window)
 #
 #- **Between groups** — the distribution of a metric across every ROI in each
@@ -345,9 +356,15 @@ if __name__ == "__main__":
 #groups, scored by η² (variance explained) and Cohen's d — and a **group ×
 #metric heatmap** for an at-a-glance overview, plus a summary table.
 #
-#Charts are laid out as figures — a printable shape, capped in width and
-#centred, rather than stretched across the window. **CSV export** carries every
-#ROI's metrics and a per-group summary.
+#The results read as one page, not two: the **figures fill the left column**,
+#one per row and as large as the column allows, vertically centred; the numbers
+#that annotate them — ranking, group × metric heatmap, summary table — stack
+#down the right. Every chart carries the plain furniture a figure in a report
+#needs: a boxed plot area with inward tick marks, labelled axes, and
+#observations drawn as **open markers** so a scatter never fuses into the lines
+#drawn in the same colour beside it.
+#
+#**CSV export** carries every ROI's metrics and a per-group summary.
 #
 ### Every view exports as a picture
 #
@@ -365,8 +382,10 @@ if __name__ == "__main__":
 #  the ROIs it is the key for.
 #- **The results** — *Export image ▾* in the Analysis window offers exactly
 #  the sections the current result has: **Charts** (the figures alone, cropped
-#  out of the layout's slack), **Attribute ranking**, **Group × metric
-#  heatmap**, **Summary table**, or **Everything** as one sheet.
+#  out of the layout's slack) and, when there is more than one, **each chart
+#  on its own** — one figure per file is what a document actually takes —
+#  plus **Attribute ranking**, **Group × metric heatmap**, **Summary table**,
+#  or **Everything** as one sheet.
 #- **One ROI's pixels** — *Export image* in the ROI inspector window.
 #
 ### Uniformity — is the GLV flat across the field?
@@ -451,7 +470,7 @@ if __name__ == "__main__":
 #
 #- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
 #  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
-#  per-ROI field cells,
+#  per-ROI field cells, ROI alignment / spacing,
 #  attribute separability / ranking, pixel histogram, ROI positions / linear
 #  trend / uniformity, project (de)serialize, between/within comparison,
 #  snapshot isolation.
@@ -465,8 +484,8 @@ if __name__ == "__main__":
 #  histogram bins / percent / tick steps,
 #  chart aspect, position profile + heat map (cells / dots / values),
 #  independent ROI overlay toggles, field fill, value-label fitting, fit across
-#  a resize, ROI list values / ordering, status headline, per-lane box scale,
-#  list rebuilds leaving no stale rows.
+#  a resize, ROI list values / ordering, align buttons, status headline,
+#  per-lane box scale, list rebuilds leaving no stale rows.
 #
 ### Repository layout
 #
@@ -499,7 +518,7 @@ if __name__ == "__main__":
 ### Scope (V1)
 #
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-#grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
+#grid / box-select / align), GLV + within-group SNR metrics, value heatmap + outlier
 #flagging with per-overlay toggles and a field fill, attribute ranking +
 #group×metric heatmap, image export of every view (PNG / SVG),
 #per-ROI pixel inspector,
@@ -798,7 +817,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F 8ca568fcf6884e6d6d5dbf2c04f105a9b1d28679 591 pear/core/analysis.py
+#F fd139e10da4fbdc13b18da290ed13b50fa5bd651 656 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -1192,6 +1211,71 @@ if __name__ == "__main__":
 #
 #
 ## --------------------------------------------------------------------------- #
+## Tidying a selection — alignment and spacing
+## --------------------------------------------------------------------------- #
+#ALIGN_MODES = ("left", "hcenter", "right", "top", "vcenter", "bottom")
+#
+#
+#def align_rects(rects: List[Rect], mode: str) -> List[Rect]:
+#    """Pull rectangles onto one edge (or one centre line) of their bounding box.
+#
+#    ROIs dropped by hand sit a few pixels off each other, which is invisible
+#    until the field heat map tiles them: the cell boundaries fall midway
+#    between centres, so a stray pixel of offset turns a clean grid into a
+#    staircase. Order is preserved and anything under two rects is returned
+#    unchanged.
+#    """
+#    if len(rects) < 2 or mode not in ALIGN_MODES:
+#        return list(rects)
+#    xs = [r[0] for r in rects]
+#    ys = [r[1] for r in rects]
+#    rights = [r[0] + r[2] for r in rects]
+#    bottoms = [r[1] + r[3] for r in rects]
+#    out: List[Rect] = []
+#    for x, y, w, h in rects:
+#        if mode == "left":
+#            x = min(xs)
+#        elif mode == "right":
+#            x = max(rights) - w
+#        elif mode == "hcenter":
+#            x = int(round((min(xs) + max(rights)) / 2.0 - w / 2.0))
+#        elif mode == "top":
+#            y = min(ys)
+#        elif mode == "bottom":
+#            y = max(bottoms) - h
+#        elif mode == "vcenter":
+#            y = int(round((min(ys) + max(bottoms)) / 2.0 - h / 2.0))
+#        out.append((int(x), int(y), int(w), int(h)))
+#    return out
+#
+#
+#def distribute_rects(rects: List[Rect], axis: str = "x") -> List[Rect]:
+#    """Even the spacing of rect centres between the two outermost ones.
+#
+#    The heat map's cells are as wide as the gap to the next ROI, so uneven
+#    spacing reads as cells of uneven size — a pattern in the picture that is
+#    not in the measurement. Fewer than three rects have no gap to even out.
+#    """
+#    if len(rects) < 3:
+#        return list(rects)
+#    i = 1 if str(axis).lower() == "y" else 0
+#    centers = [roi_center(r)[i] for r in rects]
+#    order = sorted(range(len(rects)), key=lambda k: centers[k])
+#    lo, hi = centers[order[0]], centers[order[-1]]
+#    step = (hi - lo) / (len(rects) - 1)
+#    out = list(rects)
+#    for slot, k in enumerate(order):
+#        x, y, w, h = rects[k]
+#        want = lo + step * slot
+#        if i == 0:
+#            x = int(round(want - w / 2.0))
+#        else:
+#            y = int(round(want - h / 2.0))
+#        out[k] = (int(x), int(y), int(w), int(h))
+#    return out
+#
+#
+## --------------------------------------------------------------------------- #
 ## Multi-add helpers
 ## --------------------------------------------------------------------------- #
 #def grid_between(tl_center: Tuple[float, float], br_center: Tuple[float, float],
@@ -1516,7 +1600,7 @@ if __name__ == "__main__":
 #F afa940644becc78d2d6a262afdec4f08ba635fc2 2 pear/ui/__init__.py
 #"""Qt UI for PEAR. All Qt imports live under this package."""
 #
-#F 7c40a51ba56ccad9ffa2d6eb956eb07120304ff0 926 pear/ui/image_view.py
+#F ac714caab6a5973c3e8c8b1c64327b9b34f932ee 950 pear/ui/image_view.py
 #"""Image stage: zoom/pan and place / move / resize ROIs.
 #
 #ROIs belong to groups and are drawn in their group's colour.
@@ -1896,13 +1980,26 @@ if __name__ == "__main__":
 #            else:
 #                fill = QColor(color)
 #                fill.setAlpha(64 if active_grp else 26)
-#            stroke = QColor(color)
-#            stroke.setAlpha(255 if active_grp else 130)
-#            pen = QPen(stroke, 2.4 if selected else (1.8 if active_grp else 1.2))
-#            pen.setCosmetic(True)
-#            p.setPen(pen)
-#            p.setBrush(fill)
-#            p.drawRect(r)
+#            width = 2.4 if selected else (1.8 if active_grp else 1.2)
+#            if heat is not None:
+#                # Under a heat overlay colour means one thing — the value. A
+#                # box in the group's colour reads as a reading off the scale
+#                # (an amber group against an amber midpoint especially), so
+#                # the outline drops to neutral ink over a white halo, which
+#                # sits on any colour of the ramp without claiming to be one.
+#                p.setBrush(fill)
+#                p.setPen(Qt.NoPen)
+#                p.drawRect(r)
+#                self._stroke_neutral(p, r, width, dashed=False,
+#                                     strong=active_grp)
+#            else:
+#                stroke = QColor(color)
+#                stroke.setAlpha(255 if active_grp else 130)
+#                pen = QPen(stroke, width)
+#                pen.setCosmetic(True)
+#                p.setPen(pen)
+#                p.setBrush(fill)
+#                p.drawRect(r)
 #            if roi.rid == self._hover_rid and not self._exporting:
 #                self._paint_hover_ring(p, r)
 #            if in_sel and not self._exporting:
@@ -1916,6 +2013,21 @@ if __name__ == "__main__":
 #                self._paint_value(p, r, val, roi.rid == self._hover_rid)
 #            if selected and not self._grid_mode and not self._exporting:
 #                self._paint_handles(p, r, color)
+#
+#    def _stroke_neutral(self, p: QPainter, r: QRectF, width: float,
+#                        dashed: bool = False, strong: bool = True) -> None:
+#        """Outline that stays legible on any fill: white halo, dark ink on top."""
+#        p.setBrush(Qt.NoBrush)
+#        halo = QPen(QColor(255, 255, 255, 190), width + 2.0)
+#        halo.setCosmetic(True)
+#        p.setPen(halo)
+#        p.drawRect(r)
+#        ink = QPen(QColor(17, 24, 39, 255 if strong else 150), width)
+#        ink.setCosmetic(True)
+#        if dashed:
+#            ink.setStyle(Qt.DashLine)
+#        p.setPen(ink)
+#        p.drawRect(r)
 #
 #    def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
 #        pen = QPen(QColor(255, 255, 255, 210), 1.4)
@@ -2012,15 +2124,11 @@ if __name__ == "__main__":
 #    def _paint_rubberband(self, p: QPainter) -> None:
 #        if self._draw_rect is None:
 #            return
-#        pen = QPen(QColor(theme.AMBER), 2)
-#        pen.setCosmetic(True)
-#        pen.setStyle(Qt.DashLine)
-#        p.setPen(pen)
-#        p.setBrush(Qt.NoBrush)
 #        rn = self._draw_rect.normalized()
 #        tl = self._to_widget(rn.left(), rn.top())
-#        p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
-#                          rn.height() * self._scale))
+#        self._stroke_neutral(p, QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+#                                       rn.height() * self._scale),
+#                             2.0, dashed=True)
 #
 #    def _paint_marquee(self, p: QPainter) -> None:
 #        if self._marquee is None:
@@ -2443,7 +2551,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F fea680a8b2c7f3ab74b67b92b642d1c540ffbc98 921 pear/ui/main_window.py
+#F d0083a203f1d92a0ba57822765b5223a9742cdd8 952 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2464,7 +2572,8 @@ if __name__ == "__main__":
 #                               QMainWindow, QMenu, QMessageBox, QPushButton,
 #                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
 #
-#from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
+#from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
+#                                compute_analysis, distribute_rects,
 #                                group_outliers, group_rois, group_snr,
 #                                groups_from_json, groups_to_json, heat_cells,
 #                                heat_color, load_image, roi_center, roi_metric,
@@ -2689,6 +2798,7 @@ if __name__ == "__main__":
 #        self.rail.metrics_changed.connect(self.set_metrics)
 #        self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
 #        self.rail.roi_order_changed.connect(self.on_roi_order)
+#        self.rail.roi_align.connect(self.align_rois)
 #        self.stage_bar.show_changed.connect(self.on_show_metric)
 #        self.stage_bar.values_changed.connect(self.on_show_values)
 #        self.stage_bar.heatmap_changed.connect(self.on_heatmap)
@@ -2931,6 +3041,35 @@ if __name__ == "__main__":
 #    def on_heat_field(self, on: bool) -> None:
 #        self._heat_field = bool(on)
 #        self._update_heatmap()
+#
+#    def align_rois(self, mode: str) -> None:
+#        """Tidy the marquee selection — or the whole active group if none.
+#
+#        Hand-placed ROIs are a few pixels off each other, which is invisible
+#        until the field fill tiles them: cell edges fall midway between
+#        centres, so a stray offset turns a clean grid into a staircase.
+#        """
+#        rois = [r for r in self._rois if r.rid in self._selected_rids]
+#        scope = "selection"
+#        if len(rois) < 2:
+#            rois = group_rois(self._rois, self._active_gid)
+#            scope = "group"
+#        if len(rois) < 2:
+#            self.statusBar().showMessage(
+#                "Add at least two ROIs (Shift+drag selects them).", 4000)
+#            return
+#        rects = [r.rect for r in rois]
+#        if mode in ("distx", "disty"):
+#            out = distribute_rects(rects, "x" if mode == "distx" else "y")
+#        else:
+#            out = align_rects(rects, mode)
+#        if out == rects:
+#            return
+#        for roi, rect in zip(rois, out):
+#            roi.rect = tuple(rect)
+#        self.statusBar().showMessage(
+#            f"{mode} applied to {len(rois)} ROIs in the {scope}.", 3000)
+#        self._refresh()
 #
 #    def on_roi_order(self, order: str) -> None:
 #        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
@@ -3562,7 +3701,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 46cb48a1f4c8d7536cb9973bddbcf201c845812f 2088 pear/ui/widgets.py
+#F 2d9bf115c0848ec63bd1a2bbd13829f451a43792 2169 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3751,7 +3890,7 @@ if __name__ == "__main__":
 #    def sizeHint(self) -> QSize:
 #        # without one, a layout column with no stretch falls back to the
 #        # minimum and the figure comes out as narrow as it is allowed to be
-#        w = 560 if self._ctype in ("box", "hist") else 720
+#        w = 720
 #        return QSize(w, self.heightForWidth(w) if self.hasHeightForWidth()
 #                     else self.minimumHeight())
 #
@@ -3783,6 +3922,30 @@ if __name__ == "__main__":
 #        else:
 #            self._paint_box(p)
 #        p.end()
+#
+#    # -- shared figure furniture -------------------------------------- #
+#    def _frame(self, p: QPainter, left, top, right, bottom,
+#               xticks=(), yticks=()) -> None:
+#        """A boxed plot area with inward tick marks — the plain conventions a
+#        figure in a report follows, so the chart reads the same on a slide as
+#        it does on screen."""
+#        p.setPen(QPen(QColor(theme.INK3), 1.2))
+#        p.setBrush(Qt.NoBrush)
+#        p.drawRect(QRectF(left, top, right - left, bottom - top))
+#        for gx in xticks:
+#            p.drawLine(QPointF(gx, bottom), QPointF(gx, bottom - 4))
+#            p.drawLine(QPointF(gx, top), QPointF(gx, top + 4))
+#        for gy in yticks:
+#            p.drawLine(QPointF(left, gy), QPointF(left + 4, gy))
+#            p.drawLine(QPointF(right, gy), QPointF(right - 4, gy))
+#
+#    def _marker(self, p: QPainter, x, y, color, rad=3.2) -> None:
+#        """One observation. Open — white centre, coloured rim — so a scatter
+#        never merges into the lines drawn in the same colour beside it."""
+#        p.setBrush(QColor(255, 255, 255, 230))
+#        pen = QPen(QColor(color), 1.3)
+#        p.setPen(pen)
+#        p.drawEllipse(QPointF(x, y), rad, rad)
 #
 #    def _range(self):
 #        allv = np.concatenate([s["values"] for s in self._series])
@@ -3831,8 +3994,8 @@ if __name__ == "__main__":
 #            return lo - pad, hi + pad
 #
 #        p.setFont(theme.mono_font(8))
-#        for t in range(5):
-#            gy = top + H * t / 4.0
+#        gridys = [top + H * t / 4.0 for t in range(5)]
+#        for t, gy in enumerate(gridys):
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
 #            if own:                     # one label per lane instead, below
@@ -3841,6 +4004,7 @@ if __name__ == "__main__":
 #            p.drawText(QRectF(16, gy - 6, left - 20, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter,
 #                       _fmt(ghi - (ghi - glo) * t / 4.0))
+#        self._frame(p, left, top, right, bottom, yticks=() if own else gridys)
 #        self._ytitle(p, "value · own scale per group" if own else "value")
 #
 #        lane = W / n
@@ -3871,13 +4035,9 @@ if __name__ == "__main__":
 #            p.drawRect(int(cx - bw / 2), int(Y(q75)),
 #                       int(bw), max(2, int(Y(q25) - Y(q75))))
 #            if self._opts.get("points", True):
-#                dot = QColor(col)
-#                dot.setAlpha(190)
-#                p.setPen(Qt.NoPen)
-#                p.setBrush(dot)
 #                for k, val in enumerate(v):
 #                    jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
-#                    p.drawEllipse(int(cx + jitter) - 3, int(Y(val)) - 3, 6, 6)
+#                    self._marker(p, cx + jitter, Y(val), col)
 #            # median
 #            p.setPen(QPen(col, 2.4))
 #            p.drawLine(int(cx - bw / 2), int(Y(med)), int(cx + bw / 2), int(Y(med)))
@@ -3956,8 +4116,8 @@ if __name__ == "__main__":
 #            return bottom - (v - lo) / (hi - lo) * H
 #
 #        # grid + value axis
-#        for t, lab in enumerate(ticks):
-#            gy = top + H * t / 4.0
+#        gridys = [top + H * t / 4.0 for t in range(5)]
+#        for gy, lab in zip(gridys, ticks):
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
 #            p.setPen(QColor(theme.INK3))
@@ -3966,11 +4126,10 @@ if __name__ == "__main__":
 #        self._ytitle(p, "value")
 #
 #        # position axis
-#        p.setPen(QPen(QColor(theme.LINE2), 1))
-#        p.drawLine(left, bottom, right, bottom)
+#        xs = [left + W * t / 4.0 for t in range(5)]
+#        self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
 #        p.setPen(QColor(theme.INK3))
-#        for t in range(5):
-#            gx = left + W * t / 4.0
+#        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
 #                       f"{xlo + (xhi - xlo) * t / 4.0:.0f}")
 #        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
@@ -4007,13 +4166,10 @@ if __name__ == "__main__":
 #                y1 = min(hi, max(lo, slope * xhi + inter))
 #                p.drawLine(QPointF(X(xlo), Y(y0)), QPointF(X(xhi), Y(y1)))
 #
-#            # every ROI as a dot
-#            dot = QColor(col)
-#            dot.setAlpha(130)
-#            p.setPen(Qt.NoPen)
-#            p.setBrush(dot)
+#            # every ROI as an open marker — the profile line runs through
+#            # them in the same hue, and filled dots would fuse with it
 #            for a, b in zip(px_, v):
-#                p.drawEllipse(QPointF(X(a), Y(b)), 3.0, 3.0)
+#                self._marker(p, X(a), Y(b), col)
 #
 #            # profile line through the mean of the ROIs at each position.
 #            # Deliberately a darker shade than the dots: same colour at the
@@ -4306,7 +4462,6 @@ if __name__ == "__main__":
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
 #            p.setPen(QColor(theme.INK3))
-#            p.drawLine(left - 4, int(gy), left, int(gy))        # tick mark
 #            p.drawText(QRectF(8, gy - 6, left - 12, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter, lab)
 #        # bars, back to front so a thin group is never buried
@@ -4325,21 +4480,15 @@ if __name__ == "__main__":
 #                x0, x1 = X(edges[k]), X(edges[k + 1])
 #                y = Y(float(b[k]))
 #                p.drawRect(QRectF(x0, y, max(1.0, x1 - x0), bottom - y))
-#        # frame: only the two axes carry a line, as a figure does
-#        p.setPen(QPen(QColor(theme.INK3), 1.2))
-#        p.setBrush(Qt.NoBrush)
-#        p.drawLine(left, top, left, bottom)
-#        p.drawLine(left, bottom, right, bottom)
-#        # position axis
-#        p.setFont(theme.mono_font(8))
 #        span = hi - lo
-#        for t in range(5):
-#            gx = left + W * t / 4.0
-#            val = lo + span * t / 4.0
-#            p.setPen(QColor(theme.INK3))
-#            p.drawLine(int(gx), bottom, int(gx), bottom + 4)
+#        xs = [left + W * t / 4.0 for t in range(5)]
+#        self._frame(p, left, top, right, bottom, xticks=xs,
+#                    yticks=[Y(v) for v in yticks])
+#        p.setFont(theme.mono_font(8))
+#        p.setPen(QColor(theme.INK3))
+#        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
-#                       _fmt_span(val, span))
+#                       _fmt_span(lo + span * t / 4.0, span))
 #        p.setPen(QColor(theme.INK2))
 #        p.setFont(theme.mono_font(8, weight=700))
 #        p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
@@ -4689,6 +4838,7 @@ if __name__ == "__main__":
 #    metrics_changed = Signal(list)
 #    metric_ids_changed = Signal(list)       # every metric on offer (incl. Q*n)
 #    roi_order_changed = Signal(str)         # "placed" | "asc" | "desc"
+#    roi_align = Signal(str)                 # align/distribute the selection
 #    open_analysis = Signal()
 #
 #    def __init__(self, parent=None):
@@ -4764,6 +4914,32 @@ if __name__ == "__main__":
 #        grow.addWidget(QLabel("×"))
 #        grow.addWidget(self.grid_cols, 1)
 #        rlay.addLayout(grow)
+#        # Tidy: hand-placed ROIs sit a few pixels off each other, which only
+#        # shows up once the field fill tiles them into a staircase.
+#        arow = QHBoxLayout()
+#        arow.setSpacing(4)
+#        al = QLabel("align")
+#        al.setObjectName("Hint")
+#        arow.addWidget(al)
+#        self.align_btns = {}
+#        for mode, text, tip in (
+#                ("left", "⇤", "Align the selected ROIs' left edges"),
+#                ("hcenter", "⇔", "Centre the selected ROIs horizontally"),
+#                ("right", "⇥", "Align the selected ROIs' right edges"),
+#                ("top", "⤒", "Align the selected ROIs' top edges"),
+#                ("vcenter", "⇕", "Centre the selected ROIs vertically"),
+#                ("bottom", "⤓", "Align the selected ROIs' bottom edges"),
+#                ("distx", "⇹", "Even the horizontal spacing (3+ ROIs)"),
+#                ("disty", "⇳", "Even the vertical spacing (3+ ROIs)")):
+#            b = QPushButton(text)
+#            b.setFixedSize(30, 28)
+#            b.setToolTip(f"{tip}. Shift+drag on the image selects ROIs; "
+#                         "with none selected the whole active group is used.")
+#            b.clicked.connect(lambda _=False, m=mode: self.roi_align.emit(m))
+#            self.align_btns[mode] = b
+#            arow.addWidget(b)
+#        arow.addStretch(1)
+#        rlay.addLayout(arow)
 #        # Order: the list is where you scan for the odd one out, so it sorts
 #        # by the shown metric as well as by the order the ROIs were placed.
 #        orow = QHBoxLayout()
@@ -4829,7 +5005,8 @@ if __name__ == "__main__":
 #    # -- render --------------------------------------------------------- #
 #    def set_ready(self, has_image: bool) -> None:
 #        for w in (self.grp_add_btn, self.grid_btn, self.roi_w, self.roi_h,
-#                  self.clear_btn, self.analysis_btn):
+#                  self.clear_btn, self.analysis_btn,
+#                  *self.align_btns.values()):
 #            w.setEnabled(has_image)
 #
 #    def set_grid_ready(self, on: bool) -> None:
@@ -5173,6 +5350,9 @@ if __name__ == "__main__":
 #        self._last_result = None
 #        self._suppress = False
 #        self._cards: dict = {}          # scope -> the widget to export
+#        self._chart_widgets: List[DistributionChart] = []
+#        self._main = self.body_lay      # figures column
+#        self._side = self.body_lay      # annotations column
 #
 #    def _pick_mode(self, mode: str) -> None:
 #        self._mode = mode
@@ -5263,26 +5443,55 @@ if __name__ == "__main__":
 #    def _render_body(self, result) -> None:
 #        _clear(self.body_lay)
 #        self._cards = {}
+#        self._chart_widgets = []
 #        self.sub.setText(result.subtitle)
 #        if result.empty:
+#            self._main = self.body_lay
+#            self._side = self.body_lay
 #            self._empty(result.empty)
 #            return
+#        # Two columns: the figures on the left, where the eye starts and where
+#        # they get the room to be figures; the numbers that annotate them
+#        # down the right. One column put every chart in a wide band at the top
+#        # with the tables stacked underneath, which reads as two unrelated
+#        # pages rather than one result.
+#        row = QWidget()
+#        rlay = QHBoxLayout(row)
+#        rlay.setContentsMargins(0, 0, 0, 0)
+#        rlay.setSpacing(14)
+#        main_host, side_host = QWidget(), QWidget()
+#        self._main = QVBoxLayout(main_host)
+#        self._side = QVBoxLayout(side_host)
+#        for lay in (self._main, self._side):
+#            lay.setContentsMargins(0, 0, 0, 0)
+#            lay.setSpacing(10)
+#        side_host.setMinimumWidth(300)
+#        rlay.addWidget(main_host, 3)
+#        rlay.addWidget(side_host, 2)
+#        self.body_lay.addWidget(row)
+#
 #        charts = [(c.title, [{"label": s.label, "color": s.color,
 #                              "values": s.values,
 #                              "pos_x": s.pos_x, "pos_y": s.pos_y}
 #                             for s in c.series])
 #                  for c in result.charts]
+#        self._main.addStretch(1)        # the figures sit mid-height…
 #        self._chart_grid(charts)
+#        self._main.addStretch(1)
 #        if result.ranking:
 #            self._ranking_card(result.ranking)
 #        if result.heat:
 #            self._heatmap_card(result.heat)
 #        if result.table_rows:
 #            self._table(result.table_headers, result.table_rows)
+#        self._side.addStretch(1)        # …the annotations stack from the top
+#        if not any(self._cards.get(k) for k in ("ranking", "heat", "table")):
+#            side_host.hide()            # nothing to annotate with: all figure
+#            rlay.setStretch(1, 0)
 #        self._rebuild_image_menu()
 #
 #    def _rebuild_image_menu(self) -> None:
-#        """Offer exactly the sections this result has."""
+#        """Offer exactly the sections this result has, each chart included."""
 #        self._image_menu.clear()
 #        labels = dict(self.SCOPES)
 #        scopes = self.scopes_available()
@@ -5290,6 +5499,13 @@ if __name__ == "__main__":
 #            self._image_menu.addAction(
 #                f"{labels[key]}…",
 #                lambda _=False, k=key: self.export_image_requested.emit(k))
+#            if key == "charts" and len(self._chart_widgets) > 1:
+#                # one figure per file is what a document actually takes
+#                for i, c in enumerate(self._chart_widgets):
+#                    self._image_menu.addAction(
+#                        f"    {c._title}…",
+#                        lambda _=False, k=f"chart:{i}":
+#                        self.export_image_requested.emit(k))
 #        self.image_btn.setEnabled(bool(scopes))
 #
 #    # -- image export --------------------------------------------------- #
@@ -5315,6 +5531,11 @@ if __name__ == "__main__":
 #                area = area.united(w.geometry())
 #            return save_widget_image(self.body, path, scale, crop=area,
 #                                     background=theme.WINDOW)
+#        if scope.startswith("chart:"):          # one figure on its own
+#            i = int(scope.split(":", 1)[1])
+#            if not 0 <= i < len(self._chart_widgets):
+#                return None
+#            return save_widget_image(self._chart_widgets[i], path, scale)
 #        host = self._cards.get(scope)
 #        if host is None:
 #            return None
@@ -5370,7 +5591,7 @@ if __name__ == "__main__":
 #            grid.addWidget(val, i, 3)
 #        grid.setColumnStretch(2, 1)
 #        lay.addLayout(grid)
-#        self.body_lay.addWidget(host)
+#        self._side.addWidget(host)
 #
 #    def _heatmap_card(self, heat) -> None:
 #        host = QFrame()
@@ -5424,7 +5645,7 @@ if __name__ == "__main__":
 #                                       "border-radius:4px; padding:5px;")
 #                grid.addWidget(cell, r + 1, c + 1)
 #        lay.addLayout(grid)
-#        self.body_lay.addWidget(host)
+#        self._side.addWidget(host)
 #
 #    def _chart_grid(self, charts) -> None:
 #        grid_host = QWidget()
@@ -5447,21 +5668,20 @@ if __name__ == "__main__":
 #            chart.set_data(title, series, self._chart_type, opts,
 #                           axis=self._pos_axis, trend=self.trend_chk.isChecked(),
 #                           xlabel=title)
+#            self._chart_widgets.append(chart)
 #            if wide:
-#                grid.addWidget(chart, i, 0, 1, 4)
+#                grid.addWidget(chart, i, 0, 1, 3)
 #                continue
-#            # A distribution is a figure, not a banner: cap its width so it
-#            # keeps a printable shape instead of stretching across the window
-#            # and leaving everything under it looking bottom-heavy.
-#            chart.setMinimumWidth(340)   # or the stretch columns eat it all
-#            chart.setMaximumWidth(560)
-#            grid.addWidget(chart, i // 2, 1 + i % 2)
+#            # One figure per row, as large as the column allows up to a
+#            # printable width — a distribution squeezed two-up is a thumbnail,
+#            # and a thumbnail is what nobody can read on a slide.
+#            chart.setMinimumWidth(340)
+#            chart.setMaximumWidth(720)
+#            grid.addWidget(chart, i, 1)
 #        if not wide:
-#            # the slack sits either side, so one figure reads as a plate on a
-#            # page rather than a banner pinned to the left margin
-#            grid.setColumnStretch(0, 1)
-#            grid.setColumnStretch(3, 1)
-#        self.body_lay.addWidget(grid_host)
+#            grid.setColumnStretch(0, 1)      # slack either side: a plate on a
+#            grid.setColumnStretch(2, 1)      # page, not a banner on a margin
+#        self._main.addWidget(grid_host)
 #
 #    def _table(self, headers, rows) -> None:
 #        host = QFrame()
@@ -5483,7 +5703,7 @@ if __name__ == "__main__":
 #                cell = QLabel(val)
 #                cell.setFont(theme.mono_font(9))
 #                lay.addWidget(cell, r, c)
-#        self.body_lay.addWidget(host)
+#        self._side.addWidget(host)
 #
 #    def _empty(self, text: str) -> None:
 #        lbl = QLabel(text)
@@ -5821,7 +6041,7 @@ if __name__ == "__main__":
 #    body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
 #    compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
 #
-#F 4c9b13a0f1c86f33f92364eddf6f3966dda54f09 302 tests/test_core.py
+#F 6ca0400fd683979f574f5a61a8806bb93a0fdb4c 327 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -5835,8 +6055,9 @@ if __name__ == "__main__":
 #sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 #
 #from examples.make_sample import CELL_H, CELL_W, make_field
-#from pear.core.analysis import (ROI, Group, attribute_separability, cell_edges,
-#                                cohens_d, heat_cells,
+#from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
+#                                cell_edges, cohens_d, distribute_rects,
+#                                heat_cells,
 #                                compute_analysis, grid_between, group_outliers,
 #                                group_rois, group_snr, group_values,
 #                                groups_from_json, groups_to_json, heat_color,
@@ -6018,6 +6239,30 @@ if __name__ == "__main__":
 #    assert list(group_positions(rois, "X")) == [15.0, 35.0]
 #
 #
+#def test_align_rects_pulls_onto_one_edge():
+#    r = [(10, 10, 10, 10), (13, 40, 10, 10), (9, 70, 12, 12)]
+#    assert [x for x, _y, _w, _h in align_rects(r, "left")] == [9, 9, 9]
+#    # right aligns the far edges, so a wider box starts further left
+#    assert [x + w for x, _y, w, _h in align_rects(r, "right")] == [23, 23, 23]
+#    assert [y for _x, y, _w, _h in align_rects(r, "top")] == [10, 10, 10]
+#    assert [y + h for _x, y, _w, h in align_rects(r, "bottom")] == [82, 82, 82]
+#    centres = [x + w / 2 for x, _y, w, _h in align_rects(r, "hcenter")]
+#    assert centres == pytest.approx([16.0, 16.0, 16.0], abs=0.5)
+#    assert align_rects(r, "sideways") == r      # unknown mode changes nothing
+#    assert align_rects(r[:1], "left") == r[:1]  # one rect has nothing to align
+#
+#
+#def test_distribute_rects_evens_the_gaps():
+#    r = [(0, 0, 10, 10), (0, 30, 10, 10), (0, 100, 10, 10)]
+#    out = distribute_rects(r, "y")
+#    assert [y for _x, y, _w, _h in out] == [0, 50, 100]
+#    # order is preserved even when the input is not sorted along the axis
+#    r = [(100, 0, 10, 10), (0, 0, 10, 10), (30, 0, 10, 10)]
+#    out = distribute_rects(r, "x")
+#    assert [x for x, _y, _w, _h in out] == [100, 0, 50]
+#    assert distribute_rects(r[:2], "x") == r[:2]      # two rects: no gap to even
+#
+#
 #def test_cell_edges_tile_the_axis_without_gaps():
 #    c, e = cell_edges([10.0, 40.0, 70.0, 10.0])   # duplicates are one centre
 #    assert list(c) == [10.0, 40.0, 70.0]
@@ -6124,7 +6369,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 23e05eb98352072673b348e67048ce54e4b8b6eb 895 tests/test_ui_smoke.py
+#F 22c9d6901b05f84f3751af27976e0971c7b323a2 925 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -6725,6 +6970,30 @@ if __name__ == "__main__":
 #    assert ap.ownscale_chk.isHidden()
 #
 #
+#def test_align_buttons_tidy_the_selection_then_the_group(app):
+#    from pear.core.analysis import group_rois
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    win.add_group()
+#    for rect in ((10, 10, 10, 10), (13, 40, 10, 10), (9, 100, 10, 10)):
+#        win.on_roi_created(rect)
+#    rois = group_rois(win._rois, win._active_gid)
+#
+#    win._selected_rids = {rois[0].rid, rois[1].rid}   # only the selection moves
+#    win.rail.align_btns["left"].click()
+#    assert [r.rect[0] for r in rois] == [10, 10, 9]
+#
+#    win._selected_rids = set()                        # …then the whole group
+#    win.rail.align_btns["left"].click()
+#    assert [r.rect[0] for r in rois] == [9, 9, 9]
+#    win.rail.align_btns["disty"].click()
+#    assert [r.rect[1] for r in rois] == [10, 55, 100]  # gaps evened out
+#    before = [r.rect for r in rois]
+#    win.rail.align_btns["left"].click()                # already aligned: no-op
+#    assert [r.rect for r in rois] == before
+#
+#
 #def test_map_draws_touching_cells_and_optional_values(app):
 #    """Cell mode tiles the field; the dot fallback and labels still paint."""
 #    from pear.ui.main_window import MainWindow
@@ -6852,7 +7121,7 @@ if __name__ == "__main__":
 #              if c._ctype == "hist" and c.isVisible()]
 #    assert charts
 #    c = charts[-1]
-#    assert 340 <= c.width() <= 560                     # capped, not stretched
+#    assert 340 <= c.width() <= 720                     # capped, not stretched
 #    assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
 #
 #
@@ -6907,9 +7176,15 @@ if __name__ == "__main__":
 #    scopes = ap.scopes_available()
 #    assert set(scopes) == {"charts", "ranking", "heat", "table", "all"}
 #    assert ap.image_btn.isEnabled()
+#    # two metrics → two figures, each offered on its own under Charts
 #    assert [a.text() for a in ap._image_menu.actions()] == [
-#        "Charts…", "Attribute ranking…", "Group × metric heatmap…",
-#        "Summary table…", "Everything…"]
+#        "Charts…", "    GLV mean…", "    GLV median…", "Attribute ranking…",
+#        "Group × metric heatmap…", "Summary table…", "Everything…"]
+#    one = tmp_path / "one.png"
+#    assert win.export_chart_image("chart:1", str(one)) == str(one)
+#    single = QImage(str(one))
+#    assert single.width() == ap._chart_widgets[1].width() * 3
+#    assert ap.save_image(str(one), "chart:9") is None          # out of range
 #    for scope in scopes:
 #        out = tmp_path / f"{scope}.png"
 #        assert win.export_chart_image(scope, str(out)) == str(out)

@@ -598,6 +598,30 @@ def test_box_chart_can_give_each_group_its_own_scale(app):
     assert ap.ownscale_chk.isHidden()
 
 
+def test_align_buttons_tidy_the_selection_then_the_group(app):
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_group()
+    for rect in ((10, 10, 10, 10), (13, 40, 10, 10), (9, 100, 10, 10)):
+        win.on_roi_created(rect)
+    rois = group_rois(win._rois, win._active_gid)
+
+    win._selected_rids = {rois[0].rid, rois[1].rid}   # only the selection moves
+    win.rail.align_btns["left"].click()
+    assert [r.rect[0] for r in rois] == [10, 10, 9]
+
+    win._selected_rids = set()                        # …then the whole group
+    win.rail.align_btns["left"].click()
+    assert [r.rect[0] for r in rois] == [9, 9, 9]
+    win.rail.align_btns["disty"].click()
+    assert [r.rect[1] for r in rois] == [10, 55, 100]  # gaps evened out
+    before = [r.rect for r in rois]
+    win.rail.align_btns["left"].click()                # already aligned: no-op
+    assert [r.rect for r in rois] == before
+
+
 def test_map_draws_touching_cells_and_optional_values(app):
     """Cell mode tiles the field; the dot fallback and labels still paint."""
     from pear.ui.main_window import MainWindow
@@ -725,7 +749,7 @@ def test_distribution_charts_keep_a_printable_shape(app):
               if c._ctype == "hist" and c.isVisible()]
     assert charts
     c = charts[-1]
-    assert 340 <= c.width() <= 560                     # capped, not stretched
+    assert 340 <= c.width() <= 720                     # capped, not stretched
     assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
 
 
@@ -780,9 +804,15 @@ def test_every_results_section_exports(app, tmp_path):
     scopes = ap.scopes_available()
     assert set(scopes) == {"charts", "ranking", "heat", "table", "all"}
     assert ap.image_btn.isEnabled()
+    # two metrics → two figures, each offered on its own under Charts
     assert [a.text() for a in ap._image_menu.actions()] == [
-        "Charts…", "Attribute ranking…", "Group × metric heatmap…",
-        "Summary table…", "Everything…"]
+        "Charts…", "    GLV mean…", "    GLV median…", "Attribute ranking…",
+        "Group × metric heatmap…", "Summary table…", "Everything…"]
+    one = tmp_path / "one.png"
+    assert win.export_chart_image("chart:1", str(one)) == str(one)
+    single = QImage(str(one))
+    assert single.width() == ap._chart_widgets[1].width() * 3
+    assert ap.save_image(str(one), "chart:9") is None          # out of range
     for scope in scopes:
         out = tmp_path / f"{scope}.png"
         assert win.export_chart_image(scope, str(out)) == str(out)

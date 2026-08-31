@@ -11,8 +11,9 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
-from pear.core.analysis import (ROI, Group, attribute_separability, cell_edges,
-                                cohens_d, heat_cells,
+from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
+                                cell_edges, cohens_d, distribute_rects,
+                                heat_cells,
                                 compute_analysis, grid_between, group_outliers,
                                 group_rois, group_snr, group_values,
                                 groups_from_json, groups_to_json, heat_color,
@@ -192,6 +193,30 @@ def test_roi_center_and_group_positions():
     assert list(group_positions(rois, "y")) == [25.0, 25.0]
     # anything but "y" means the X axis
     assert list(group_positions(rois, "X")) == [15.0, 35.0]
+
+
+def test_align_rects_pulls_onto_one_edge():
+    r = [(10, 10, 10, 10), (13, 40, 10, 10), (9, 70, 12, 12)]
+    assert [x for x, _y, _w, _h in align_rects(r, "left")] == [9, 9, 9]
+    # right aligns the far edges, so a wider box starts further left
+    assert [x + w for x, _y, w, _h in align_rects(r, "right")] == [23, 23, 23]
+    assert [y for _x, y, _w, _h in align_rects(r, "top")] == [10, 10, 10]
+    assert [y + h for _x, y, _w, h in align_rects(r, "bottom")] == [82, 82, 82]
+    centres = [x + w / 2 for x, _y, w, _h in align_rects(r, "hcenter")]
+    assert centres == pytest.approx([16.0, 16.0, 16.0], abs=0.5)
+    assert align_rects(r, "sideways") == r      # unknown mode changes nothing
+    assert align_rects(r[:1], "left") == r[:1]  # one rect has nothing to align
+
+
+def test_distribute_rects_evens_the_gaps():
+    r = [(0, 0, 10, 10), (0, 30, 10, 10), (0, 100, 10, 10)]
+    out = distribute_rects(r, "y")
+    assert [y for _x, y, _w, _h in out] == [0, 50, 100]
+    # order is preserved even when the input is not sorted along the axis
+    r = [(100, 0, 10, 10), (0, 0, 10, 10), (30, 0, 10, 10)]
+    out = distribute_rects(r, "x")
+    assert [x for x, _y, _w, _h in out] == [100, 0, 50]
+    assert distribute_rects(r[:2], "x") == r[:2]      # two rects: no gap to even
 
 
 def test_cell_edges_tile_the_axis_without_gaps():

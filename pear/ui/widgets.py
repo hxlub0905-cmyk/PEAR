@@ -186,7 +186,7 @@ class DistributionChart(QWidget):
     def sizeHint(self) -> QSize:
         # without one, a layout column with no stretch falls back to the
         # minimum and the figure comes out as narrow as it is allowed to be
-        w = 560 if self._ctype in ("box", "hist") else 720
+        w = 720
         return QSize(w, self.heightForWidth(w) if self.hasHeightForWidth()
                      else self.minimumHeight())
 
@@ -218,6 +218,30 @@ class DistributionChart(QWidget):
         else:
             self._paint_box(p)
         p.end()
+
+    # -- shared figure furniture -------------------------------------- #
+    def _frame(self, p: QPainter, left, top, right, bottom,
+               xticks=(), yticks=()) -> None:
+        """A boxed plot area with inward tick marks — the plain conventions a
+        figure in a report follows, so the chart reads the same on a slide as
+        it does on screen."""
+        p.setPen(QPen(QColor(theme.INK3), 1.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(left, top, right - left, bottom - top))
+        for gx in xticks:
+            p.drawLine(QPointF(gx, bottom), QPointF(gx, bottom - 4))
+            p.drawLine(QPointF(gx, top), QPointF(gx, top + 4))
+        for gy in yticks:
+            p.drawLine(QPointF(left, gy), QPointF(left + 4, gy))
+            p.drawLine(QPointF(right, gy), QPointF(right - 4, gy))
+
+    def _marker(self, p: QPainter, x, y, color, rad=3.2) -> None:
+        """One observation. Open — white centre, coloured rim — so a scatter
+        never merges into the lines drawn in the same colour beside it."""
+        p.setBrush(QColor(255, 255, 255, 230))
+        pen = QPen(QColor(color), 1.3)
+        p.setPen(pen)
+        p.drawEllipse(QPointF(x, y), rad, rad)
 
     def _range(self):
         allv = np.concatenate([s["values"] for s in self._series])
@@ -266,8 +290,8 @@ class DistributionChart(QWidget):
             return lo - pad, hi + pad
 
         p.setFont(theme.mono_font(8))
-        for t in range(5):
-            gy = top + H * t / 4.0
+        gridys = [top + H * t / 4.0 for t in range(5)]
+        for t, gy in enumerate(gridys):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
             if own:                     # one label per lane instead, below
@@ -276,6 +300,7 @@ class DistributionChart(QWidget):
             p.drawText(QRectF(16, gy - 6, left - 20, 12),
                        Qt.AlignRight | Qt.AlignVCenter,
                        _fmt(ghi - (ghi - glo) * t / 4.0))
+        self._frame(p, left, top, right, bottom, yticks=() if own else gridys)
         self._ytitle(p, "value · own scale per group" if own else "value")
 
         lane = W / n
@@ -306,13 +331,9 @@ class DistributionChart(QWidget):
             p.drawRect(int(cx - bw / 2), int(Y(q75)),
                        int(bw), max(2, int(Y(q25) - Y(q75))))
             if self._opts.get("points", True):
-                dot = QColor(col)
-                dot.setAlpha(190)
-                p.setPen(Qt.NoPen)
-                p.setBrush(dot)
                 for k, val in enumerate(v):
                     jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
-                    p.drawEllipse(int(cx + jitter) - 3, int(Y(val)) - 3, 6, 6)
+                    self._marker(p, cx + jitter, Y(val), col)
             # median
             p.setPen(QPen(col, 2.4))
             p.drawLine(int(cx - bw / 2), int(Y(med)), int(cx + bw / 2), int(Y(med)))
@@ -391,8 +412,8 @@ class DistributionChart(QWidget):
             return bottom - (v - lo) / (hi - lo) * H
 
         # grid + value axis
-        for t, lab in enumerate(ticks):
-            gy = top + H * t / 4.0
+        gridys = [top + H * t / 4.0 for t in range(5)]
+        for gy, lab in zip(gridys, ticks):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
             p.setPen(QColor(theme.INK3))
@@ -401,11 +422,10 @@ class DistributionChart(QWidget):
         self._ytitle(p, "value")
 
         # position axis
-        p.setPen(QPen(QColor(theme.LINE2), 1))
-        p.drawLine(left, bottom, right, bottom)
+        xs = [left + W * t / 4.0 for t in range(5)]
+        self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
         p.setPen(QColor(theme.INK3))
-        for t in range(5):
-            gx = left + W * t / 4.0
+        for t, gx in enumerate(xs):
             p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
                        f"{xlo + (xhi - xlo) * t / 4.0:.0f}")
         p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
@@ -442,13 +462,10 @@ class DistributionChart(QWidget):
                 y1 = min(hi, max(lo, slope * xhi + inter))
                 p.drawLine(QPointF(X(xlo), Y(y0)), QPointF(X(xhi), Y(y1)))
 
-            # every ROI as a dot
-            dot = QColor(col)
-            dot.setAlpha(130)
-            p.setPen(Qt.NoPen)
-            p.setBrush(dot)
+            # every ROI as an open marker — the profile line runs through
+            # them in the same hue, and filled dots would fuse with it
             for a, b in zip(px_, v):
-                p.drawEllipse(QPointF(X(a), Y(b)), 3.0, 3.0)
+                self._marker(p, X(a), Y(b), col)
 
             # profile line through the mean of the ROIs at each position.
             # Deliberately a darker shade than the dots: same colour at the
@@ -741,7 +758,6 @@ class DistributionChart(QWidget):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
             p.setPen(QColor(theme.INK3))
-            p.drawLine(left - 4, int(gy), left, int(gy))        # tick mark
             p.drawText(QRectF(8, gy - 6, left - 12, 12),
                        Qt.AlignRight | Qt.AlignVCenter, lab)
         # bars, back to front so a thin group is never buried
@@ -760,21 +776,15 @@ class DistributionChart(QWidget):
                 x0, x1 = X(edges[k]), X(edges[k + 1])
                 y = Y(float(b[k]))
                 p.drawRect(QRectF(x0, y, max(1.0, x1 - x0), bottom - y))
-        # frame: only the two axes carry a line, as a figure does
-        p.setPen(QPen(QColor(theme.INK3), 1.2))
-        p.setBrush(Qt.NoBrush)
-        p.drawLine(left, top, left, bottom)
-        p.drawLine(left, bottom, right, bottom)
-        # position axis
-        p.setFont(theme.mono_font(8))
         span = hi - lo
-        for t in range(5):
-            gx = left + W * t / 4.0
-            val = lo + span * t / 4.0
-            p.setPen(QColor(theme.INK3))
-            p.drawLine(int(gx), bottom, int(gx), bottom + 4)
+        xs = [left + W * t / 4.0 for t in range(5)]
+        self._frame(p, left, top, right, bottom, xticks=xs,
+                    yticks=[Y(v) for v in yticks])
+        p.setFont(theme.mono_font(8))
+        p.setPen(QColor(theme.INK3))
+        for t, gx in enumerate(xs):
             p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
-                       _fmt_span(val, span))
+                       _fmt_span(lo + span * t / 4.0, span))
         p.setPen(QColor(theme.INK2))
         p.setFont(theme.mono_font(8, weight=700))
         p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
@@ -1124,6 +1134,7 @@ class RailPanel(QWidget):
     metrics_changed = Signal(list)
     metric_ids_changed = Signal(list)       # every metric on offer (incl. Q*n)
     roi_order_changed = Signal(str)         # "placed" | "asc" | "desc"
+    roi_align = Signal(str)                 # align/distribute the selection
     open_analysis = Signal()
 
     def __init__(self, parent=None):
@@ -1199,6 +1210,32 @@ class RailPanel(QWidget):
         grow.addWidget(QLabel("×"))
         grow.addWidget(self.grid_cols, 1)
         rlay.addLayout(grow)
+        # Tidy: hand-placed ROIs sit a few pixels off each other, which only
+        # shows up once the field fill tiles them into a staircase.
+        arow = QHBoxLayout()
+        arow.setSpacing(4)
+        al = QLabel("align")
+        al.setObjectName("Hint")
+        arow.addWidget(al)
+        self.align_btns = {}
+        for mode, text, tip in (
+                ("left", "⇤", "Align the selected ROIs' left edges"),
+                ("hcenter", "⇔", "Centre the selected ROIs horizontally"),
+                ("right", "⇥", "Align the selected ROIs' right edges"),
+                ("top", "⤒", "Align the selected ROIs' top edges"),
+                ("vcenter", "⇕", "Centre the selected ROIs vertically"),
+                ("bottom", "⤓", "Align the selected ROIs' bottom edges"),
+                ("distx", "⇹", "Even the horizontal spacing (3+ ROIs)"),
+                ("disty", "⇳", "Even the vertical spacing (3+ ROIs)")):
+            b = QPushButton(text)
+            b.setFixedSize(30, 28)
+            b.setToolTip(f"{tip}. Shift+drag on the image selects ROIs; "
+                         "with none selected the whole active group is used.")
+            b.clicked.connect(lambda _=False, m=mode: self.roi_align.emit(m))
+            self.align_btns[mode] = b
+            arow.addWidget(b)
+        arow.addStretch(1)
+        rlay.addLayout(arow)
         # Order: the list is where you scan for the odd one out, so it sorts
         # by the shown metric as well as by the order the ROIs were placed.
         orow = QHBoxLayout()
@@ -1264,7 +1301,8 @@ class RailPanel(QWidget):
     # -- render --------------------------------------------------------- #
     def set_ready(self, has_image: bool) -> None:
         for w in (self.grp_add_btn, self.grid_btn, self.roi_w, self.roi_h,
-                  self.clear_btn, self.analysis_btn):
+                  self.clear_btn, self.analysis_btn,
+                  *self.align_btns.values()):
             w.setEnabled(has_image)
 
     def set_grid_ready(self, on: bool) -> None:
@@ -1608,6 +1646,9 @@ class AnalysisPanel(QWidget):
         self._last_result = None
         self._suppress = False
         self._cards: dict = {}          # scope -> the widget to export
+        self._chart_widgets: List[DistributionChart] = []
+        self._main = self.body_lay      # figures column
+        self._side = self.body_lay      # annotations column
 
     def _pick_mode(self, mode: str) -> None:
         self._mode = mode
@@ -1698,26 +1739,55 @@ class AnalysisPanel(QWidget):
     def _render_body(self, result) -> None:
         _clear(self.body_lay)
         self._cards = {}
+        self._chart_widgets = []
         self.sub.setText(result.subtitle)
         if result.empty:
+            self._main = self.body_lay
+            self._side = self.body_lay
             self._empty(result.empty)
             return
+        # Two columns: the figures on the left, where the eye starts and where
+        # they get the room to be figures; the numbers that annotate them
+        # down the right. One column put every chart in a wide band at the top
+        # with the tables stacked underneath, which reads as two unrelated
+        # pages rather than one result.
+        row = QWidget()
+        rlay = QHBoxLayout(row)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        rlay.setSpacing(14)
+        main_host, side_host = QWidget(), QWidget()
+        self._main = QVBoxLayout(main_host)
+        self._side = QVBoxLayout(side_host)
+        for lay in (self._main, self._side):
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(10)
+        side_host.setMinimumWidth(300)
+        rlay.addWidget(main_host, 3)
+        rlay.addWidget(side_host, 2)
+        self.body_lay.addWidget(row)
+
         charts = [(c.title, [{"label": s.label, "color": s.color,
                               "values": s.values,
                               "pos_x": s.pos_x, "pos_y": s.pos_y}
                              for s in c.series])
                   for c in result.charts]
+        self._main.addStretch(1)        # the figures sit mid-height…
         self._chart_grid(charts)
+        self._main.addStretch(1)
         if result.ranking:
             self._ranking_card(result.ranking)
         if result.heat:
             self._heatmap_card(result.heat)
         if result.table_rows:
             self._table(result.table_headers, result.table_rows)
+        self._side.addStretch(1)        # …the annotations stack from the top
+        if not any(self._cards.get(k) for k in ("ranking", "heat", "table")):
+            side_host.hide()            # nothing to annotate with: all figure
+            rlay.setStretch(1, 0)
         self._rebuild_image_menu()
 
     def _rebuild_image_menu(self) -> None:
-        """Offer exactly the sections this result has."""
+        """Offer exactly the sections this result has, each chart included."""
         self._image_menu.clear()
         labels = dict(self.SCOPES)
         scopes = self.scopes_available()
@@ -1725,6 +1795,13 @@ class AnalysisPanel(QWidget):
             self._image_menu.addAction(
                 f"{labels[key]}…",
                 lambda _=False, k=key: self.export_image_requested.emit(k))
+            if key == "charts" and len(self._chart_widgets) > 1:
+                # one figure per file is what a document actually takes
+                for i, c in enumerate(self._chart_widgets):
+                    self._image_menu.addAction(
+                        f"    {c._title}…",
+                        lambda _=False, k=f"chart:{i}":
+                        self.export_image_requested.emit(k))
         self.image_btn.setEnabled(bool(scopes))
 
     # -- image export --------------------------------------------------- #
@@ -1750,6 +1827,11 @@ class AnalysisPanel(QWidget):
                 area = area.united(w.geometry())
             return save_widget_image(self.body, path, scale, crop=area,
                                      background=theme.WINDOW)
+        if scope.startswith("chart:"):          # one figure on its own
+            i = int(scope.split(":", 1)[1])
+            if not 0 <= i < len(self._chart_widgets):
+                return None
+            return save_widget_image(self._chart_widgets[i], path, scale)
         host = self._cards.get(scope)
         if host is None:
             return None
@@ -1805,7 +1887,7 @@ class AnalysisPanel(QWidget):
             grid.addWidget(val, i, 3)
         grid.setColumnStretch(2, 1)
         lay.addLayout(grid)
-        self.body_lay.addWidget(host)
+        self._side.addWidget(host)
 
     def _heatmap_card(self, heat) -> None:
         host = QFrame()
@@ -1859,7 +1941,7 @@ class AnalysisPanel(QWidget):
                                        "border-radius:4px; padding:5px;")
                 grid.addWidget(cell, r + 1, c + 1)
         lay.addLayout(grid)
-        self.body_lay.addWidget(host)
+        self._side.addWidget(host)
 
     def _chart_grid(self, charts) -> None:
         grid_host = QWidget()
@@ -1882,21 +1964,20 @@ class AnalysisPanel(QWidget):
             chart.set_data(title, series, self._chart_type, opts,
                            axis=self._pos_axis, trend=self.trend_chk.isChecked(),
                            xlabel=title)
+            self._chart_widgets.append(chart)
             if wide:
-                grid.addWidget(chart, i, 0, 1, 4)
+                grid.addWidget(chart, i, 0, 1, 3)
                 continue
-            # A distribution is a figure, not a banner: cap its width so it
-            # keeps a printable shape instead of stretching across the window
-            # and leaving everything under it looking bottom-heavy.
-            chart.setMinimumWidth(340)   # or the stretch columns eat it all
-            chart.setMaximumWidth(560)
-            grid.addWidget(chart, i // 2, 1 + i % 2)
+            # One figure per row, as large as the column allows up to a
+            # printable width — a distribution squeezed two-up is a thumbnail,
+            # and a thumbnail is what nobody can read on a slide.
+            chart.setMinimumWidth(340)
+            chart.setMaximumWidth(720)
+            grid.addWidget(chart, i, 1)
         if not wide:
-            # the slack sits either side, so one figure reads as a plate on a
-            # page rather than a banner pinned to the left margin
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(3, 1)
-        self.body_lay.addWidget(grid_host)
+            grid.setColumnStretch(0, 1)      # slack either side: a plate on a
+            grid.setColumnStretch(2, 1)      # page, not a banner on a margin
+        self._main.addWidget(grid_host)
 
     def _table(self, headers, rows) -> None:
         host = QFrame()
@@ -1918,7 +1999,7 @@ class AnalysisPanel(QWidget):
                 cell = QLabel(val)
                 cell.setFont(theme.mono_font(9))
                 lay.addWidget(cell, r, c)
-        self.body_lay.addWidget(host)
+        self._side.addWidget(host)
 
     def _empty(self, text: str) -> None:
         lbl = QLabel(text)

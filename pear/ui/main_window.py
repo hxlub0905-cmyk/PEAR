@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
-from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
+from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
+                                compute_analysis, distribute_rects,
                                 group_outliers, group_rois, group_snr,
                                 groups_from_json, groups_to_json, heat_cells,
                                 heat_color, load_image, roi_center, roi_metric,
@@ -243,6 +244,7 @@ class MainWindow(QMainWindow):
         self.rail.metrics_changed.connect(self.set_metrics)
         self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
         self.rail.roi_order_changed.connect(self.on_roi_order)
+        self.rail.roi_align.connect(self.align_rois)
         self.stage_bar.show_changed.connect(self.on_show_metric)
         self.stage_bar.values_changed.connect(self.on_show_values)
         self.stage_bar.heatmap_changed.connect(self.on_heatmap)
@@ -485,6 +487,35 @@ class MainWindow(QMainWindow):
     def on_heat_field(self, on: bool) -> None:
         self._heat_field = bool(on)
         self._update_heatmap()
+
+    def align_rois(self, mode: str) -> None:
+        """Tidy the marquee selection — or the whole active group if none.
+
+        Hand-placed ROIs are a few pixels off each other, which is invisible
+        until the field fill tiles them: cell edges fall midway between
+        centres, so a stray offset turns a clean grid into a staircase.
+        """
+        rois = [r for r in self._rois if r.rid in self._selected_rids]
+        scope = "selection"
+        if len(rois) < 2:
+            rois = group_rois(self._rois, self._active_gid)
+            scope = "group"
+        if len(rois) < 2:
+            self.statusBar().showMessage(
+                "Add at least two ROIs (Shift+drag selects them).", 4000)
+            return
+        rects = [r.rect for r in rois]
+        if mode in ("distx", "disty"):
+            out = distribute_rects(rects, "x" if mode == "distx" else "y")
+        else:
+            out = align_rects(rects, mode)
+        if out == rects:
+            return
+        for roi, rect in zip(rois, out):
+            roi.rect = tuple(rect)
+        self.statusBar().showMessage(
+            f"{mode} applied to {len(rois)} ROIs in the {scope}.", 3000)
+        self._refresh()
 
     def on_roi_order(self, order: str) -> None:
         self._roi_order = order if order in ("placed", "asc", "desc") else "placed"

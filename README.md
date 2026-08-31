@@ -30,6 +30,12 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
   - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
     duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
     group.
+  - **align** — pull the selection (or the whole active group, with nothing
+    selected) onto one edge — left / centre / right, top / middle / bottom —
+    or even out its horizontal / vertical spacing. Hand-placed ROIs sit a few
+    pixels off each other, which is invisible until *fill field* tiles them:
+    the cell edges fall midway between centres, so a stray offset turns a
+    clean grid into a staircase.
   - The ROI list carries each ROI's shown metric and sorts by it (**order**:
     as placed / value ↑ / value ↓), so the odd one out is one glance away.
 - **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
@@ -50,6 +56,11 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
     box stays outlined on top.
   - **flag outliers** — Tukey fences within each group.
 
+  Under a heat overlay colour means one thing — the value — so the ROI
+  outlines drop to neutral ink over a white halo rather than the group's
+  colour, which would otherwise read as a point on the scale (an amber group
+  against the ramp's amber midpoint especially).
+
 ## Comparisons (in a separate Analysis window)
 
 - **Between groups** — the distribution of a metric across every ROI in each
@@ -67,9 +78,15 @@ also gives an **attribute-ranking** table — which metric best separates the
 groups, scored by η² (variance explained) and Cohen's d — and a **group ×
 metric heatmap** for an at-a-glance overview, plus a summary table.
 
-Charts are laid out as figures — a printable shape, capped in width and
-centred, rather than stretched across the window. **CSV export** carries every
-ROI's metrics and a per-group summary.
+The results read as one page, not two: the **figures fill the left column**,
+one per row and as large as the column allows, vertically centred; the numbers
+that annotate them — ranking, group × metric heatmap, summary table — stack
+down the right. Every chart carries the plain furniture a figure in a report
+needs: a boxed plot area with inward tick marks, labelled axes, and
+observations drawn as **open markers** so a scatter never fuses into the lines
+drawn in the same colour beside it.
+
+**CSV export** carries every ROI's metrics and a per-group summary.
 
 ## Every view exports as a picture
 
@@ -87,8 +104,10 @@ readout, selection handles, marquee, grid preview) are left out.
   the ROIs it is the key for.
 - **The results** — *Export image ▾* in the Analysis window offers exactly
   the sections the current result has: **Charts** (the figures alone, cropped
-  out of the layout's slack), **Attribute ranking**, **Group × metric
-  heatmap**, **Summary table**, or **Everything** as one sheet.
+  out of the layout's slack) and, when there is more than one, **each chart
+  on its own** — one figure per file is what a document actually takes —
+  plus **Attribute ranking**, **Group × metric heatmap**, **Summary table**,
+  or **Everything** as one sheet.
 - **One ROI's pixels** — *Export image* in the ROI inspector window.
 
 ## Uniformity — is the GLV flat across the field?
@@ -173,7 +192,7 @@ pytest                              # headless core + offscreen UI smoke
 
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
   grid interpolation, outlier detection, heat colormap, heat-map cell edges,
-  per-ROI field cells,
+  per-ROI field cells, ROI alignment / spacing,
   attribute separability / ranking, pixel histogram, ROI positions / linear
   trend / uniformity, project (de)serialize, between/within comparison,
   snapshot isolation.
@@ -187,8 +206,8 @@ pytest                              # headless core + offscreen UI smoke
   histogram bins / percent / tick steps,
   chart aspect, position profile + heat map (cells / dots / values),
   independent ROI overlay toggles, field fill, value-label fitting, fit across
-  a resize, ROI list values / ordering, status headline, per-lane box scale,
-  list rebuilds leaving no stale rows.
+  a resize, ROI list values / ordering, align buttons, status headline,
+  per-lane box scale, list rebuilds leaving no stale rows.
 
 ## Repository layout
 
@@ -221,7 +240,7 @@ git add -A && python tools/make_text_bundle.py && git add -A
 ## Scope (V1)
 
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
+grid / box-select / align), GLV + within-group SNR metrics, value heatmap + outlier
 flagging with per-overlay toggles and a field fill, attribute ranking +
 group×metric heatmap, image export of every view (PNG / SVG),
 per-ROI pixel inspector,

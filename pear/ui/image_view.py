@@ -377,13 +377,26 @@ class ImageView(QWidget):
             else:
                 fill = QColor(color)
                 fill.setAlpha(64 if active_grp else 26)
-            stroke = QColor(color)
-            stroke.setAlpha(255 if active_grp else 130)
-            pen = QPen(stroke, 2.4 if selected else (1.8 if active_grp else 1.2))
-            pen.setCosmetic(True)
-            p.setPen(pen)
-            p.setBrush(fill)
-            p.drawRect(r)
+            width = 2.4 if selected else (1.8 if active_grp else 1.2)
+            if heat is not None:
+                # Under a heat overlay colour means one thing — the value. A
+                # box in the group's colour reads as a reading off the scale
+                # (an amber group against an amber midpoint especially), so
+                # the outline drops to neutral ink over a white halo, which
+                # sits on any colour of the ramp without claiming to be one.
+                p.setBrush(fill)
+                p.setPen(Qt.NoPen)
+                p.drawRect(r)
+                self._stroke_neutral(p, r, width, dashed=False,
+                                     strong=active_grp)
+            else:
+                stroke = QColor(color)
+                stroke.setAlpha(255 if active_grp else 130)
+                pen = QPen(stroke, width)
+                pen.setCosmetic(True)
+                p.setPen(pen)
+                p.setBrush(fill)
+                p.drawRect(r)
             if roi.rid == self._hover_rid and not self._exporting:
                 self._paint_hover_ring(p, r)
             if in_sel and not self._exporting:
@@ -397,6 +410,21 @@ class ImageView(QWidget):
                 self._paint_value(p, r, val, roi.rid == self._hover_rid)
             if selected and not self._grid_mode and not self._exporting:
                 self._paint_handles(p, r, color)
+
+    def _stroke_neutral(self, p: QPainter, r: QRectF, width: float,
+                        dashed: bool = False, strong: bool = True) -> None:
+        """Outline that stays legible on any fill: white halo, dark ink on top."""
+        p.setBrush(Qt.NoBrush)
+        halo = QPen(QColor(255, 255, 255, 190), width + 2.0)
+        halo.setCosmetic(True)
+        p.setPen(halo)
+        p.drawRect(r)
+        ink = QPen(QColor(17, 24, 39, 255 if strong else 150), width)
+        ink.setCosmetic(True)
+        if dashed:
+            ink.setStyle(Qt.DashLine)
+        p.setPen(ink)
+        p.drawRect(r)
 
     def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
         pen = QPen(QColor(255, 255, 255, 210), 1.4)
@@ -493,15 +521,11 @@ class ImageView(QWidget):
     def _paint_rubberband(self, p: QPainter) -> None:
         if self._draw_rect is None:
             return
-        pen = QPen(QColor(theme.AMBER), 2)
-        pen.setCosmetic(True)
-        pen.setStyle(Qt.DashLine)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
         rn = self._draw_rect.normalized()
         tl = self._to_widget(rn.left(), rn.top())
-        p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
-                          rn.height() * self._scale))
+        self._stroke_neutral(p, QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+                                       rn.height() * self._scale),
+                             2.0, dashed=True)
 
     def _paint_marquee(self, p: QPainter) -> None:
         if self._marquee is None:
