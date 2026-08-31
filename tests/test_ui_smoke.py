@@ -341,7 +341,8 @@ def test_chart_option_toggles(app):
     ap.whiskers_chk.setChecked(False)
     app.processEvents()          # flush deleteLater so stale charts are gone
     charts = ap.body.findChildren(DistributionChart)
-    assert any(c._opts == {"points": False, "whiskers": False} for c in charts)
+    assert any(not c._opts["points"] and not c._opts["whiskers"]
+               for c in charts)
 
 
 def test_ranking_and_heatmap_render(app):
@@ -450,6 +451,96 @@ def test_position_profile_and_heatmap_render(app):
     assert ap.chart_state() == ("position", "y")
     for c in ap.body.findChildren(DistributionChart):
         c.grab()
+
+
+def test_rebuilt_lists_leave_no_stale_rows(app):
+    """A rebuilt list must not keep painting its old rows over the card.
+
+    ``deleteLater`` alone leaves them parented until the event loop runs, and
+    they cover the Groups card's title and Add button while they linger.
+    """
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import _ItemRow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_group()
+    win.on_roi_created((10, 10, 12, 12))
+    win.on_roi_created((40, 10, 12, 12))
+    for _ in range(3):
+        win._refresh()                       # no processEvents in between
+    grp_card = win.rail.grp_add_btn.parentWidget()
+    assert len(grp_card.findChildren(_ItemRow)) == len(win._groups)
+    roi_rows = len(group_rois(win._rois, win._active_gid))
+    assert len(win.rail.roi_host.parentWidget().findChildren(_ItemRow)) == roi_rows
+
+
+def test_map_draws_touching_cells_and_optional_values(app):
+    """Cell mode tiles the field; the dot fallback and labels still paint."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("map")
+    app.processEvents()
+    assert not ap.cells_chk.isHidden() and not ap.mapval_chk.isHidden()
+
+    def maps():
+        # a re-render leaves the previous charts pending deleteLater, so match
+        # any live one rather than assuming which comes first
+        return [c for c in ap.body.findChildren(DistributionChart)
+                if c._ctype == "map"]
+
+    assert any(c._opts["cells"] for c in maps())
+    ap.mapval_chk.setChecked(True)             # values printed inside the cells
+    app.processEvents()
+    assert any(c._opts["map_values"] for c in maps())
+    for c in maps():
+        c.grab()
+    ap.cells_chk.setChecked(False)             # back to separate dots
+    app.processEvents()
+    assert not ap.mapval_chk.isEnabled()
+    dots = [c for c in maps() if not c._opts["cells"]]
+    assert dots
+    for c in dots:
+        c.grab()
+        # the toggles are render-only — the position data is untouched
+        assert c._series[0]["pos_x"].size == len(win._rois)
+
+
+def test_overlay_toggles_are_independent(app, tmp_path):
+    """Value text, heat fill and its opacity switch one at a time."""
+    import json
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _grid_group(win, 2, 3)
+    win.on_show_metric("glv_mean")
+    assert win.image_view._roi_values                 # numbers on by default
+    win.on_heatmap(True)
+    win.on_show_values(False)                         # colour only, no numbers
+    assert win.image_view._heat and win.image_view._roi_values == {}
+    win.on_heat_alpha(30)
+    assert win.image_view._heat_alpha == round(30 * 2.55)
+    win.on_show_values(True)
+    assert win.image_view._roi_values
+
+    win.on_show_values(False)
+    out = tmp_path / "p.pear.json"
+    win.save_project(str(out))
+    win2 = MainWindow()
+    win2.set_image(make_field(), "f.png")
+    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+    assert win2._show_values is False and win2._heat_alpha == 30
+    assert win2.rail.metrics.alpha_spin.value() == 30
+    assert win2.image_view._roi_values == {}
+    assert win2.image_view._heat_alpha == round(30 * 2.55)
 
 
 def test_position_chart_without_positions_is_safe(app):

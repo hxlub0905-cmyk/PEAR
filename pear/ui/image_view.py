@@ -62,6 +62,7 @@ class ImageView(QWidget):
         self._marquee: Optional[QRectF] = None  # selection rect (image coords)
         self._heat: dict = {}                  # rid -> hex colour (heatmap)
         self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
+        self._heat_alpha = 178                 # heat fill opacity (0-255)
         self._outliers: set = set()            # rids flagged as outliers
         self._hover_rid: int = -1              # rid under the cursor
 
@@ -111,10 +112,15 @@ class ImageView(QWidget):
         self._selection = set(rids or [])
         self.update()
 
-    def set_heatmap(self, colors: dict, legend=None) -> None:
-        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label)."""
+    def set_heatmap(self, colors: dict, legend=None, alpha: int = 178) -> None:
+        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label).
+
+        ``alpha`` (0-255) is how opaque the fill is — turn it down to read the
+        image under the box.
+        """
         self._heat = colors or {}
         self._heat_legend = legend
+        self._heat_alpha = int(np.clip(int(alpha), 0, 255))
         self.update()
 
     def set_outliers(self, rids) -> None:
@@ -249,7 +255,7 @@ class ImageView(QWidget):
             heat = self._heat.get(roi.rid)
             if heat is not None:                     # value heatmap fill
                 fill = QColor(heat)
-                fill.setAlpha(175)
+                fill.setAlpha(self._heat_alpha)
             else:
                 fill = QColor(color)
                 fill.setAlpha(64 if active_grp else 26)

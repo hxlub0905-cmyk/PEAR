@@ -66,8 +66,10 @@ class MainWindow(QMainWindow):
         self._next_rid = 1
         self._metrics: List[str] = ["glv_mean", "glv_median"]
         self._show_metric = ""            # single metric drawn live on ROIs
+        self._show_values = True          # print the shown metric on each ROI
         self._heatmap = False             # colour ROIs by the shown metric
         self._flag_outliers = False       # flag Tukey outliers of the shown metric
+        self._heat_alpha = 70             # heat fill opacity, percent
         self._outlier_rids: set = set()
         self._image_path: Optional[str] = None
         self._cmp_mode = "between"
@@ -207,8 +209,10 @@ class MainWindow(QMainWindow):
         self.rail.roi_hovered.connect(self.image_view.set_hover)
         self.rail.metrics_changed.connect(self.set_metrics)
         self.rail.show_metric_changed.connect(self.on_show_metric)
+        self.rail.values_changed.connect(self.on_show_values)
         self.rail.heatmap_changed.connect(self.on_heatmap)
         self.rail.outliers_changed.connect(self.on_flag_outliers)
+        self.rail.heat_alpha_changed.connect(self.on_heat_alpha)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -436,6 +440,14 @@ class MainWindow(QMainWindow):
         self._show_metric = mid or ""
         self._refresh()
 
+    def on_show_values(self, on: bool) -> None:
+        self._show_values = bool(on)
+        self._refresh()
+
+    def on_heat_alpha(self, pct: int) -> None:
+        self._heat_alpha = int(max(0, min(100, int(pct))))
+        self._update_heatmap()
+
     def on_heatmap(self, on: bool) -> None:
         self._heatmap = bool(on)
         if on and not self._is_glv_show():
@@ -464,12 +476,13 @@ class MainWindow(QMainWindow):
                 colors = {rid: heat_color((v - vmin) / span)
                           for rid, v in vals.items() if np.isfinite(v)}
                 self.image_view.set_heatmap(
-                    colors, (vmin, vmax, metric_label(self._show_metric)))
+                    colors, (vmin, vmax, metric_label(self._show_metric)),
+                    round(self._heat_alpha * 2.55))
                 return
         self.image_view.set_heatmap({}, None)
 
     def _update_roi_values(self) -> None:
-        if not self._show_metric or self._image is None:
+        if not self._show_values or not self._show_metric or self._image is None:
             self.image_view.set_roi_values({})
             return
         vals = {}
@@ -632,8 +645,10 @@ class MainWindow(QMainWindow):
             "next_rid": self._next_rid,
             "metrics": list(self._metrics),
             "show_metric": self._show_metric,
+            "show_values": self._show_values,
             "heatmap": self._heatmap,
             "flag_outliers": self._flag_outliers,
+            "heat_alpha": self._heat_alpha,
             "cmp_mode": self._cmp_mode,
             "within_gid": self._within_gid,
             "active_gid": self._active_gid,
@@ -672,8 +687,10 @@ class MainWindow(QMainWindow):
                              or (max((r.rid for r in self._rois), default=0) + 1))
         self._metrics = list(data.get("metrics") or ["glv_mean", "glv_median"])
         self._show_metric = data.get("show_metric") or ""
+        self._show_values = bool(data.get("show_values", True))
         self._heatmap = bool(data.get("heatmap", False))
         self._flag_outliers = bool(data.get("flag_outliers", False))
+        self._heat_alpha = int(data.get("heat_alpha", 70))
         self._cmp_mode = data.get("cmp_mode", "between")
         self._within_gid = data.get("within_gid")
         self._active_gid = (data.get("active_gid")
@@ -681,7 +698,8 @@ class MainWindow(QMainWindow):
         self._active_rid = None
         self._selected_rids = set()
         self.rail.set_metric_state(self._metrics, self._show_metric,
-                                   self._heatmap, self._flag_outliers)
+                                   self._heatmap, self._flag_outliers,
+                                   self._show_values, self._heat_alpha)
         self.analysis.set_chart_state(data.get("chart_type", "box"),
                                       data.get("pos_axis", "x"))
         self._refresh()

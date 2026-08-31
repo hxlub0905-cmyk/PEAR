@@ -17,9 +17,9 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
                                QWidget)
 
-from pear.core.analysis import (Group, heat_color, linear_trend,
-                               pixel_hist, profile_by_position,
-                               uniformity)
+from pear.core.analysis import (Group, cell_edges, heat_color,
+                               linear_trend, pixel_hist,
+                               profile_by_position, uniformity)
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
                                   metric_label)
 from pear.ui import theme
@@ -65,10 +65,20 @@ def _swatch(color: str, on_pick: Callable[[str], None]) -> QPushButton:
 
 
 def _clear(layout) -> None:
+    """Empty a layout, hiding each widget *now*.
+
+    ``deleteLater`` only schedules the removal: until the event loop runs, a
+    widget taken out of a layout keeps its parent and its last geometry, so a
+    rebuilt list paints its stale rows over whatever sits under them (the
+    Groups card's own title and Add button, for one). Unparenting first ends
+    that on the spot.
+    """
     while layout.count():
         it = layout.takeAt(0)
-        if it.widget():
-            it.widget().deleteLater()
+        w = it.widget()
+        if w is not None:
+            w.setParent(None)
+            w.deleteLater()
 
 
 # --------------------------------------------------------------------------- #
@@ -84,7 +94,7 @@ class DistributionChart(QWidget):
         self._title = ""
         self._series: List[dict] = []
         self._ctype = "box"
-        self._opts = {"points": True, "whiskers": True}
+        self._opts = {"points": True, "whiskers": True, "cells": True}
         self._axis = "x"
         self._trend = True
         self.setMinimumHeight(212)
@@ -93,7 +103,8 @@ class DistributionChart(QWidget):
                  opts=None, axis: str = "x", trend: bool = True) -> None:
         self._title = title
         self._ctype = ctype
-        self._opts = {"points": True, "whiskers": True, **(opts or {})}
+        self._opts = {"points": True, "whiskers": True, "cells": True,
+                      **(opts or {})}
         self._axis = "y" if str(axis).lower() == "y" else "x"
         self._trend = bool(trend)
         clean = []
@@ -378,8 +389,11 @@ class DistributionChart(QWidget):
     def _paint_map(self, p: QPainter) -> None:
         """Every ROI drawn where it sits, coloured by its metric value.
 
-        Y runs downward to match the image. A uniform field is one flat
-        colour; a gradient or a hot corner is the non-uniformity.
+        As **cells** (the default) each ROI spans the gap to its neighbour, so
+        the field reads as one surface and a cell can be compared against the
+        one beside it; as **dots** the ROIs stay separate marks. Y runs
+        downward to match the image. A uniform field is one flat colour; a
+        gradient or a hot corner is the non-uniformity.
         """
         series = [s for s in self._series
                   if s.get("pos_x") is not None and s.get("pos_y") is not None
@@ -396,16 +410,41 @@ class DistributionChart(QWidget):
         ally = np.concatenate([s["pos_y"] for s in series])
         lo, hi = float(allv.min()), float(allv.max())
         flat = (hi - lo) < 1e-9
+        vspan = 1.0 if flat else hi - lo
 
-        def span(a):
-            v0, v1 = float(a.min()), float(a.max())
-            if v1 - v0 < 1e-9:
-                v0, v1 = v0 - 1.0, v1 + 1.0
-            pad = (v1 - v0) * 0.08
-            return v0 - pad, v1 + pad
+        cells = bool(self._opts.get("cells", True))
+        show_val = bool(self._opts.get("map_values", False))
+        xc, xe = cell_edges(allx)
+        yc, ye = cell_edges(ally)
 
-        xlo, xhi = span(allx)
-        ylo, yhi = span(ally)
+        def median_step(e):
+            return float(np.median(np.diff(e))) if e.size > 2 else 0.0
+
+        cw, ch = median_step(xe), median_step(ye)
+        if cells:
+            # a single column (or row) has no pitch of its own — it borrows
+            # the other axis's, so the cells stay square instead of hairlines
+            if xc.size == 1 and ch > 0:
+                xe, cw = np.asarray([xc[0] - ch / 2, xc[0] + ch / 2]), ch
+            if yc.size == 1 and cw > 0:
+                ye, ch = np.asarray([yc[0] - cw / 2, yc[0] + cw / 2]), cw
+            xlo, xhi = float(xe[0]), float(xe[-1])   # cells fill the plot box
+            ylo, yhi = float(ye[0]), float(ye[-1])
+            if xhi - xlo < 1e-9:
+                xlo, xhi = xlo - 1.0, xhi + 1.0
+            if yhi - ylo < 1e-9:
+                ylo, yhi = ylo - 1.0, yhi + 1.0
+        else:
+            def span(a):
+                v0, v1 = float(a.min()), float(a.max())
+                pad = max((v1 - v0) * 0.08, 0.5)
+                v0, v1 = v0 - pad, v1 + pad
+                if v1 - v0 < 1e-9:
+                    v0, v1 = v0 - 1.0, v1 + 1.0
+                return v0, v1
+
+            xlo, xhi = span(allx)
+            ylo, yhi = span(ally)
 
         top, left = 34, 52
         cbar_w = 54
@@ -413,12 +452,14 @@ class DistributionChart(QWidget):
         right = self.width() - 12 - cbar_w
         H = max(10, bottom - top)
         W = max(10, right - left)
+        sx = W / (xhi - xlo)
+        sy = H / (yhi - ylo)
 
         def X(v):
-            return left + (v - xlo) / (xhi - xlo) * W
+            return left + (v - xlo) * sx
 
         def Y(v):                       # image Y grows downward
-            return top + (v - ylo) / (yhi - ylo) * H
+            return top + (v - ylo) * sy
 
         p.setPen(QPen(QColor(theme.LINE2), 1))
         p.setBrush(Qt.NoBrush)
@@ -438,26 +479,58 @@ class DistributionChart(QWidget):
                    "ROI centre X (px)")
         self._ytitle(p, "ROI centre Y (px)")
 
-        # A scatter, not a tiling: one dot per ROI at its own (x, y), coloured
-        # by the metric. Size follows the tightest neighbour spacing only so
-        # that dense layouts stay readable — dots never grow into blocks.
-        rad = 7.0
-        if allx.size > 1:
-            for arr, sc in ((allx, W / (xhi - xlo)), (ally, H / (yhi - ylo))):
-                u = np.unique(np.round(arr, 0))
-                if u.size > 1:
-                    rad = min(rad, float(np.min(np.diff(u))) * sc * 0.34)
-        rad = float(np.clip(rad, 2.5, 9.0))
-
         ring = len(series) > 1        # only needed to tell groups apart
-        for s in series:
-            edge = QColor(s["color"])
-            for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
-                t = 0.5 if flat else (float(v) - lo) / (hi - lo)
-                p.setBrush(QColor(heat_color(t)))
-                p.setPen(QPen(edge, 1.2) if ring
-                         else QPen(QColor(theme.LINE), 0.8))
-                p.drawEllipse(QPointF(X(cx), Y(cy)), rad, rad)
+        if cells:
+            # One filled cell per ROI, spanning to the boundary it shares with
+            # its neighbour: the difference against the cell next door is the
+            # point of the view, and touching blocks show it where dots cannot.
+            p.setFont(theme.mono_font(8, weight=700))
+            fm = p.fontMetrics()
+            for s in series:
+                edge = QColor(s["color"])
+                for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+                    t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+                    col = heat_color(t)
+                    i = int(np.abs(xc - cx).argmin()) if xe.size > 2 else 0
+                    j = int(np.abs(yc - cy).argmin()) if ye.size > 2 else 0
+                    x0, x1 = X(xe[i]), X(xe[i + 1])
+                    y0, y1 = Y(ye[j]), Y(ye[j + 1])
+                    r = QRectF(x0, y0, x1 - x0, y1 - y0)
+                    p.setBrush(QColor(col))
+                    # a hairline edge separates touching cells without
+                    # opening a gap between them
+                    p.setPen(QPen(edge, 1.2) if ring
+                             else QPen(QColor(0, 0, 0, 45), 0.8))
+                    p.drawRect(r)
+                    if not show_val:
+                        continue
+                    txt = _fmt_span(float(v), vspan)
+                    if (fm.horizontalAdvance(txt) + 6 <= r.width()
+                            and fm.height() <= r.height()):
+                        p.setPen(QColor("#FFFFFF") if _is_dark(col)
+                                 else QColor(theme.INK))
+                        p.drawText(r, Qt.AlignCenter, txt)
+            p.setPen(QPen(QColor(theme.LINE2), 1))   # cells cover the frame
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(int(left), int(top), int(W), int(H))
+        else:
+            # A scatter: one dot per ROI. Size follows the tightest neighbour
+            # spacing only so that dense layouts stay readable.
+            rad = 7.0
+            if allx.size > 1:
+                for arr, sc in ((allx, sx), (ally, sy)):
+                    u = np.unique(np.round(arr, 0))
+                    if u.size > 1:
+                        rad = min(rad, float(np.min(np.diff(u))) * sc * 0.34)
+            rad = float(np.clip(rad, 2.5, 9.0))
+            for s in series:
+                edge = QColor(s["color"])
+                for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+                    t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+                    p.setBrush(QColor(heat_color(t)))
+                    p.setPen(QPen(edge, 1.2) if ring
+                             else QPen(QColor(theme.LINE), 0.8))
+                    p.drawEllipse(QPointF(X(cx), Y(cy)), rad, rad)
 
         # colour bar
         bx = right + 16
@@ -477,13 +550,15 @@ class DistributionChart(QWidget):
                    Qt.AlignLeft, _fmt_span(lo, hi - lo))
 
         u = uniformity(allv)
+        txt = (f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
+               f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
+               f" · CV {_pct(u['cv_pct'])}")
+        if cells and cw > 0 and ch > 0:
+            txt += f" · cell {cw:.0f}×{ch:.0f} px"
         p.setPen(QColor(theme.INK2))
         p.setFont(theme.mono_font(8))
         p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
-                   Qt.AlignLeft | Qt.AlignVCenter,
-                   f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
-                   f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
-                   f" · CV {_pct(u['cv_pct'])}")
+                   Qt.AlignLeft | Qt.AlignVCenter, txt)
 
     # -- overlaid histogram ------------------------------------------- #
     def _paint_hist(self, p: QPainter) -> None:
@@ -620,8 +695,10 @@ class _Chip(QPushButton):
 class MetricPicker(QWidget):
     changed = Signal(list)
     show_changed = Signal(str)          # metric id to draw on ROIs ("" = none)
+    values_changed = Signal(bool)       # print the value on each ROI
     heatmap_changed = Signal(bool)      # colour ROIs by the shown metric
     outliers_changed = Signal(bool)     # flag Tukey outliers of the shown metric
+    heat_alpha_changed = Signal(int)    # heat fill opacity, percent
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -664,26 +741,55 @@ class MetricPicker(QWidget):
         show.addWidget(show_lbl)
         show.addWidget(self.show_combo, 1)
         root.addLayout(show)
-        # value-driven overlays for the shown metric (GLV only)
+        # Overlays for the shown metric, each switched on its own: the number,
+        # the heat fill, and the outlier flags are three separate readings of
+        # the same metric, and reading one often means hiding the others.
         ov = QHBoxLayout()
         ov.setSpacing(12)
+        self.values_chk = QCheckBox("values")
+        self.values_chk.setChecked(True)
+        self.values_chk.setToolTip(
+            "Print the metric on each ROI. Off with heatmap on = colour only.")
+        self.values_chk.toggled.connect(self.values_changed)
         self.heatmap_chk = QCheckBox("heatmap")
-        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
-        self.heatmap_chk.toggled.connect(self.heatmap_changed)
+        self.heatmap_chk.setToolTip("Colour each ROI box by its shown metric value.")
+        self.heatmap_chk.toggled.connect(self._on_heatmap)
         self.outliers_chk = QCheckBox("flag outliers")
         self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
                                      "within their group.")
         self.outliers_chk.toggled.connect(self.outliers_changed)
+        ov.addWidget(self.values_chk)
         ov.addWidget(self.heatmap_chk)
         ov.addWidget(self.outliers_chk)
         ov.addStretch(1)
         root.addLayout(ov)
+        # how much of the image the heat fill leaves visible
+        op = QHBoxLayout()
+        op.setSpacing(6)
+        op_lbl = QLabel("heat opacity")
+        op_lbl.setObjectName("Hint")
+        self.alpha_spin = QSpinBox()
+        self.alpha_spin.setRange(10, 100)
+        self.alpha_spin.setSingleStep(5)
+        self.alpha_spin.setValue(70)
+        self.alpha_spin.setSuffix(" %")
+        self.alpha_spin.setFixedWidth(74)
+        self.alpha_spin.setMinimumHeight(28)
+        self.alpha_spin.setEnabled(False)
+        self.alpha_spin.setToolTip(
+            "Opacity of the heat fill — lower it to read the image under the box.")
+        self.alpha_spin.valueChanged.connect(self.heat_alpha_changed)
+        op.addWidget(op_lbl)
+        op.addWidget(self.alpha_spin)
+        op.addStretch(1)
+        root.addLayout(op)
         self._rebuild()
 
     def selected(self) -> List[str]:
         return list(self._selected)
 
-    def set_state(self, metrics, show, heatmap, outliers) -> None:
+    def set_state(self, metrics, show, heatmap, outliers,
+                  values=True, heat_alpha=70) -> None:
         """Restore the picker (used when opening a project)."""
         self._selected = list(metrics or [])
         self._show = show or ""
@@ -692,10 +798,20 @@ class MetricPicker(QWidget):
                     and m not in self._custom):
                 self._custom.append(m)
         self._rebuild()
-        for chk, val in ((self.heatmap_chk, heatmap), (self.outliers_chk, outliers)):
+        for chk, val in ((self.heatmap_chk, heatmap),
+                         (self.outliers_chk, outliers),
+                         (self.values_chk, values)):
             chk.blockSignals(True)
             chk.setChecked(bool(val))
             chk.blockSignals(False)
+        self.alpha_spin.blockSignals(True)
+        self.alpha_spin.setValue(int(heat_alpha))
+        self.alpha_spin.blockSignals(False)
+        self.alpha_spin.setEnabled(bool(heatmap))
+
+    def _on_heatmap(self, on: bool) -> None:
+        self.alpha_spin.setEnabled(bool(on))   # opacity only bites on a fill
+        self.heatmap_changed.emit(bool(on))
 
     def _add_custom(self) -> None:
         mid = f"glv_q{int(self.qn_spin.value())}"
@@ -760,8 +876,10 @@ class RailPanel(QWidget):
     roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
     metrics_changed = Signal(list)
     show_metric_changed = Signal(str)
+    values_changed = Signal(bool)
     heatmap_changed = Signal(bool)
     outliers_changed = Signal(bool)
+    heat_alpha_changed = Signal(int)
     open_analysis = Signal()
 
     def __init__(self, parent=None):
@@ -869,8 +987,10 @@ class RailPanel(QWidget):
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
         self.metrics.show_changed.connect(self.show_metric_changed)
+        self.metrics.values_changed.connect(self.values_changed)
         self.metrics.heatmap_changed.connect(self.heatmap_changed)
         self.metrics.outliers_changed.connect(self.outliers_changed)
+        self.metrics.heat_alpha_changed.connect(self.heat_alpha_changed)
         met.layout().addWidget(self.metrics)
         root.addWidget(met)
 
@@ -918,8 +1038,10 @@ class RailPanel(QWidget):
         for r, row in getattr(self, "_roi_rows", {}).items():
             row.set_hover(r == rid)
 
-    def set_metric_state(self, metrics, show, heatmap, outliers) -> None:
-        self.metrics.set_state(metrics, show, heatmap, outliers)
+    def set_metric_state(self, metrics, show, heatmap, outliers,
+                         values=True, heat_alpha=70) -> None:
+        self.metrics.set_state(metrics, show, heatmap, outliers,
+                               values, heat_alpha)
 
     def grid_shape(self):
         return int(self.grid_rows.value()), int(self.grid_cols.value())
@@ -1134,6 +1256,20 @@ class AnalysisPanel(QWidget):
         self.trend_chk.toggled.connect(self._on_chart_opts)
         self.trend_chk.setVisible(False)
         head.addWidget(self.trend_chk)
+        self.cells_chk = QCheckBox("cells")
+        self.cells_chk.setChecked(True)
+        self.cells_chk.setToolTip(
+            "Draw each ROI as a filled cell that meets its neighbours, so a "
+            "cell can be read against the one beside it. Off = separate dots.")
+        self.cells_chk.toggled.connect(self._on_cells)
+        self.cells_chk.setVisible(False)
+        head.addWidget(self.cells_chk)
+        self.mapval_chk = QCheckBox("values")
+        self.mapval_chk.setToolTip(
+            "Print the metric inside each cell (cells wide enough to hold it).")
+        self.mapval_chk.toggled.connect(self._on_chart_opts)
+        self.mapval_chk.setVisible(False)
+        head.addWidget(self.mapval_chk)
         self.selector_lbl = QLabel("")
         self.selector_lbl.setObjectName("Hint")
         head.addWidget(self.selector_lbl)
@@ -1185,6 +1321,9 @@ class AnalysisPanel(QWidget):
             chk.setVisible(t not in ("position", "map"))
         self.axis_box.setVisible(t == "position")
         self.trend_chk.setVisible(t == "position")
+        for chk in (self.cells_chk, self.mapval_chk):
+            chk.setVisible(t == "map")
+        self.mapval_chk.setEnabled(self.cells_chk.isChecked())
         if self._last_result is not None:
             self._render_body(self._last_result)   # re-render, no recompute
 
@@ -1194,6 +1333,11 @@ class AnalysisPanel(QWidget):
         self._pos_axis = str(self.axis_box.currentData() or "x")
         if self._last_result is not None:
             self._render_body(self._last_result)   # positions are already there
+
+    def _on_cells(self, on: bool) -> None:
+        # values are printed inside a cell, so they have nowhere to go on dots
+        self.mapval_chk.setEnabled(bool(on))
+        self._on_chart_opts()
 
     def _on_chart_opts(self, _=False) -> None:
         if self._last_result is not None:
@@ -1359,7 +1503,10 @@ class AnalysisPanel(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
         opts = {"points": self.points_chk.isChecked(),
-                "whiskers": self.whiskers_chk.isChecked()}
+                "whiskers": self.whiskers_chk.isChecked(),
+                "cells": self.cells_chk.isChecked(),
+                "map_values": (self.mapval_chk.isChecked()
+                               and self.cells_chk.isChecked())}
         wide = self._chart_type in ("position", "map")   # these need the width
         for i, (title, series) in enumerate(charts):
             chart = DistributionChart()

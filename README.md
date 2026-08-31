@@ -34,9 +34,13 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
   Q75, std, min, max, plus any custom **Q*n***) and **SNR**. SNR is a
   *within-group* measurement: tag one ROI as the **target (T)** and the rest
   become the **reference (R)**, giving the e-beam definition
-  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs,
-  optionally as a **value heatmap** (ROIs coloured by the metric, with a
-  colorbar) and with **outlier flagging** (Tukey fences within each group).
+  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs.
+- **ROI overlay** — pick the metric under **show on ROIs**, then switch each
+  reading of it on its own: **values** (the number printed on the box),
+  **heatmap** (the box filled with the metric's colour, with a colorbar) and
+  **flag outliers** (Tukey fences within each group). Values off + heatmap on
+  = colour only; **heat opacity** turns the fill down until the image under
+  the box shows through.
 
 ## Comparisons (in a separate Analysis window)
 
@@ -62,10 +66,13 @@ one number everywhere.
   X (switchable). Every ROI is a dot; ROIs sharing a position collapse into the
   profile line; a dashed **least-squares trend** shows the tilt and a faint
   dashed line marks the group mean. **A uniform field reads as a flat line.**
-- **Heat map** — a scatter of the ROIs at their own **(x, y)**, each dot
-  coloured by the metric, with a colour bar. **A uniform field is one flat
-  colour**; a gradient or a hot corner is the non-uniformity, and you can see
-  *where* it is.
+- **Heat map** — the ROIs at their own **(x, y)**, each coloured by the
+  metric, with a colour bar. As **cells** (the default) every ROI is a block
+  reaching the boundary it shares with its neighbour, so the field tiles with
+  no gaps and a block reads against the one beside it; **values** prints the
+  number inside each block, and unticking **cells** falls back to separate
+  dots. **A uniform field is one flat colour**; a gradient or a hot corner is
+  the non-uniformity, and you can see *where* it is.
 
 Both print the numbers rather than a verdict: **range** (peak-to-peak),
 **range %** and **CV %** of the mean, and the trend **slope per 100 px**. CSV
@@ -80,7 +87,8 @@ vertical intensity profiles.
 
 - Fully **offline** — no network, no telemetry, all computation local.
 - **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-  metrics, and view state (including the chart type and position axis);
+  metrics, and view state (overlay toggles, heat opacity, the chart type and
+  position axis);
   reopen to pick up where you left off.
 - Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
   normalized to 8-bit grayscale on load (CJK-path safe IO).
@@ -118,15 +126,17 @@ pytest                              # headless core + offscreen UI smoke
 ```
 
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
-  grid interpolation, outlier detection, heat colormap, attribute separability /
-  ranking, pixel histogram, ROI positions / linear trend / uniformity, project
-  (de)serialize, between/within comparison, snapshot isolation.
+  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
+  attribute separability / ranking, pixel histogram, ROI positions / linear
+  trend / uniformity, project (de)serialize, between/within comparison,
+  snapshot isolation.
 - `tests/test_bundle.py` — the single-file text bundle round-trips byte for
   byte, survives CRLF, catches tampering, and is not stale.
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
   select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-  save/open, CSV export, position profile + heat map.
+  save/open, CSV export, position profile + heat map (cells / dots / values),
+  independent ROI overlay toggles, list rebuilds leaving no stale rows.
 
 ## Repository layout
 
@@ -159,7 +169,8 @@ git add -A && python tools/make_text_bundle.py && git add -A
 
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
-flagging, attribute ranking + group×metric heatmap, per-ROI pixel inspector,
+flagging with per-overlay toggles, attribute ranking + group×metric heatmap,
+per-ROI pixel inspector,
 between-group and within-group comparison in a separate window (box, histogram,
 position profile, or spatial heat map), project save/open, CSV export.
 

@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 9d61b1660dd17396cb00c5be0a45250e65d2e9c9 167 README.md
+#F cbc8ff0a960bf66814b4144781cc0b8be998b9c9 178 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -312,9 +312,13 @@ if __name__ == "__main__":
 #  Q75, std, min, max, plus any custom **Q*n***) and **SNR**. SNR is a
 #  *within-group* measurement: tag one ROI as the **target (T)** and the rest
 #  become the **reference (R)**, giving the e-beam definition
-#  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs,
-#  optionally as a **value heatmap** (ROIs coloured by the metric, with a
-#  colorbar) and with **outlier flagging** (Tukey fences within each group).
+#  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs.
+#- **ROI overlay** — pick the metric under **show on ROIs**, then switch each
+#  reading of it on its own: **values** (the number printed on the box),
+#  **heatmap** (the box filled with the metric's colour, with a colorbar) and
+#  **flag outliers** (Tukey fences within each group). Values off + heatmap on
+#  = colour only; **heat opacity** turns the fill down until the image under
+#  the box shows through.
 #
 ### Comparisons (in a separate Analysis window)
 #
@@ -340,10 +344,13 @@ if __name__ == "__main__":
 #  X (switchable). Every ROI is a dot; ROIs sharing a position collapse into the
 #  profile line; a dashed **least-squares trend** shows the tilt and a faint
 #  dashed line marks the group mean. **A uniform field reads as a flat line.**
-#- **Heat map** — a scatter of the ROIs at their own **(x, y)**, each dot
-#  coloured by the metric, with a colour bar. **A uniform field is one flat
-#  colour**; a gradient or a hot corner is the non-uniformity, and you can see
-#  *where* it is.
+#- **Heat map** — the ROIs at their own **(x, y)**, each coloured by the
+#  metric, with a colour bar. As **cells** (the default) every ROI is a block
+#  reaching the boundary it shares with its neighbour, so the field tiles with
+#  no gaps and a block reads against the one beside it; **values** prints the
+#  number inside each block, and unticking **cells** falls back to separate
+#  dots. **A uniform field is one flat colour**; a gradient or a hot corner is
+#  the non-uniformity, and you can see *where* it is.
 #
 #Both print the numbers rather than a verdict: **range** (peak-to-peak),
 #**range %** and **CV %** of the mean, and the trend **slope per 100 px**. CSV
@@ -358,7 +365,8 @@ if __name__ == "__main__":
 #
 #- Fully **offline** — no network, no telemetry, all computation local.
 #- **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-#  metrics, and view state (including the chart type and position axis);
+#  metrics, and view state (overlay toggles, heat opacity, the chart type and
+#  position axis);
 #  reopen to pick up where you left off.
 #- Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
 #  normalized to 8-bit grayscale on load (CJK-path safe IO).
@@ -396,15 +404,17 @@ if __name__ == "__main__":
 #```
 #
 #- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
-#  grid interpolation, outlier detection, heat colormap, attribute separability /
-#  ranking, pixel histogram, ROI positions / linear trend / uniformity, project
-#  (de)serialize, between/within comparison, snapshot isolation.
+#  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
+#  attribute separability / ranking, pixel histogram, ROI positions / linear
+#  trend / uniformity, project (de)serialize, between/within comparison,
+#  snapshot isolation.
 #- `tests/test_bundle.py` — the single-file text bundle round-trips byte for
 #  byte, survives CRLF, catches tampering, and is not stale.
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
 #  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-#  save/open, CSV export, position profile + heat map.
+#  save/open, CSV export, position profile + heat map (cells / dots / values),
+#  independent ROI overlay toggles, list rebuilds leaving no stale rows.
 #
 ### Repository layout
 #
@@ -437,7 +447,8 @@ if __name__ == "__main__":
 #
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 #grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
-#flagging, attribute ranking + group×metric heatmap, per-ROI pixel inspector,
+#flagging with per-overlay toggles, attribute ranking + group×metric heatmap,
+#per-ROI pixel inspector,
 #between-group and within-group comparison in a separate window (box, histogram,
 #position profile, or spatial heat map), project save/open, CSV export.
 #
@@ -733,7 +744,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F f9f98512f49c6e8f1a2d801be349f9aec40e1ab0 519 pear/core/analysis.py
+#F 3466aa183d490e025e20b7e6061cfc06df32e2c0 544 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -1030,6 +1041,31 @@ if __name__ == "__main__":
 #            "range_pct": (rng / den * 100.0) if den > 1e-12 else 0.0,
 #            "std": sd,
 #            "cv_pct": (sd / den * 100.0) if den > 1e-12 else 0.0}
+#
+#
+#def cell_edges(positions, decimals: int = 3):
+#    """Tiling boundaries for ROI centres along one axis.
+#
+#    Returns ``(centres, edges)``: the distinct centres, sorted, and the
+#    ``len(centres) + 1`` boundaries midway between neighbours, the outermost
+#    pair mirrored outward by half of the adjacent gap. Drawing each ROI from
+#    its lower to its upper edge tiles the axis exactly — no hairline gaps
+#    where centres landed on rounded pixels, no overlap where the spacing is
+#    uneven; a lone gap in the layout simply gives that ROI a wider cell.
+#
+#    A single distinct centre has no neighbour to measure against and gets a
+#    one-pixel cell; the caller substitutes a size of its own.
+#    """
+#    a = np.asarray(positions, dtype=np.float64)
+#    a = a[np.isfinite(a)]
+#    if a.size == 0:
+#        return np.empty(0), np.empty(0)
+#    c = np.unique(np.round(a, decimals))
+#    if c.size == 1:
+#        return c, np.asarray([c[0] - 0.5, c[0] + 0.5])
+#    mid = (c[:-1] + c[1:]) / 2.0
+#    return c, np.concatenate(([2.0 * c[0] - mid[0]], mid,
+#                              [2.0 * c[-1] - mid[-1]]))
 #
 #
 #def profile_by_position(positions, values, decimals: int = 0):
@@ -1379,7 +1415,7 @@ if __name__ == "__main__":
 #F afa940644becc78d2d6a262afdec4f08ba635fc2 2 pear/ui/__init__.py
 #"""Qt UI for PEAR. All Qt imports live under this package."""
 #
-#F 8e87e55927688616919015b8316b1466bcc890e1 780 pear/ui/image_view.py
+#F 4a71aaa58835a29bdb58a7aca6363406c71711ba 786 pear/ui/image_view.py
 #"""Image stage: zoom/pan and place / move / resize ROIs.
 #
 #ROIs belong to groups and are drawn in their group's colour.
@@ -1444,6 +1480,7 @@ if __name__ == "__main__":
 #        self._marquee: Optional[QRectF] = None  # selection rect (image coords)
 #        self._heat: dict = {}                  # rid -> hex colour (heatmap)
 #        self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
+#        self._heat_alpha = 178                 # heat fill opacity (0-255)
 #        self._outliers: set = set()            # rids flagged as outliers
 #        self._hover_rid: int = -1              # rid under the cursor
 #
@@ -1493,10 +1530,15 @@ if __name__ == "__main__":
 #        self._selection = set(rids or [])
 #        self.update()
 #
-#    def set_heatmap(self, colors: dict, legend=None) -> None:
-#        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label)."""
+#    def set_heatmap(self, colors: dict, legend=None, alpha: int = 178) -> None:
+#        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label).
+#
+#        ``alpha`` (0-255) is how opaque the fill is — turn it down to read the
+#        image under the box.
+#        """
 #        self._heat = colors or {}
 #        self._heat_legend = legend
+#        self._heat_alpha = int(np.clip(int(alpha), 0, 255))
 #        self.update()
 #
 #    def set_outliers(self, rids) -> None:
@@ -1631,7 +1673,7 @@ if __name__ == "__main__":
 #            heat = self._heat.get(roi.rid)
 #            if heat is not None:                     # value heatmap fill
 #                fill = QColor(heat)
-#                fill.setAlpha(175)
+#                fill.setAlpha(self._heat_alpha)
 #            else:
 #                fill = QColor(color)
 #                fill.setAlpha(64 if active_grp else 26)
@@ -2160,7 +2202,7 @@ if __name__ == "__main__":
 #        if self._pixmap is not None and self._interact is None:
 #            self.update()
 #
-#F 32471a7d7537bced198dca76cadd1d6dd1365b81 747 pear/ui/main_window.py
+#F fcbdd42df948a03bb24dbde88f43d9fc5aaeefd9 765 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2229,8 +2271,10 @@ if __name__ == "__main__":
 #        self._next_rid = 1
 #        self._metrics: List[str] = ["glv_mean", "glv_median"]
 #        self._show_metric = ""            # single metric drawn live on ROIs
+#        self._show_values = True          # print the shown metric on each ROI
 #        self._heatmap = False             # colour ROIs by the shown metric
 #        self._flag_outliers = False       # flag Tukey outliers of the shown metric
+#        self._heat_alpha = 70             # heat fill opacity, percent
 #        self._outlier_rids: set = set()
 #        self._image_path: Optional[str] = None
 #        self._cmp_mode = "between"
@@ -2370,8 +2414,10 @@ if __name__ == "__main__":
 #        self.rail.roi_hovered.connect(self.image_view.set_hover)
 #        self.rail.metrics_changed.connect(self.set_metrics)
 #        self.rail.show_metric_changed.connect(self.on_show_metric)
+#        self.rail.values_changed.connect(self.on_show_values)
 #        self.rail.heatmap_changed.connect(self.on_heatmap)
 #        self.rail.outliers_changed.connect(self.on_flag_outliers)
+#        self.rail.heat_alpha_changed.connect(self.on_heat_alpha)
 #        self.rail.open_analysis.connect(self.open_analysis)
 #
 #        self.image_view.roi_created.connect(self.on_roi_created)
@@ -2599,6 +2645,14 @@ if __name__ == "__main__":
 #        self._show_metric = mid or ""
 #        self._refresh()
 #
+#    def on_show_values(self, on: bool) -> None:
+#        self._show_values = bool(on)
+#        self._refresh()
+#
+#    def on_heat_alpha(self, pct: int) -> None:
+#        self._heat_alpha = int(max(0, min(100, int(pct))))
+#        self._update_heatmap()
+#
 #    def on_heatmap(self, on: bool) -> None:
 #        self._heatmap = bool(on)
 #        if on and not self._is_glv_show():
@@ -2627,12 +2681,13 @@ if __name__ == "__main__":
 #                colors = {rid: heat_color((v - vmin) / span)
 #                          for rid, v in vals.items() if np.isfinite(v)}
 #                self.image_view.set_heatmap(
-#                    colors, (vmin, vmax, metric_label(self._show_metric)))
+#                    colors, (vmin, vmax, metric_label(self._show_metric)),
+#                    round(self._heat_alpha * 2.55))
 #                return
 #        self.image_view.set_heatmap({}, None)
 #
 #    def _update_roi_values(self) -> None:
-#        if not self._show_metric or self._image is None:
+#        if not self._show_values or not self._show_metric or self._image is None:
 #            self.image_view.set_roi_values({})
 #            return
 #        vals = {}
@@ -2795,8 +2850,10 @@ if __name__ == "__main__":
 #            "next_rid": self._next_rid,
 #            "metrics": list(self._metrics),
 #            "show_metric": self._show_metric,
+#            "show_values": self._show_values,
 #            "heatmap": self._heatmap,
 #            "flag_outliers": self._flag_outliers,
+#            "heat_alpha": self._heat_alpha,
 #            "cmp_mode": self._cmp_mode,
 #            "within_gid": self._within_gid,
 #            "active_gid": self._active_gid,
@@ -2835,8 +2892,10 @@ if __name__ == "__main__":
 #                             or (max((r.rid for r in self._rois), default=0) + 1))
 #        self._metrics = list(data.get("metrics") or ["glv_mean", "glv_median"])
 #        self._show_metric = data.get("show_metric") or ""
+#        self._show_values = bool(data.get("show_values", True))
 #        self._heatmap = bool(data.get("heatmap", False))
 #        self._flag_outliers = bool(data.get("flag_outliers", False))
+#        self._heat_alpha = int(data.get("heat_alpha", 70))
 #        self._cmp_mode = data.get("cmp_mode", "between")
 #        self._within_gid = data.get("within_gid")
 #        self._active_gid = (data.get("active_gid")
@@ -2844,7 +2903,8 @@ if __name__ == "__main__":
 #        self._active_rid = None
 #        self._selected_rids = set()
 #        self.rail.set_metric_state(self._metrics, self._show_metric,
-#                                   self._heatmap, self._flag_outliers)
+#                                   self._heatmap, self._flag_outliers,
+#                                   self._show_values, self._heat_alpha)
 #        self.analysis.set_chart_state(data.get("chart_type", "box"),
 #                                      data.get("pos_axis", "x"))
 #        self._refresh()
@@ -3102,7 +3162,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F adeb88fbf918e0da4c54ac198d93bf1e6d46c4e8 1558 pear/ui/widgets.py
+#F 96df3357bdcdde02ac060718da6c989d2a3daf25 1705 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3122,9 +3182,9 @@ if __name__ == "__main__":
 #                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
 #                               QWidget)
 #
-#from pear.core.analysis import (Group, heat_color, linear_trend,
-#                               pixel_hist, profile_by_position,
-#                               uniformity)
+#from pear.core.analysis import (Group, cell_edges, heat_color,
+#                               linear_trend, pixel_hist,
+#                               profile_by_position, uniformity)
 #from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
 #                                  metric_label)
 #from pear.ui import theme
@@ -3170,10 +3230,20 @@ if __name__ == "__main__":
 #
 #
 #def _clear(layout) -> None:
+#    """Empty a layout, hiding each widget *now*.
+#
+#    ``deleteLater`` only schedules the removal: until the event loop runs, a
+#    widget taken out of a layout keeps its parent and its last geometry, so a
+#    rebuilt list paints its stale rows over whatever sits under them (the
+#    Groups card's own title and Add button, for one). Unparenting first ends
+#    that on the spot.
+#    """
 #    while layout.count():
 #        it = layout.takeAt(0)
-#        if it.widget():
-#            it.widget().deleteLater()
+#        w = it.widget()
+#        if w is not None:
+#            w.setParent(None)
+#            w.deleteLater()
 #
 #
 ## --------------------------------------------------------------------------- #
@@ -3189,7 +3259,7 @@ if __name__ == "__main__":
 #        self._title = ""
 #        self._series: List[dict] = []
 #        self._ctype = "box"
-#        self._opts = {"points": True, "whiskers": True}
+#        self._opts = {"points": True, "whiskers": True, "cells": True}
 #        self._axis = "x"
 #        self._trend = True
 #        self.setMinimumHeight(212)
@@ -3198,7 +3268,8 @@ if __name__ == "__main__":
 #                 opts=None, axis: str = "x", trend: bool = True) -> None:
 #        self._title = title
 #        self._ctype = ctype
-#        self._opts = {"points": True, "whiskers": True, **(opts or {})}
+#        self._opts = {"points": True, "whiskers": True, "cells": True,
+#                      **(opts or {})}
 #        self._axis = "y" if str(axis).lower() == "y" else "x"
 #        self._trend = bool(trend)
 #        clean = []
@@ -3483,8 +3554,11 @@ if __name__ == "__main__":
 #    def _paint_map(self, p: QPainter) -> None:
 #        """Every ROI drawn where it sits, coloured by its metric value.
 #
-#        Y runs downward to match the image. A uniform field is one flat
-#        colour; a gradient or a hot corner is the non-uniformity.
+#        As **cells** (the default) each ROI spans the gap to its neighbour, so
+#        the field reads as one surface and a cell can be compared against the
+#        one beside it; as **dots** the ROIs stay separate marks. Y runs
+#        downward to match the image. A uniform field is one flat colour; a
+#        gradient or a hot corner is the non-uniformity.
 #        """
 #        series = [s for s in self._series
 #                  if s.get("pos_x") is not None and s.get("pos_y") is not None
@@ -3501,16 +3575,41 @@ if __name__ == "__main__":
 #        ally = np.concatenate([s["pos_y"] for s in series])
 #        lo, hi = float(allv.min()), float(allv.max())
 #        flat = (hi - lo) < 1e-9
+#        vspan = 1.0 if flat else hi - lo
 #
-#        def span(a):
-#            v0, v1 = float(a.min()), float(a.max())
-#            if v1 - v0 < 1e-9:
-#                v0, v1 = v0 - 1.0, v1 + 1.0
-#            pad = (v1 - v0) * 0.08
-#            return v0 - pad, v1 + pad
+#        cells = bool(self._opts.get("cells", True))
+#        show_val = bool(self._opts.get("map_values", False))
+#        xc, xe = cell_edges(allx)
+#        yc, ye = cell_edges(ally)
 #
-#        xlo, xhi = span(allx)
-#        ylo, yhi = span(ally)
+#        def median_step(e):
+#            return float(np.median(np.diff(e))) if e.size > 2 else 0.0
+#
+#        cw, ch = median_step(xe), median_step(ye)
+#        if cells:
+#            # a single column (or row) has no pitch of its own — it borrows
+#            # the other axis's, so the cells stay square instead of hairlines
+#            if xc.size == 1 and ch > 0:
+#                xe, cw = np.asarray([xc[0] - ch / 2, xc[0] + ch / 2]), ch
+#            if yc.size == 1 and cw > 0:
+#                ye, ch = np.asarray([yc[0] - cw / 2, yc[0] + cw / 2]), cw
+#            xlo, xhi = float(xe[0]), float(xe[-1])   # cells fill the plot box
+#            ylo, yhi = float(ye[0]), float(ye[-1])
+#            if xhi - xlo < 1e-9:
+#                xlo, xhi = xlo - 1.0, xhi + 1.0
+#            if yhi - ylo < 1e-9:
+#                ylo, yhi = ylo - 1.0, yhi + 1.0
+#        else:
+#            def span(a):
+#                v0, v1 = float(a.min()), float(a.max())
+#                pad = max((v1 - v0) * 0.08, 0.5)
+#                v0, v1 = v0 - pad, v1 + pad
+#                if v1 - v0 < 1e-9:
+#                    v0, v1 = v0 - 1.0, v1 + 1.0
+#                return v0, v1
+#
+#            xlo, xhi = span(allx)
+#            ylo, yhi = span(ally)
 #
 #        top, left = 34, 52
 #        cbar_w = 54
@@ -3518,12 +3617,14 @@ if __name__ == "__main__":
 #        right = self.width() - 12 - cbar_w
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
+#        sx = W / (xhi - xlo)
+#        sy = H / (yhi - ylo)
 #
 #        def X(v):
-#            return left + (v - xlo) / (xhi - xlo) * W
+#            return left + (v - xlo) * sx
 #
 #        def Y(v):                       # image Y grows downward
-#            return top + (v - ylo) / (yhi - ylo) * H
+#            return top + (v - ylo) * sy
 #
 #        p.setPen(QPen(QColor(theme.LINE2), 1))
 #        p.setBrush(Qt.NoBrush)
@@ -3543,26 +3644,58 @@ if __name__ == "__main__":
 #                   "ROI centre X (px)")
 #        self._ytitle(p, "ROI centre Y (px)")
 #
-#        # A scatter, not a tiling: one dot per ROI at its own (x, y), coloured
-#        # by the metric. Size follows the tightest neighbour spacing only so
-#        # that dense layouts stay readable — dots never grow into blocks.
-#        rad = 7.0
-#        if allx.size > 1:
-#            for arr, sc in ((allx, W / (xhi - xlo)), (ally, H / (yhi - ylo))):
-#                u = np.unique(np.round(arr, 0))
-#                if u.size > 1:
-#                    rad = min(rad, float(np.min(np.diff(u))) * sc * 0.34)
-#        rad = float(np.clip(rad, 2.5, 9.0))
-#
 #        ring = len(series) > 1        # only needed to tell groups apart
-#        for s in series:
-#            edge = QColor(s["color"])
-#            for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
-#                t = 0.5 if flat else (float(v) - lo) / (hi - lo)
-#                p.setBrush(QColor(heat_color(t)))
-#                p.setPen(QPen(edge, 1.2) if ring
-#                         else QPen(QColor(theme.LINE), 0.8))
-#                p.drawEllipse(QPointF(X(cx), Y(cy)), rad, rad)
+#        if cells:
+#            # One filled cell per ROI, spanning to the boundary it shares with
+#            # its neighbour: the difference against the cell next door is the
+#            # point of the view, and touching blocks show it where dots cannot.
+#            p.setFont(theme.mono_font(8, weight=700))
+#            fm = p.fontMetrics()
+#            for s in series:
+#                edge = QColor(s["color"])
+#                for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+#                    t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+#                    col = heat_color(t)
+#                    i = int(np.abs(xc - cx).argmin()) if xe.size > 2 else 0
+#                    j = int(np.abs(yc - cy).argmin()) if ye.size > 2 else 0
+#                    x0, x1 = X(xe[i]), X(xe[i + 1])
+#                    y0, y1 = Y(ye[j]), Y(ye[j + 1])
+#                    r = QRectF(x0, y0, x1 - x0, y1 - y0)
+#                    p.setBrush(QColor(col))
+#                    # a hairline edge separates touching cells without
+#                    # opening a gap between them
+#                    p.setPen(QPen(edge, 1.2) if ring
+#                             else QPen(QColor(0, 0, 0, 45), 0.8))
+#                    p.drawRect(r)
+#                    if not show_val:
+#                        continue
+#                    txt = _fmt_span(float(v), vspan)
+#                    if (fm.horizontalAdvance(txt) + 6 <= r.width()
+#                            and fm.height() <= r.height()):
+#                        p.setPen(QColor("#FFFFFF") if _is_dark(col)
+#                                 else QColor(theme.INK))
+#                        p.drawText(r, Qt.AlignCenter, txt)
+#            p.setPen(QPen(QColor(theme.LINE2), 1))   # cells cover the frame
+#            p.setBrush(Qt.NoBrush)
+#            p.drawRect(int(left), int(top), int(W), int(H))
+#        else:
+#            # A scatter: one dot per ROI. Size follows the tightest neighbour
+#            # spacing only so that dense layouts stay readable.
+#            rad = 7.0
+#            if allx.size > 1:
+#                for arr, sc in ((allx, sx), (ally, sy)):
+#                    u = np.unique(np.round(arr, 0))
+#                    if u.size > 1:
+#                        rad = min(rad, float(np.min(np.diff(u))) * sc * 0.34)
+#            rad = float(np.clip(rad, 2.5, 9.0))
+#            for s in series:
+#                edge = QColor(s["color"])
+#                for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+#                    t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+#                    p.setBrush(QColor(heat_color(t)))
+#                    p.setPen(QPen(edge, 1.2) if ring
+#                             else QPen(QColor(theme.LINE), 0.8))
+#                    p.drawEllipse(QPointF(X(cx), Y(cy)), rad, rad)
 #
 #        # colour bar
 #        bx = right + 16
@@ -3582,13 +3715,15 @@ if __name__ == "__main__":
 #                   Qt.AlignLeft, _fmt_span(lo, hi - lo))
 #
 #        u = uniformity(allv)
+#        txt = (f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
+#               f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
+#               f" · CV {_pct(u['cv_pct'])}")
+#        if cells and cw > 0 and ch > 0:
+#            txt += f" · cell {cw:.0f}×{ch:.0f} px"
 #        p.setPen(QColor(theme.INK2))
 #        p.setFont(theme.mono_font(8))
 #        p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
-#                   Qt.AlignLeft | Qt.AlignVCenter,
-#                   f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
-#                   f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
-#                   f" · CV {_pct(u['cv_pct'])}")
+#                   Qt.AlignLeft | Qt.AlignVCenter, txt)
 #
 #    # -- overlaid histogram ------------------------------------------- #
 #    def _paint_hist(self, p: QPainter) -> None:
@@ -3725,8 +3860,10 @@ if __name__ == "__main__":
 #class MetricPicker(QWidget):
 #    changed = Signal(list)
 #    show_changed = Signal(str)          # metric id to draw on ROIs ("" = none)
+#    values_changed = Signal(bool)       # print the value on each ROI
 #    heatmap_changed = Signal(bool)      # colour ROIs by the shown metric
 #    outliers_changed = Signal(bool)     # flag Tukey outliers of the shown metric
+#    heat_alpha_changed = Signal(int)    # heat fill opacity, percent
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
@@ -3769,26 +3906,55 @@ if __name__ == "__main__":
 #        show.addWidget(show_lbl)
 #        show.addWidget(self.show_combo, 1)
 #        root.addLayout(show)
-#        # value-driven overlays for the shown metric (GLV only)
+#        # Overlays for the shown metric, each switched on its own: the number,
+#        # the heat fill, and the outlier flags are three separate readings of
+#        # the same metric, and reading one often means hiding the others.
 #        ov = QHBoxLayout()
 #        ov.setSpacing(12)
+#        self.values_chk = QCheckBox("values")
+#        self.values_chk.setChecked(True)
+#        self.values_chk.setToolTip(
+#            "Print the metric on each ROI. Off with heatmap on = colour only.")
+#        self.values_chk.toggled.connect(self.values_changed)
 #        self.heatmap_chk = QCheckBox("heatmap")
-#        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
-#        self.heatmap_chk.toggled.connect(self.heatmap_changed)
+#        self.heatmap_chk.setToolTip("Colour each ROI box by its shown metric value.")
+#        self.heatmap_chk.toggled.connect(self._on_heatmap)
 #        self.outliers_chk = QCheckBox("flag outliers")
 #        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
 #                                     "within their group.")
 #        self.outliers_chk.toggled.connect(self.outliers_changed)
+#        ov.addWidget(self.values_chk)
 #        ov.addWidget(self.heatmap_chk)
 #        ov.addWidget(self.outliers_chk)
 #        ov.addStretch(1)
 #        root.addLayout(ov)
+#        # how much of the image the heat fill leaves visible
+#        op = QHBoxLayout()
+#        op.setSpacing(6)
+#        op_lbl = QLabel("heat opacity")
+#        op_lbl.setObjectName("Hint")
+#        self.alpha_spin = QSpinBox()
+#        self.alpha_spin.setRange(10, 100)
+#        self.alpha_spin.setSingleStep(5)
+#        self.alpha_spin.setValue(70)
+#        self.alpha_spin.setSuffix(" %")
+#        self.alpha_spin.setFixedWidth(74)
+#        self.alpha_spin.setMinimumHeight(28)
+#        self.alpha_spin.setEnabled(False)
+#        self.alpha_spin.setToolTip(
+#            "Opacity of the heat fill — lower it to read the image under the box.")
+#        self.alpha_spin.valueChanged.connect(self.heat_alpha_changed)
+#        op.addWidget(op_lbl)
+#        op.addWidget(self.alpha_spin)
+#        op.addStretch(1)
+#        root.addLayout(op)
 #        self._rebuild()
 #
 #    def selected(self) -> List[str]:
 #        return list(self._selected)
 #
-#    def set_state(self, metrics, show, heatmap, outliers) -> None:
+#    def set_state(self, metrics, show, heatmap, outliers,
+#                  values=True, heat_alpha=70) -> None:
 #        """Restore the picker (used when opening a project)."""
 #        self._selected = list(metrics or [])
 #        self._show = show or ""
@@ -3797,10 +3963,20 @@ if __name__ == "__main__":
 #                    and m not in self._custom):
 #                self._custom.append(m)
 #        self._rebuild()
-#        for chk, val in ((self.heatmap_chk, heatmap), (self.outliers_chk, outliers)):
+#        for chk, val in ((self.heatmap_chk, heatmap),
+#                         (self.outliers_chk, outliers),
+#                         (self.values_chk, values)):
 #            chk.blockSignals(True)
 #            chk.setChecked(bool(val))
 #            chk.blockSignals(False)
+#        self.alpha_spin.blockSignals(True)
+#        self.alpha_spin.setValue(int(heat_alpha))
+#        self.alpha_spin.blockSignals(False)
+#        self.alpha_spin.setEnabled(bool(heatmap))
+#
+#    def _on_heatmap(self, on: bool) -> None:
+#        self.alpha_spin.setEnabled(bool(on))   # opacity only bites on a fill
+#        self.heatmap_changed.emit(bool(on))
 #
 #    def _add_custom(self) -> None:
 #        mid = f"glv_q{int(self.qn_spin.value())}"
@@ -3865,8 +4041,10 @@ if __name__ == "__main__":
 #    roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
 #    metrics_changed = Signal(list)
 #    show_metric_changed = Signal(str)
+#    values_changed = Signal(bool)
 #    heatmap_changed = Signal(bool)
 #    outliers_changed = Signal(bool)
+#    heat_alpha_changed = Signal(int)
 #    open_analysis = Signal()
 #
 #    def __init__(self, parent=None):
@@ -3974,8 +4152,10 @@ if __name__ == "__main__":
 #        self.metrics = MetricPicker()
 #        self.metrics.changed.connect(self.metrics_changed)
 #        self.metrics.show_changed.connect(self.show_metric_changed)
+#        self.metrics.values_changed.connect(self.values_changed)
 #        self.metrics.heatmap_changed.connect(self.heatmap_changed)
 #        self.metrics.outliers_changed.connect(self.outliers_changed)
+#        self.metrics.heat_alpha_changed.connect(self.heat_alpha_changed)
 #        met.layout().addWidget(self.metrics)
 #        root.addWidget(met)
 #
@@ -4023,8 +4203,10 @@ if __name__ == "__main__":
 #        for r, row in getattr(self, "_roi_rows", {}).items():
 #            row.set_hover(r == rid)
 #
-#    def set_metric_state(self, metrics, show, heatmap, outliers) -> None:
-#        self.metrics.set_state(metrics, show, heatmap, outliers)
+#    def set_metric_state(self, metrics, show, heatmap, outliers,
+#                         values=True, heat_alpha=70) -> None:
+#        self.metrics.set_state(metrics, show, heatmap, outliers,
+#                               values, heat_alpha)
 #
 #    def grid_shape(self):
 #        return int(self.grid_rows.value()), int(self.grid_cols.value())
@@ -4239,6 +4421,20 @@ if __name__ == "__main__":
 #        self.trend_chk.toggled.connect(self._on_chart_opts)
 #        self.trend_chk.setVisible(False)
 #        head.addWidget(self.trend_chk)
+#        self.cells_chk = QCheckBox("cells")
+#        self.cells_chk.setChecked(True)
+#        self.cells_chk.setToolTip(
+#            "Draw each ROI as a filled cell that meets its neighbours, so a "
+#            "cell can be read against the one beside it. Off = separate dots.")
+#        self.cells_chk.toggled.connect(self._on_cells)
+#        self.cells_chk.setVisible(False)
+#        head.addWidget(self.cells_chk)
+#        self.mapval_chk = QCheckBox("values")
+#        self.mapval_chk.setToolTip(
+#            "Print the metric inside each cell (cells wide enough to hold it).")
+#        self.mapval_chk.toggled.connect(self._on_chart_opts)
+#        self.mapval_chk.setVisible(False)
+#        head.addWidget(self.mapval_chk)
 #        self.selector_lbl = QLabel("")
 #        self.selector_lbl.setObjectName("Hint")
 #        head.addWidget(self.selector_lbl)
@@ -4290,6 +4486,9 @@ if __name__ == "__main__":
 #            chk.setVisible(t not in ("position", "map"))
 #        self.axis_box.setVisible(t == "position")
 #        self.trend_chk.setVisible(t == "position")
+#        for chk in (self.cells_chk, self.mapval_chk):
+#            chk.setVisible(t == "map")
+#        self.mapval_chk.setEnabled(self.cells_chk.isChecked())
 #        if self._last_result is not None:
 #            self._render_body(self._last_result)   # re-render, no recompute
 #
@@ -4299,6 +4498,11 @@ if __name__ == "__main__":
 #        self._pos_axis = str(self.axis_box.currentData() or "x")
 #        if self._last_result is not None:
 #            self._render_body(self._last_result)   # positions are already there
+#
+#    def _on_cells(self, on: bool) -> None:
+#        # values are printed inside a cell, so they have nowhere to go on dots
+#        self.mapval_chk.setEnabled(bool(on))
+#        self._on_chart_opts()
 #
 #    def _on_chart_opts(self, _=False) -> None:
 #        if self._last_result is not None:
@@ -4464,7 +4668,10 @@ if __name__ == "__main__":
 #        grid.setContentsMargins(0, 0, 0, 0)
 #        grid.setSpacing(10)
 #        opts = {"points": self.points_chk.isChecked(),
-#                "whiskers": self.whiskers_chk.isChecked()}
+#                "whiskers": self.whiskers_chk.isChecked(),
+#                "cells": self.cells_chk.isChecked(),
+#                "map_values": (self.mapval_chk.isChecked()
+#                               and self.cells_chk.isChecked())}
 #        wide = self._chart_type in ("position", "map")   # these need the width
 #        for i, (title, series) in enumerate(charts):
 #            chart = DistributionChart()
@@ -4831,7 +5038,7 @@ if __name__ == "__main__":
 #    body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
 #    compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
 #
-#F 84d01680049d04b75232821b99d1014b7dd75b12 249 tests/test_core.py
+#F 2664b07f2b01826867e767454b60381e09ef24e6 275 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -4845,7 +5052,8 @@ if __name__ == "__main__":
 #sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 #
 #from examples.make_sample import CELL_H, CELL_W, make_field
-#from pear.core.analysis import (ROI, Group, attribute_separability, cohens_d,
+#from pear.core.analysis import (ROI, Group, attribute_separability, cell_edges,
+#                                cohens_d,
 #                                compute_analysis, grid_between, group_outliers,
 #                                group_rois, group_snr, group_values,
 #                                groups_from_json, groups_to_json, heat_color,
@@ -5027,6 +5235,31 @@ if __name__ == "__main__":
 #    assert list(group_positions(rois, "X")) == [15.0, 35.0]
 #
 #
+#def test_cell_edges_tile_the_axis_without_gaps():
+#    c, e = cell_edges([10.0, 40.0, 70.0, 10.0])   # duplicates are one centre
+#    assert list(c) == [10.0, 40.0, 70.0]
+#    assert list(e) == pytest.approx([-5.0, 25.0, 55.0, 85.0])
+#    # every centre sits inside its own cell and the cells share their edges
+#    assert all(e[i] < c[i] < e[i + 1] for i in range(c.size))
+#
+#
+#def test_cell_edges_absorb_rounded_centres_and_uneven_gaps():
+#    """Integer ROI rects round the centres — cells must still meet."""
+#    c, e = cell_edges([12.0, 31.0, 51.0, 70.0])
+#    assert list(np.diff(e)) == pytest.approx([19.0, 19.5, 19.5, 19.0])
+#    assert float(e[-1] - e[0]) == pytest.approx(77.0)   # one unbroken span
+#    # a missing ROI widens that cell instead of opening a hole
+#    c, e = cell_edges([0.0, 10.0, 40.0])
+#    assert list(e) == pytest.approx([-5.0, 5.0, 25.0, 55.0])
+#
+#
+#def test_cell_edges_on_degenerate_input():
+#    c, e = cell_edges([7.0, 7.0])          # one distinct centre, no neighbour
+#    assert list(c) == [7.0] and list(e) == [6.5, 7.5]
+#    c, e = cell_edges([])
+#    assert c.size == 0 and e.size == 0
+#
+#
 #def test_linear_trend_recovers_a_known_slope():
 #    x = np.arange(10, dtype=np.float64)
 #    fit = linear_trend(x, 3.0 * x + 7.0)
@@ -5081,7 +5314,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 4b0b21bdeb28b4cedc84c507b2e78341b25d7375 504 tests/test_ui_smoke.py
+#F 95aa91eb27684309f093598c9fd858600192f8cd 595 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -5425,7 +5658,8 @@ if __name__ == "__main__":
 #    ap.whiskers_chk.setChecked(False)
 #    app.processEvents()          # flush deleteLater so stale charts are gone
 #    charts = ap.body.findChildren(DistributionChart)
-#    assert any(c._opts == {"points": False, "whiskers": False} for c in charts)
+#    assert any(not c._opts["points"] and not c._opts["whiskers"]
+#               for c in charts)
 #
 #
 #def test_ranking_and_heatmap_render(app):
@@ -5534,6 +5768,96 @@ if __name__ == "__main__":
 #    assert ap.chart_state() == ("position", "y")
 #    for c in ap.body.findChildren(DistributionChart):
 #        c.grab()
+#
+#
+#def test_rebuilt_lists_leave_no_stale_rows(app):
+#    """A rebuilt list must not keep painting its old rows over the card.
+#
+#    ``deleteLater`` alone leaves them parented until the event loop runs, and
+#    they cover the Groups card's title and Add button while they linger.
+#    """
+#    from pear.core.analysis import group_rois
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import _ItemRow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    win.add_group()
+#    win.on_roi_created((10, 10, 12, 12))
+#    win.on_roi_created((40, 10, 12, 12))
+#    for _ in range(3):
+#        win._refresh()                       # no processEvents in between
+#    grp_card = win.rail.grp_add_btn.parentWidget()
+#    assert len(grp_card.findChildren(_ItemRow)) == len(win._groups)
+#    roi_rows = len(group_rois(win._rois, win._active_gid))
+#    assert len(win.rail.roi_host.parentWidget().findChildren(_ItemRow)) == roi_rows
+#
+#
+#def test_map_draws_touching_cells_and_optional_values(app):
+#    """Cell mode tiles the field; the dot fallback and labels still paint."""
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    gid = _grid_group(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("within")
+#    win.on_within_group(gid)
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("map")
+#    app.processEvents()
+#    assert not ap.cells_chk.isHidden() and not ap.mapval_chk.isHidden()
+#
+#    def maps():
+#        # a re-render leaves the previous charts pending deleteLater, so match
+#        # any live one rather than assuming which comes first
+#        return [c for c in ap.body.findChildren(DistributionChart)
+#                if c._ctype == "map"]
+#
+#    assert any(c._opts["cells"] for c in maps())
+#    ap.mapval_chk.setChecked(True)             # values printed inside the cells
+#    app.processEvents()
+#    assert any(c._opts["map_values"] for c in maps())
+#    for c in maps():
+#        c.grab()
+#    ap.cells_chk.setChecked(False)             # back to separate dots
+#    app.processEvents()
+#    assert not ap.mapval_chk.isEnabled()
+#    dots = [c for c in maps() if not c._opts["cells"]]
+#    assert dots
+#    for c in dots:
+#        c.grab()
+#        # the toggles are render-only — the position data is untouched
+#        assert c._series[0]["pos_x"].size == len(win._rois)
+#
+#
+#def test_overlay_toggles_are_independent(app, tmp_path):
+#    """Value text, heat fill and its opacity switch one at a time."""
+#    import json
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _grid_group(win, 2, 3)
+#    win.on_show_metric("glv_mean")
+#    assert win.image_view._roi_values                 # numbers on by default
+#    win.on_heatmap(True)
+#    win.on_show_values(False)                         # colour only, no numbers
+#    assert win.image_view._heat and win.image_view._roi_values == {}
+#    win.on_heat_alpha(30)
+#    assert win.image_view._heat_alpha == round(30 * 2.55)
+#    win.on_show_values(True)
+#    assert win.image_view._roi_values
+#
+#    win.on_show_values(False)
+#    out = tmp_path / "p.pear.json"
+#    win.save_project(str(out))
+#    win2 = MainWindow()
+#    win2.set_image(make_field(), "f.png")
+#    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+#    assert win2._show_values is False and win2._heat_alpha == 30
+#    assert win2.rail.metrics.alpha_spin.value() == 30
+#    assert win2.image_view._roi_values == {}
+#    assert win2.image_view._heat_alpha == round(30 * 2.55)
 #
 #
 #def test_position_chart_without_positions_is_safe(app):

@@ -11,7 +11,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
-from pear.core.analysis import (ROI, Group, attribute_separability, cohens_d,
+from pear.core.analysis import (ROI, Group, attribute_separability, cell_edges,
+                                cohens_d,
                                 compute_analysis, grid_between, group_outliers,
                                 group_rois, group_snr, group_values,
                                 groups_from_json, groups_to_json, heat_color,
@@ -191,6 +192,31 @@ def test_roi_center_and_group_positions():
     assert list(group_positions(rois, "y")) == [25.0, 25.0]
     # anything but "y" means the X axis
     assert list(group_positions(rois, "X")) == [15.0, 35.0]
+
+
+def test_cell_edges_tile_the_axis_without_gaps():
+    c, e = cell_edges([10.0, 40.0, 70.0, 10.0])   # duplicates are one centre
+    assert list(c) == [10.0, 40.0, 70.0]
+    assert list(e) == pytest.approx([-5.0, 25.0, 55.0, 85.0])
+    # every centre sits inside its own cell and the cells share their edges
+    assert all(e[i] < c[i] < e[i + 1] for i in range(c.size))
+
+
+def test_cell_edges_absorb_rounded_centres_and_uneven_gaps():
+    """Integer ROI rects round the centres — cells must still meet."""
+    c, e = cell_edges([12.0, 31.0, 51.0, 70.0])
+    assert list(np.diff(e)) == pytest.approx([19.0, 19.5, 19.5, 19.0])
+    assert float(e[-1] - e[0]) == pytest.approx(77.0)   # one unbroken span
+    # a missing ROI widens that cell instead of opening a hole
+    c, e = cell_edges([0.0, 10.0, 40.0])
+    assert list(e) == pytest.approx([-5.0, 5.0, 25.0, 55.0])
+
+
+def test_cell_edges_on_degenerate_input():
+    c, e = cell_edges([7.0, 7.0])          # one distinct centre, no neighbour
+    assert list(c) == [7.0] and list(e) == [6.5, 7.5]
+    c, e = cell_edges([])
+    assert c.size == 0 and e.size == 0
 
 
 def test_linear_trend_recovers_a_known_slope():

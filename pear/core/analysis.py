@@ -296,6 +296,31 @@ def uniformity(values) -> Dict[str, float]:
             "cv_pct": (sd / den * 100.0) if den > 1e-12 else 0.0}
 
 
+def cell_edges(positions, decimals: int = 3):
+    """Tiling boundaries for ROI centres along one axis.
+
+    Returns ``(centres, edges)``: the distinct centres, sorted, and the
+    ``len(centres) + 1`` boundaries midway between neighbours, the outermost
+    pair mirrored outward by half of the adjacent gap. Drawing each ROI from
+    its lower to its upper edge tiles the axis exactly — no hairline gaps
+    where centres landed on rounded pixels, no overlap where the spacing is
+    uneven; a lone gap in the layout simply gives that ROI a wider cell.
+
+    A single distinct centre has no neighbour to measure against and gets a
+    one-pixel cell; the caller substitutes a size of its own.
+    """
+    a = np.asarray(positions, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return np.empty(0), np.empty(0)
+    c = np.unique(np.round(a, decimals))
+    if c.size == 1:
+        return c, np.asarray([c[0] - 0.5, c[0] + 0.5])
+    mid = (c[:-1] + c[1:]) / 2.0
+    return c, np.concatenate(([2.0 * c[0] - mid[0]], mid,
+                              [2.0 * c[-1] - mid[-1]]))
+
+
 def profile_by_position(positions, values, decimals: int = 0):
     """Collapse ROIs that share a position into one mean value.
 
