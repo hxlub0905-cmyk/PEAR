@@ -4115,7 +4115,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 93131abcd31bd5114d6296046510a7ef8f248433 2880 pear/ui/widgets.py
+#F 9e6b3ca077c2da84dc5c92afb28da8dfda9d32e3 2970 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -4374,6 +4374,11 @@ if __name__ == "__main__":
 #        bold = self._st("label_bold", True)
 #        return theme.mono_font(size, weight=700 if bold else 500)
 #
+#    def _label_ink(self) -> "QColor":
+#        """Axis-name ink — its own, so a name can carry more weight than the
+#        numbers beside it (or less)."""
+#        return QColor(self._st("label_ink", self._st("axis_ink", theme.INK)))
+#
 #    def _axis_ink(self) -> "QColor":
 #        """Tick and axis-name ink. Dark by default — a chart that ends up in a
 #        report is read on paper and on a projector, where a light grey tick
@@ -4477,12 +4482,47 @@ if __name__ == "__main__":
 #        pad = (hi - lo) * 0.08
 #        return lo - pad, hi + pad
 #
+#    def _left_gutter(self, p: QPainter, texts) -> float:
+#        """Room for the widest tick label *and* the rotated axis name.
+#
+#        Both live to the left of the plot, so the margin has to be measured
+#        from the fonts in use — hard-coded, the tick values grow into the axis
+#        name the moment either is set larger, and the numbers come out half
+#        drawn.
+#        """
+#        p.setFont(self._font())
+#        fm = p.fontMetrics()
+#        wide = max([fm.horizontalAdvance(str(t)) for t in texts] + [0])
+#        p.setFont(self._label_font())
+#        return float(np.clip(p.fontMetrics().height() + 12 + wide + 8,
+#                             42, 260))
+#
+#    def _tick_box(self, gx: float, y: float, h: float) -> QRectF:
+#        """A tick label's box, kept inside the card.
+#
+#        The first and last tick sit on the frame, and centring a wide number
+#        there hangs half of it off the edge of the figure.
+#        """
+#        x = float(np.clip(gx - 40.0, 1.0, max(1.0, self.width() - 81.0)))
+#        return QRectF(x, y, 80, h)
+#
+#    def _bottom_gutter(self, p: QPainter, label_rows: int = 1,
+#                       extra: float = 0.0) -> float:
+#        """Room under the plot for the tick row, the axis name, and whatever
+#        the chart adds below them."""
+#        p.setFont(self._font())
+#        tick_h = p.fontMetrics().height()
+#        p.setFont(self._label_font())
+#        name_h = p.fontMetrics().height()
+#        return float(tick_h + 8 + label_rows * (name_h + 4) + extra)
+#
 #    def _ytitle(self, p: QPainter, text: str) -> None:
 #        p.save()
 #        p.setFont(self._label_font())
-#        p.setPen(self._axis_ink())
-#        tw = p.fontMetrics().horizontalAdvance(text)
-#        p.translate(11, self.height() / 2.0)
+#        p.setPen(self._label_ink())
+#        fm = p.fontMetrics()
+#        tw = fm.horizontalAdvance(text)
+#        p.translate(fm.height() * 0.85, self.height() / 2.0)
 #        p.rotate(-90)
 #        p.drawText(int(-tw / 2), 0, text)
 #        p.restore()
@@ -4500,8 +4540,16 @@ if __name__ == "__main__":
 #        """
 #        own = bool(self._opts.get("own_scale", False))
 #        glo, ghi = self._range()
-#        top, left = 34, 54
-#        bottom = self.height() - (54 if own else 42)
+#        ny0 = self._nticks("yticks", 5)
+#        tick_texts = ([] if own else
+#                      [_fmt(ghi - (ghi - glo) * t / (ny0 - 1.0))
+#                       for t in range(ny0)])
+#        top = 34
+#        left = self._left_gutter(p, tick_texts or ["0"])
+#        # a lane label under the axis, a range line under that with own scale,
+#        # and an x name when one is set
+#        rows = 1 + (1 if own else 0) + (1 if self._st("xlabel", "") else 0)
+#        bottom = self.height() - self._bottom_gutter(p, rows)
 #        right = self.width() - 12
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
@@ -4523,7 +4571,7 @@ if __name__ == "__main__":
 #            if own:                     # one label per lane instead, below
 #                continue
 #            p.setPen(self._axis_ink())
-#            p.drawText(QRectF(16, gy - 6, left - 20, 12),
+#            p.drawText(QRectF(0, gy - 9, left - 8, 18),
 #                       Qt.AlignRight | Qt.AlignVCenter,
 #                       _fmt(ghi - (ghi - glo) * t / (ny - 1.0)))
 #        self._frame(p, left, top, right, bottom, yticks=() if own else gridys)
@@ -4531,9 +4579,10 @@ if __name__ == "__main__":
 #                                 if own else "value"))
 #        xlab = self._st("xlabel", "")
 #        if xlab:
-#            p.setPen(self._axis_ink())
+#            p.setPen(self._label_ink())
 #            p.setFont(self._label_font())
-#            p.drawText(QRectF(left, self.height() - 16, W, 13),
+#            p.drawText(QRectF(left, self.height() - p.fontMetrics().height() - 3,
+#                              W, p.fontMetrics().height()),
 #                       Qt.AlignHCenter, str(xlab))
 #
 #        lane = W / n
@@ -4582,7 +4631,8 @@ if __name__ == "__main__":
 #            p.setFont(self._font())
 #            lab = p.fontMetrics().elidedText(str(s["label"]), Qt.ElideRight,
 #                                             int(lane))
-#            p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
+#            lab_h = p.fontMetrics().height()
+#            p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, lab_h + 2),
 #                       Qt.AlignHCenter | Qt.AlignVCenter, lab)
 #            if not own:
 #                continue
@@ -4590,7 +4640,8 @@ if __name__ == "__main__":
 #            # spans and is never mistaken for the one beside it
 #            span = hi - lo
 #            p.setPen(self._axis_ink())
-#            p.drawText(QRectF(cx - lane / 2, bottom + 18, lane, 13),
+#            p.drawText(QRectF(cx - lane / 2, bottom + 6 + lab_h, lane,
+#                              lab_h + 2),
 #                       Qt.AlignHCenter | Qt.AlignVCenter,
 #                       f"{_fmt_span(vmin, span)} … {_fmt_span(vmax, span)}")
 #        if self._legend_on():
@@ -4641,9 +4692,8 @@ if __name__ == "__main__":
 #        ticks = [_fmt_span(hi - (hi - lo) * t / (ny - 1.0), hi - lo)
 #                 for t in range(ny)]
 #        top = 34
-#        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ticks) + 26,
-#                           46, 120))
-#        bottom = max(top + 40, self.height() - 40)
+#        left = self._left_gutter(p, ticks)
+#        bottom = max(top + 40, self.height() - self._bottom_gutter(p))
 #        right = self.width() - 12
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
@@ -4660,7 +4710,7 @@ if __name__ == "__main__":
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
 #            p.setPen(self._axis_ink())
-#            p.drawText(QRectF(18, gy - 6, left - 24, 12),
+#            p.drawText(QRectF(0, gy - 9, left - 8, 18),
 #                       Qt.AlignRight | Qt.AlignVCenter, lab)
 #        self._ytitle(p, self._st("ylabel", "value"))
 #
@@ -4669,11 +4719,16 @@ if __name__ == "__main__":
 #        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
 #        self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
 #        p.setPen(self._axis_ink())
+#        p.setFont(self._font())
+#        tick_h = p.fontMetrics().height()
 #        for t, gx in enumerate(xs):
-#            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+#            p.drawText(self._tick_box(gx, bottom + 3, tick_h),
+#                       Qt.AlignHCenter,
 #                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
+#        p.setPen(self._label_ink())
 #        p.setFont(self._label_font())
-#        p.drawText(QRectF(left, bottom + 16, W, 14), Qt.AlignHCenter,
+#        p.drawText(QRectF(left, bottom + 5 + tick_h, W,
+#                          p.fontMetrics().height()), Qt.AlignHCenter,
 #                   str(self._st("xlabel",
 #                                f"ROI centre {self._axis.upper()} (px)")))
 #
@@ -4815,9 +4870,22 @@ if __name__ == "__main__":
 #            xlo, xhi = self._locked(*span(allx), "xmin", "xmax")
 #            ylo, yhi = self._locked(*span(ally), "ymin", "ymax")
 #
-#        top, left = 34, 52
-#        cbar_w = 54
-#        bottom = max(top + 40, self.height() - 46)
+#        top = 34
+#        left = self._left_gutter(
+#            p, [f"{ylo + (yhi - ylo) * t / 2.0:.0f}" for t in range(3)])
+#        # the colour bar carries its own end labels, so the strip reserved for
+#        # it has to be as wide as the widest of them — at 16 pt "152" no
+#        # longer fits the 38 px a fixed width used to leave, and the number
+#        # walked off the card
+#        p.setFont(self._font())
+#        bar_fm = p.fontMetrics()
+#        cbar_txt = [_fmt_span(hi, hi - lo), _fmt_span(lo, hi - lo), "locked"]
+#        cbar_lab = max(bar_fm.horizontalAdvance(t) for t in cbar_txt)
+#        cbar_w = 16 + 12 + 6 + cbar_lab
+#        foot_h = bar_fm.height()
+#        # the tick row, the axis name, and the summary line under both
+#        bottom = max(top + 40, self.height()
+#                     - self._bottom_gutter(p, 1, extra=foot_h + 10))
 #        right = self.width() - 12 - cbar_w
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
@@ -4835,6 +4903,7 @@ if __name__ == "__main__":
 #        p.drawRect(int(left), int(top), int(W), int(H))
 #        p.setFont(self._font())
 #        p.setPen(self._axis_ink())
+#        tick_h = p.fontMetrics().height()
 #        nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
 #        grid_mode = cells and equal and xc.size > 0 and yc.size > 0
 #        if grid_mode:
@@ -4843,24 +4912,29 @@ if __name__ == "__main__":
 #            for t in range(min(nx, int(xc.size))):
 #                i = int(round(t * (xc.size - 1) / max(1, min(nx, xc.size) - 1)))
 #                gx = left + W * (i + 0.5) / xc.size
-#                p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-#                           f"{xc[i]:.0f}")
+#                p.drawText(self._tick_box(gx, bottom + 3, tick_h),
+#                           Qt.AlignHCenter, f"{xc[i]:.0f}")
 #            for t in range(min(ny, int(yc.size))):
 #                j = int(round(t * (yc.size - 1) / max(1, min(ny, yc.size) - 1)))
 #                gy = top + H * (j + 0.5) / yc.size
-#                p.drawText(QRectF(6, gy - 6, left - 10, 12),
+#                p.drawText(QRectF(0, gy - 9, left - 8, 18),
 #                           Qt.AlignRight | Qt.AlignVCenter, f"{yc[j]:.0f}")
 #        else:
 #            for t in range(nx):         # X ticks
 #                gx = left + W * t / (nx - 1.0)
-#                p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+#                p.drawText(self._tick_box(gx, bottom + 3, tick_h),
+#                           Qt.AlignHCenter,
 #                           f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
 #            for t in range(ny):         # Y ticks (top = small y, like the image)
 #                gy = top + H * t / (ny - 1.0)
-#                p.drawText(QRectF(6, gy - 6, left - 10, 12),
+#                p.drawText(QRectF(0, gy - 9, left - 8, 18),
 #                           Qt.AlignRight | Qt.AlignVCenter,
 #                           f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
-#        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
+#        p.setPen(self._label_ink())
+#        p.setFont(self._label_font())
+#        name_h = p.fontMetrics().height()
+#        p.drawText(QRectF(left, bottom + 5 + tick_h, W, name_h),
+#                   Qt.AlignHCenter,
 #                   str(self._st("xlabel", "ROI centre X (px)")))
 #        self._ytitle(p, self._st("ylabel", "ROI centre Y (px)"))
 #
@@ -4932,13 +5006,13 @@ if __name__ == "__main__":
 #        p.drawRect(int(bx), int(top), bw, int(bh))
 #        p.setPen(self._axis_ink())
 #        p.setFont(self._font())
-#        p.drawText(QRectF(bx + bw + 2, top - 2, cbar_w - bw - 4, 12),
-#                   Qt.AlignLeft, _fmt_span(hi, hi - lo))
-#        p.drawText(QRectF(bx + bw + 2, top + bh - 10, cbar_w - bw - 4, 12),
-#                   Qt.AlignLeft, _fmt_span(lo, hi - lo))
+#        p.drawText(QRectF(bx + bw + 6, top, cbar_lab + 2, foot_h),
+#                   Qt.AlignLeft | Qt.AlignVCenter, cbar_txt[0])
+#        p.drawText(QRectF(bx + bw + 6, top + bh - foot_h, cbar_lab + 2, foot_h),
+#                   Qt.AlignLeft | Qt.AlignVCenter, cbar_txt[1])
 #        if hmin is not None and hmax is not None:
-#            p.drawText(QRectF(bx - 2, top - 15, cbar_w, 12), Qt.AlignLeft,
-#                       "locked")
+#            p.drawText(QRectF(bx - 2, top - foot_h - 3, cbar_w, foot_h),
+#                       Qt.AlignLeft | Qt.AlignVCenter, "locked")
 #
 #        u = uniformity(allv)
 #        txt = (f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
@@ -4950,7 +5024,8 @@ if __name__ == "__main__":
 #            txt += " · equal cells"
 #        p.setPen(self._axis_ink())
 #        p.setFont(self._font())
-#        p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
+#        p.drawText(QRectF(left, bottom + 9 + tick_h + name_h,
+#                          W + cbar_w, foot_h),
 #                   Qt.AlignLeft | Qt.AlignVCenter, txt)
 #
 #    def _paint_map_grid(self, p: QPainter, series, xc, yc, left, top, W, H,
@@ -5026,10 +5101,9 @@ if __name__ == "__main__":
 #        p.setFont(self._font())
 #        fm = p.fontMetrics()
 #        ylabs = [(f"{v:.0f}%" if pct else f"{v:.0f}") for v in yticks]
-#        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ylabs) + 26,
-#                           44, 120))
+#        left = self._left_gutter(p, ylabs)
 #        top = 38
-#        bottom = self.height() - 44
+#        bottom = self.height() - self._bottom_gutter(p)
 #        right = self.width() - 14
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
@@ -5046,7 +5120,7 @@ if __name__ == "__main__":
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
 #            p.setPen(self._axis_ink())
-#            p.drawText(QRectF(8, gy - 6, left - 12, 12),
+#            p.drawText(QRectF(0, gy - 9, left - 8, 18),
 #                       Qt.AlignRight | Qt.AlignVCenter, lab)
 #        # bars, back to front so a thin group is never buried
 #        order = sorted(range(len(self._series)),
@@ -5072,12 +5146,16 @@ if __name__ == "__main__":
 #                    yticks=[Y(v) for v in yticks])
 #        p.setFont(self._font())
 #        p.setPen(self._axis_ink())
+#        tick_h = p.fontMetrics().height()
 #        for t, gx in enumerate(xs):
-#            p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
-#                       _fmt_span(lo + span * t / (nx - 1.0), span))
-#        p.setPen(self._axis_ink())
+#            p.drawText(self._tick_box(gx, bottom + 5, tick_h),
+#                       Qt.AlignHCenter, _fmt_span(lo + span * t / (nx - 1.0),
+#                                                  span))
+#        p.setPen(self._label_ink())
 #        p.setFont(self._label_font())
-#        p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
+#        p.drawText(QRectF(left, bottom + 7 + tick_h, W,
+#                          p.fontMetrics().height()),
+#                   Qt.AlignHCenter,
 #                   str(self._st("xlabel", self._xlabel or "value")))
 #        self._ytitle(p, self._st("ylabel", "share of group (%)" if pct
 #                                 else "count (ROIs)"))
@@ -5496,8 +5574,13 @@ if __name__ == "__main__":
 #    row = QHBoxLayout()
 #    row.setSpacing(6)
 #    lab = QLabel(label)
-#    lab.setObjectName("Hint")
-#    lab.setMinimumWidth(96)
+#    lab.setMinimumWidth(210)
+#    # bold through the font, not a stylesheet: a stylesheet weight is applied
+#    # after sizeHint() is asked for, so the caller sizing the label column
+#    # would measure the regular width and clip the bold text
+#    font = lab.font()
+#    font.setBold(True)
+#    lab.setFont(font)
 #    auto = QCheckBox("auto")
 #    lo, hi = QDoubleSpinBox(), QDoubleSpinBox()
 #    for sp in (lo, hi):
@@ -5647,7 +5730,8 @@ if __name__ == "__main__":
 #        self.x_edit.setPlaceholderText("(default for this chart type)")
 #        self.y_edit = QLineEdit(style.get("ylabel") or "")
 #        self.y_edit.setPlaceholderText("(default for this chart type)")
-#        for lab, ed in (("X axis name", self.x_edit), ("Y axis name", self.y_edit)):
+#        for lab, ed in (("X axis name", self.x_edit),
+#                        ("Y axis name", self.y_edit)):
 #            row = QHBoxLayout()
 #            row.setSpacing(6)
 #            l = QLabel(lab)
@@ -5686,109 +5770,115 @@ if __name__ == "__main__":
 #        head.setObjectName("SectionTitle")
 #        head.setFont(theme.display_font(12, weight=700))
 #        root.addWidget(head)
-#        mrow = QHBoxLayout()
-#        mrow.setSpacing(6)
-#        ml = QLabel("size")
-#        ml.setObjectName("Hint")
-#        ml.setMinimumWidth(96)
-#        self.font_spin = QDoubleSpinBox()
-#        self.font_spin.setRange(5, 24)
-#        self.font_spin.setDecimals(1)
-#        self.font_spin.setSingleStep(0.5)
-#        self.font_spin.setSuffix(" pt")
-#        self.font_spin.setValue(float(style.get("font_pt") or 8))
-#        self.point_spin = QDoubleSpinBox()
-#        self.point_spin.setRange(0.5, 20)
-#        self.point_spin.setDecimals(1)
-#        self.point_spin.setSingleStep(0.5)
-#        self.point_spin.setSuffix(" px")
-#        self.point_spin.setValue(float(style.get("point_size") or 3.2))
-#        self.line_spin = QDoubleSpinBox()
-#        self.line_spin.setRange(0.3, 12)
-#        self.line_spin.setDecimals(1)
-#        self.line_spin.setSingleStep(0.2)
-#        self.line_spin.setSuffix(" px")
-#        self.line_spin.setValue(float(style.get("line_width") or 2.2))
-#        self.label_spin = QDoubleSpinBox()
-#        self.label_spin.setRange(5, 24)
-#        self.label_spin.setDecimals(1)
-#        self.label_spin.setSingleStep(0.5)
-#        self.label_spin.setSuffix(" pt")
-#        self.label_spin.setValue(float(style.get("label_pt")
-#                                       or style.get("font_pt") or 8))
+#        hint = QLabel("One row per thing on the chart. A colour on auto "
+#                      "follows the group; the axis rows are dark by default, "
+#                      "because light grey vanishes on a projector.")
+#        hint.setObjectName("Hint")
+#        hint.setWordWrap(True)
+#        root.addWidget(hint)
+#
+#        def spin(lo, hi, step, suffix, value):
+#            sp = QDoubleSpinBox()
+#            sp.setRange(lo, hi)
+#            sp.setDecimals(1)
+#            sp.setSingleStep(step)
+#            sp.setSuffix(suffix)
+#            sp.setValue(float(value))
+#            sp.setMinimumHeight(28)
+#            sp.setFixedWidth(88)
+#            return sp
+#
+#        self.font_spin = spin(5, 24, 0.5, " pt", style.get("font_pt") or 8)
+#        self.label_spin = spin(5, 24, 0.5, " pt",
+#                               style.get("label_pt") or style.get("font_pt") or 8)
+#        self.point_spin = spin(0.5, 20, 0.5, " px",
+#                               style.get("point_size") or 3.2)
+#        self.line_spin = spin(0.3, 12, 0.2, " px",
+#                              style.get("line_width") or 2.2)
 #        self.tick_bold_chk = QCheckBox("bold")
 #        self.tick_bold_chk.setChecked(bool(style.get("tick_bold", False)))
 #        self.label_bold_chk = QCheckBox("bold")
 #        self.label_bold_chk.setChecked(bool(style.get("label_bold", True)))
-#        for sp in (self.font_spin, self.label_spin, self.point_spin,
-#                   self.line_spin):
-#            sp.setMinimumHeight(28)
-#            sp.setFixedWidth(84)
-#        mrow.addWidget(ml)
-#        mrow.addWidget(QLabel("ticks"))
-#        mrow.addWidget(self.font_spin)
-#        mrow.addWidget(self.tick_bold_chk)
-#        mrow.addWidget(QLabel("axis names"))
-#        mrow.addWidget(self.label_spin)
-#        mrow.addWidget(self.label_bold_chk)
-#        mrow.addStretch(1)
-#        root.addLayout(mrow)
-#        mrow2 = QHBoxLayout()
-#        mrow2.setSpacing(6)
-#        ml2 = QLabel("marks")
-#        ml2.setObjectName("Hint")
-#        ml2.setMinimumWidth(96)
-#        mrow2.addWidget(ml2)
-#        mrow2.addWidget(QLabel("point"))
-#        mrow2.addWidget(self.point_spin)
-#        mrow2.addWidget(QLabel("line"))
-#        mrow2.addWidget(self.line_spin)
-#        mrow2.addStretch(1)
-#        root.addLayout(mrow2)
-#
-#        crow = QHBoxLayout()
-#        crow.setSpacing(6)
-#        cl = QLabel("colour")
-#        cl.setObjectName("Hint")
-#        cl.setMinimumWidth(96)
-#        crow.addWidget(cl)
 #        self._colors = {}
-#        for key, label, default in (("axis_ink", "axis", theme.INK),
-#                                    ("point_color", "points", ""),
-#                                    ("line_color", "lines", "")):
-#            crow.addWidget(QLabel(label))
-#            crow.addLayout(self._color_pick(key, style.get(key) or "", default))
-#        crow.addStretch(1)
-#        root.addLayout(crow)
-#        note = QLabel("Points and lines follow their group's colour until you "
-#                      "pick one here. Axis text is dark by default — light "
-#                      "grey ticks vanish on a projector.")
-#        note.setObjectName("Hint")
-#        note.setWordWrap(True)
-#        root.addWidget(note)
+#
+#        # the two label columns are collected and squared off afterwards, so
+#        # the spin boxes and the swatches line up down the block instead of
+#        # stepping in and out with the length of each word
+#        mark_heads: list = []
+#        mark_units: list = []
+#
+#        def mark_row(title, tip, size_label, size_widget, bold_widget,
+#                     color_key, color_default):
+#            row = QHBoxLayout()
+#            row.setSpacing(6)
+#            lab = QLabel(title)
+#            lab.setToolTip(tip)
+#            font = lab.font()
+#            font.setBold(True)
+#            lab.setFont(font)
+#            unit = QLabel(size_label)
+#            unit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+#            mark_heads.append(lab)
+#            mark_units.append(unit)
+#            row.addWidget(lab)
+#            row.addWidget(unit)
+#            row.addWidget(size_widget)
+#            if bold_widget is not None:
+#                row.addWidget(bold_widget)
+#            else:                       # keep the colour column in one line
+#                row.addSpacing(self.tick_bold_chk.sizeHint().width())
+#            row.addSpacing(8)
+#            row.addWidget(QLabel("colour"))
+#            row.addLayout(self._color_pick(color_key,
+#                                           style.get(color_key) or "",
+#                                           color_default))
+#            row.addStretch(1)
+#            root.addLayout(row)
+#
+#        mark_row("Tick values", "The numbers along both axes.",
+#                 "size", self.font_spin, self.tick_bold_chk,
+#                 "axis_ink", theme.INK)
+#        mark_row("Axis names", "The X and Y names, and the plot frame.",
+#                 "size", self.label_spin, self.label_bold_chk,
+#                 "label_ink", theme.INK)
+#        mark_row("Data points", "Every ROI's own marker.",
+#                 "radius", self.point_spin, None,
+#                 "point_color", theme.INK2)
+#        mark_row("Lines", "The profile line, the median bar, the bar outlines.",
+#                 "width", self.line_spin, None,
+#                 "line_color", theme.INK2)
+#        for column in (mark_heads, mark_units):
+#            wide = max(w.sizeHint().width() for w in column) + 6
+#            for w in column:
+#                w.setFixedWidth(wide)
 #
 #        head = QLabel("Scales")
 #        head.setObjectName("SectionTitle")
 #        head.setFont(theme.display_font(12, weight=700))
 #        root.addWidget(head)
 #        vrow, self.v_auto, self.v_lo, self.v_hi = _num_row(
-#            "value axis", style, "vmin", "vmax")
+#            "value  (box Y · hist X · profile Y)", style, "vmin", "vmax")
 #        xrow, self.x_auto, self.x_lo, self.x_hi = _num_row(
-#            "position X", style, "xmin", "xmax", " px")
+#            "position X  (profile · map)", style, "xmin", "xmax", " px")
 #        yrow, self.y_auto, self.y_lo, self.y_hi = _num_row(
-#            "position Y", style, "ymin", "ymax", " px")
+#            "position Y  (map)", style, "ymin", "ymax", " px")
 #        hrow, self.h_auto, self.h_lo, self.h_hi = _num_row(
-#            "heat colours", style, "heat_vmin", "heat_vmax")
+#            "heat colours  (map)", style, "heat_vmin", "heat_vmax")
+#        # one label column, as wide as the longest of the four — otherwise
+#        # the layout steals the width back from the label and the row reads
+#        # "value  (box Y · hist X · profil" with the checkbox on top of it
+#        scale_labels = [r.itemAt(0).widget() for r in (vrow, xrow, yrow, hrow)]
+#        col = max(w.sizeHint().width() for w in scale_labels) + 10
+#        for w in scale_labels:
+#            w.setFixedWidth(col)
+#        self.setMinimumWidth(col + 330)
 #        root.addLayout(vrow)
 #        root.addLayout(xrow)
 #        root.addLayout(yrow)
 #        root.addLayout(hrow)
-#        hint = QLabel("The value axis is the metric — the box plot's Y, the "
-#                      "histogram's X, the profile's Y. Position X / Y are the "
-#                      "image coordinates the profile and the heat map are "
-#                      "drawn across. Locked scales are what make two images, "
-#                      "two lots or two days comparable — with auto, each picks "
-#                      "its own range.")
+#        hint = QLabel("Untick auto to type a range. A locked scale is what "
+#                      "makes two images, two lots or two days comparable — "
+#                      "on auto each chart picks its own.")
 #        hint.setObjectName("Hint")
 #        hint.setWordWrap(True)
 #        root.addWidget(hint)
@@ -7601,7 +7691,7 @@ if __name__ == "__main__":
 #    assert list(s.pos_x) == [6.0, 34.0]
 #
 #
-#F 42ce55d5df43af41656a1fd8c8cc8391fd9bcbe8 1347 tests/test_ui_smoke.py
+#F 6d558857edbe41cda86c1044713bc50479b12aed 1442 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -8676,6 +8766,101 @@ if __name__ == "__main__":
 #    assert not c._label_font().bold()
 #    assert c._label_font().pointSizeF() == pytest.approx(14.0, abs=0.5)
 #    c.grab()
+#
+#
+#def test_axis_names_never_cover_the_tick_numbers(app):
+#    """Bigger text has to push the axes in, not print on top of them.
+#
+#    The gutters used to be fixed pixel counts, so at 16 pt the rotated Y name
+#    was drawn straight through the Y numbers and only half of each digit
+#    showed. Both gutters are measured from the font now, and the ink of the
+#    names is its own setting.
+#    """
+#    from PySide6.QtGui import QColor, QPainter, QPixmap
+#    from pear.ui import theme
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    gid = _grid_group(win, 3, 4)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("within")
+#    win.on_within_group(gid)
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#
+#    def gutters(chart):
+#        """What the chart reserves for the tick numbers and the axis names."""
+#        pm = QPixmap(max(chart.width(), 420), max(chart.height(), 300))
+#        p = QPainter(pm)
+#        left = chart._left_gutter(p, ["127.735", "62.2"])
+#        bottom = chart._bottom_gutter(p, 1)
+#        p.end()
+#        return left, bottom
+#
+#    for ctype in ("box", "hist", "position", "map"):
+#        ap._pick_ctype(ctype)
+#        app.processEvents()
+#        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+#
+#        ap.set_chart_style({"font_pt": 8.0, "label_pt": 8.0})
+#        app.processEvents()
+#        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+#        small = gutters(c)
+#
+#        ap.set_chart_style({"font_pt": 16.0, "label_pt": 18.0,
+#                            "xlabel": "ROI centre X (px)",
+#                            "ylabel": "GLV mean (grey level)"})
+#        app.processEvents()
+#        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+#        big = gutters(c)
+#
+#        assert big[0] > small[0], f"{ctype}: left gutter ignored the tick font"
+#        assert big[1] > small[1], f"{ctype}: bottom gutter ignored the names"
+#        c.grab()                       # and the painter still draws with them
+#
+#    # the axis names carry their own colour, falling back to the tick ink
+#    ap.set_chart_style({"axis_ink": "#123456"})
+#    app.processEvents()
+#    c = ap._chart_widgets[-1]
+#    assert c._label_ink() == QColor("#123456")
+#    ap.set_chart_style({"axis_ink": "#123456", "label_ink": "#654321"})
+#    app.processEvents()
+#    c = ap._chart_widgets[-1]
+#    assert c._axis_ink() == QColor("#123456")
+#    assert c._label_ink() == QColor("#654321")
+#    ap.set_chart_style({})
+#    app.processEvents()
+#    assert ap._chart_widgets[-1]._label_ink() == QColor(theme.INK)
+#
+#
+#def test_heat_map_footer_clears_the_axis_name(app):
+#    """The map has three things under its plot; none may sit on another."""
+#    from PySide6.QtGui import QPainter, QPixmap
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    gid = _grid_group(win, 3, 4)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("within")
+#    win.on_within_group(gid)
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("map")
+#    ap.set_chart_style({"font_pt": 16.0, "label_pt": 18.0})
+#    app.processEvents()
+#    c = [x for x in ap._chart_widgets if x._ctype == "map"][-1]
+#    c.resize(560, 420)
+#    app.processEvents()
+#
+#    pm = QPixmap(c.size())
+#    p = QPainter(pm)
+#    # tick row + axis name + the n/mean/range line all have to fit below the
+#    # plot, which is what the extra row of gutter is for
+#    plain = c._bottom_gutter(p, 1)
+#    withfoot = c._bottom_gutter(p, 1, extra=p.fontMetrics().height() + 10)
+#    p.end()
+#    assert withfoot > plain
+#    c.grab()                            # painted at that size without clipping
 #
 #
 #def test_right_drag_pans_while_placing_a_grid(app):

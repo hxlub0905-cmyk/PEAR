@@ -1074,6 +1074,101 @@ def test_chart_text_and_marks_are_adjustable(app):
     c.grab()
 
 
+def test_axis_names_never_cover_the_tick_numbers(app):
+    """Bigger text has to push the axes in, not print on top of them.
+
+    The gutters used to be fixed pixel counts, so at 16 pt the rotated Y name
+    was drawn straight through the Y numbers and only half of each digit
+    showed. Both gutters are measured from the font now, and the ink of the
+    names is its own setting.
+    """
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    from pear.ui import theme
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win, 3, 4)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+
+    def gutters(chart):
+        """What the chart reserves for the tick numbers and the axis names."""
+        pm = QPixmap(max(chart.width(), 420), max(chart.height(), 300))
+        p = QPainter(pm)
+        left = chart._left_gutter(p, ["127.735", "62.2"])
+        bottom = chart._bottom_gutter(p, 1)
+        p.end()
+        return left, bottom
+
+    for ctype in ("box", "hist", "position", "map"):
+        ap._pick_ctype(ctype)
+        app.processEvents()
+        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+
+        ap.set_chart_style({"font_pt": 8.0, "label_pt": 8.0})
+        app.processEvents()
+        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+        small = gutters(c)
+
+        ap.set_chart_style({"font_pt": 16.0, "label_pt": 18.0,
+                            "xlabel": "ROI centre X (px)",
+                            "ylabel": "GLV mean (grey level)"})
+        app.processEvents()
+        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+        big = gutters(c)
+
+        assert big[0] > small[0], f"{ctype}: left gutter ignored the tick font"
+        assert big[1] > small[1], f"{ctype}: bottom gutter ignored the names"
+        c.grab()                       # and the painter still draws with them
+
+    # the axis names carry their own colour, falling back to the tick ink
+    ap.set_chart_style({"axis_ink": "#123456"})
+    app.processEvents()
+    c = ap._chart_widgets[-1]
+    assert c._label_ink() == QColor("#123456")
+    ap.set_chart_style({"axis_ink": "#123456", "label_ink": "#654321"})
+    app.processEvents()
+    c = ap._chart_widgets[-1]
+    assert c._axis_ink() == QColor("#123456")
+    assert c._label_ink() == QColor("#654321")
+    ap.set_chart_style({})
+    app.processEvents()
+    assert ap._chart_widgets[-1]._label_ink() == QColor(theme.INK)
+
+
+def test_heat_map_footer_clears_the_axis_name(app):
+    """The map has three things under its plot; none may sit on another."""
+    from PySide6.QtGui import QPainter, QPixmap
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win, 3, 4)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("map")
+    ap.set_chart_style({"font_pt": 16.0, "label_pt": 18.0})
+    app.processEvents()
+    c = [x for x in ap._chart_widgets if x._ctype == "map"][-1]
+    c.resize(560, 420)
+    app.processEvents()
+
+    pm = QPixmap(c.size())
+    p = QPainter(pm)
+    # tick row + axis name + the n/mean/range line all have to fit below the
+    # plot, which is what the extra row of gutter is for
+    plain = c._bottom_gutter(p, 1)
+    withfoot = c._bottom_gutter(p, 1, extra=p.fontMetrics().height() + 10)
+    p.end()
+    assert withfoot > plain
+    c.grab()                            # painted at that size without clipping
+
+
 def test_right_drag_pans_while_placing_a_grid(app):
     """Reaching the far corner is exactly when panning matters."""
     from PySide6.QtCore import QPointF, Qt
