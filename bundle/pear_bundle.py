@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F cbc8ff0a960bf66814b4144781cc0b8be998b9c9 178 README.md
+#F 53e1b07cbfb7f8680c4f38e35943695f899b9008 195 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -308,17 +308,25 @@ if __name__ == "__main__":
 #  - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
 #    duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
 #    group.
+#  - The ROI list carries each ROI's shown metric and sorts by it (**order**:
+#    as placed / value ↑ / value ↓), so the odd one out is one glance away.
 #- **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
 #  Q75, std, min, max, plus any custom **Q*n***) and **SNR**. SNR is a
 #  *within-group* measurement: tag one ROI as the **target (T)** and the rest
 #  become the **reference (R)**, giving the e-beam definition
 #  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs.
-#- **ROI overlay** — pick the metric under **show on ROIs**, then switch each
-#  reading of it on its own: **values** (the number printed on the box),
-#  **heatmap** (the box filled with the metric's colour, with a colorbar) and
-#  **flag outliers** (Tukey fences within each group). Values off + heatmap on
-#  = colour only; **heat opacity** turns the fill down until the image under
-#  the box shows through.
+#- **ROI overlay** — one strip sits above the image, where what it changes is:
+#  pick the metric under **show on ROIs**, then switch each reading of it on
+#  its own.
+#  - **values** — the number printed on the box, where the box is big enough
+#    to hold it; the ROI under the cursor always shows its own, floated above.
+#  - **heatmap** — the box filled with the metric's colour, with a colorbar.
+#    **opacity** turns the fill down until the image underneath shows through.
+#  - **fill field** — spread each ROI's colour over the patch of image it
+#    speaks for (midway to its neighbours), so a gradient across the field
+#    reads as one surface instead of a row of small tinted boxes. The measured
+#    box stays outlined on top.
+#  - **flag outliers** — Tukey fences within each group.
 #
 ### Comparisons (in a separate Analysis window)
 #
@@ -327,7 +335,9 @@ if __name__ == "__main__":
 #- **Within a group** — the distribution across one group's ROIs.
 #
 #Charts render four ways, switched by one toggle: **vertical box-and-strip**
-#plots (toggle **whiskers** / strip **points**), an overlaid **histogram**, a
+#plots (toggle **whiskers** / strip **points**, and **own scale** to give each
+#group its own value range — printed under the lane — when one group's spread
+#is too small to see on the shared axis), an overlaid **histogram**, a
 #**position profile**, or a **heat map**. Between-group mode
 #also gives an **attribute-ranking** table — which metric best separates the
 #groups, scored by η² (variance explained) and Cohen's d — and a **group ×
@@ -365,12 +375,15 @@ if __name__ == "__main__":
 #
 #- Fully **offline** — no network, no telemetry, all computation local.
 #- **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-#  metrics, and view state (overlay toggles, heat opacity, the chart type and
-#  position axis);
+#  metrics, and view state (overlay toggles, heat opacity, ROI list order, the
+#  chart type and position axis);
 #  reopen to pick up where you left off.
 #- Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
 #  normalized to 8-bit grayscale on load (CJK-path safe IO).
 #- Hover an ROI on the canvas or in the list — the other side highlights in sync.
+#- The status bar keeps the headline numbers — groups, ROIs, and the shown
+#  metric's mean, range and CV — so the figure you keep glancing at does not
+#  need the Analysis window opened for it.
 #- Analysis runs **off the UI thread** (debounced), so placing many ROIs stays
 #  responsive.
 #- Calm **light instrument theme** with a single amber accent and system-safe fonts.
@@ -405,6 +418,7 @@ if __name__ == "__main__":
 #
 #- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
 #  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
+#  per-ROI field cells,
 #  attribute separability / ranking, pixel histogram, ROI positions / linear
 #  trend / uniformity, project (de)serialize, between/within comparison,
 #  snapshot isolation.
@@ -414,7 +428,9 @@ if __name__ == "__main__":
 #  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
 #  save/open, CSV export, position profile + heat map (cells / dots / values),
-#  independent ROI overlay toggles, list rebuilds leaving no stale rows.
+#  independent ROI overlay toggles, field fill, value-label fitting, fit across
+#  a resize, ROI list values / ordering, status headline, per-lane box scale,
+#  list rebuilds leaving no stale rows.
 #
 ### Repository layout
 #
@@ -425,6 +441,7 @@ if __name__ == "__main__":
 #      attributes.py                 # GLV statistics + SNR
 #      analysis.py                   # group/ROI model, geometry, metric collection
 #    ui/            # all Qt (theme, image_view, widgets, main_window)
+#                   #   widgets.py: rail, stage bar, charts, inspector
 #  tests/
 #  examples/        # make_sample.py
 #  tools/           # make_text_bundle.py — pack the repo into one text file
@@ -447,8 +464,8 @@ if __name__ == "__main__":
 #
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 #grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
-#flagging with per-overlay toggles, attribute ranking + group×metric heatmap,
-#per-ROI pixel inspector,
+#flagging with per-overlay toggles and a field fill, attribute ranking +
+#group×metric heatmap, per-ROI pixel inspector,
 #between-group and within-group comparison in a separate window (box, histogram,
 #position profile, or spatial heat map), project save/open, CSV export.
 #
@@ -744,7 +761,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F 3466aa183d490e025e20b7e6061cfc06df32e2c0 544 pear/core/analysis.py
+#F 8ca568fcf6884e6d6d5dbf2c04f105a9b1d28679 591 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -1066,6 +1083,53 @@ if __name__ == "__main__":
 #    mid = (c[:-1] + c[1:]) / 2.0
 #    return c, np.concatenate(([2.0 * c[0] - mid[0]], mid,
 #                              [2.0 * c[-1] - mid[-1]]))
+#
+#
+#def heat_cells(rois: List[ROI], bounds=None) -> Dict[int, Tuple[float, float,
+#                                                             float, float]]:
+#    """``rid -> (x0, y0, x1, y1)``: the patch of image each ROI speaks for.
+#
+#    The ROI boxes are the measurements; between them the field is unmeasured.
+#    Painting each ROI's value across the rectangle bounded by the midlines to
+#    its neighbours (:func:`cell_edges` on each axis) fills that gap with the
+#    nearest actual measurement, so a gradient across the field shows up as a
+#    gradient instead of a row of small tinted boxes. ``bounds = (w, h)`` clips
+#    the tiling to the image.
+#    """
+#    if not rois:
+#        return {}
+#    cx = np.asarray([roi_center(r.rect)[0] for r in rois], dtype=np.float64)
+#    cy = np.asarray([roi_center(r.rect)[1] for r in rois], dtype=np.float64)
+#    xc, xe = cell_edges(cx)
+#    yc, ye = cell_edges(cy)
+#    # a single row (or column) has no pitch of its own — it borrows the other
+#    # axis's, and with neither the ROI's own box is all the extent there is
+#    def step(e, fallback):
+#        return float(np.median(np.diff(e))) if e.size > 2 else fallback
+#
+#    sx = step(xe, 0.0)
+#    sy = step(ye, 0.0)
+#    out: Dict[int, Tuple[float, float, float, float]] = {}
+#    for r, x, y in zip(rois, cx, cy):
+#        w, h = float(r.rect[2]), float(r.rect[3])
+#        if xe.size > 2:
+#            i = int(np.abs(xc - x).argmin())
+#            x0, x1 = float(xe[i]), float(xe[i + 1])
+#        else:
+#            half = (sy if sy > 0 else w) / 2.0
+#            x0, x1 = float(x - half), float(x + half)
+#        if ye.size > 2:
+#            j = int(np.abs(yc - y).argmin())
+#            y0, y1 = float(ye[j]), float(ye[j + 1])
+#        else:
+#            half = (sx if sx > 0 else h) / 2.0
+#            y0, y1 = float(y - half), float(y + half)
+#        if bounds:
+#            bw, bh = float(bounds[0]), float(bounds[1])
+#            x0, x1 = max(0.0, x0), min(bw, x1)
+#            y0, y1 = max(0.0, y0), min(bh, y1)
+#        out[r.rid] = (x0, y0, x1, y1)
+#    return out
 #
 #
 #def profile_by_position(positions, values, decimals: int = 0):
@@ -1415,7 +1479,7 @@ if __name__ == "__main__":
 #F afa940644becc78d2d6a262afdec4f08ba635fc2 2 pear/ui/__init__.py
 #"""Qt UI for PEAR. All Qt imports live under this package."""
 #
-#F 4a71aaa58835a29bdb58a7aca6363406c71711ba 786 pear/ui/image_view.py
+#F 21f43e80884e81458de2a990fa0b4a49eeb94483 863 pear/ui/image_view.py
 #"""Image stage: zoom/pan and place / move / resize ROIs.
 #
 #ROIs belong to groups and are drawn in their group's colour.
@@ -1445,6 +1509,25 @@ if __name__ == "__main__":
 #_DEFAULT = 28          # default single-ROI size (px) for a plain click
 #
 #
+#def label_rect(r: QRectF, bw: float, bh: float,
+#               hovered: bool) -> Optional[QRectF]:
+#    """Where a ``bw × bh`` value label goes on ROI ``r``, or None: don't draw.
+#
+#    Zoomed out, a label is wider than its box: printed anyway they collide
+#    with each other and bury the boxes they belong to. One that does not fit
+#    is dropped and comes back on zoom — except on the ROI under the cursor,
+#    which floats its label above the box (below it, at the top edge of the
+#    image) so a value is always one hover away.
+#    """
+#    cx, cy = r.center().x(), r.center().y()
+#    if bw <= r.width() and bh <= r.height():
+#        return QRectF(cx - bw / 2, cy - bh / 2, bw, bh)
+#    if not hovered:
+#        return None
+#    top = r.top() - bh - 2
+#    return QRectF(cx - bw / 2, top if top >= 0 else r.bottom() + 2, bw, bh)
+#
+#
 #class ImageView(QWidget):
 #    roi_created = Signal(object)            # rect (single ROI into active group)
 #    grid_committed = Signal(object)         # list[rect] (a row×col grid)
@@ -1471,6 +1554,7 @@ if __name__ == "__main__":
 #        self._pixmap: Optional[QPixmap] = None
 #        self._scale = 1.0
 #        self._offset = QPointF(0, 0)
+#        self._fitted = True     # still showing the fit; a zoom or pan ends it
 #
 #        self._groups: List[Group] = []
 #        self._active_gid: Optional[str] = None
@@ -1481,6 +1565,7 @@ if __name__ == "__main__":
 #        self._heat: dict = {}                  # rid -> hex colour (heatmap)
 #        self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
 #        self._heat_alpha = 178                 # heat fill opacity (0-255)
+#        self._heat_cells: dict = {}            # rid -> (x0,y0,x1,y1) image px
 #        self._outliers: set = set()            # rids flagged as outliers
 #        self._hover_rid: int = -1              # rid under the cursor
 #
@@ -1541,6 +1626,14 @@ if __name__ == "__main__":
 #        self._heat_alpha = int(np.clip(int(alpha), 0, 255))
 #        self.update()
 #
+#    def set_heat_cells(self, cells: dict) -> None:
+#        """Tile the heat across the field: rid -> (x0, y0, x1, y1) in image px.
+#
+#        Empty = paint the heat inside the ROI boxes only.
+#        """
+#        self._heat_cells = cells or {}
+#        self.update()
+#
 #    def set_outliers(self, rids) -> None:
 #        self._outliers = set(rids or [])
 #        self.update()
@@ -1591,6 +1684,7 @@ if __name__ == "__main__":
 #        self._scale = min(vw / iw, vh / ih) * 0.96
 #        self._offset = QPointF((vw - iw * self._scale) / 2.0,
 #                               (vh - ih * self._scale) / 2.0)
+#        self._fitted = True
 #        self.update()
 #        self.zoom_changed.emit(self._scale)
 #
@@ -1600,6 +1694,7 @@ if __name__ == "__main__":
 #        if anchor is None:
 #            anchor = QPointF(self.width() / 2.0, self.height() / 2.0)
 #        ia = self._to_image(anchor)
+#        self._fitted = False
 #        self._scale = float(np.clip(self._scale * factor, 0.05, 40.0))
 #        self._offset = QPointF(anchor.x() - ia.x() * self._scale,
 #                               anchor.y() - ia.y() * self._scale)
@@ -1654,6 +1749,7 @@ if __name__ == "__main__":
 #                        self._pixmap.width() * self._scale,
 #                        self._pixmap.height() * self._scale)
 #        p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+#        self._paint_heat_cells(p)
 #        self._paint_rois(p)
 #        self._paint_rubberband(p)
 #        self._paint_marquee(p)
@@ -1661,6 +1757,28 @@ if __name__ == "__main__":
 #        self._paint_colorbar(p)
 #        self._paint_hud(p)
 #        p.end()
+#
+#    def _paint_heat_cells(self, p: QPainter) -> None:
+#        """Heat spread over each ROI's cell, under the ROI outlines.
+#
+#        The ROI keeps its own box on top, so it stays visible which rectangle
+#        was actually measured and which area merely carries its colour.
+#        """
+#        if not self._heat_cells or not self._heat:
+#            return
+#        p.setPen(Qt.NoPen)
+#        for roi in self._rois:
+#            cell = self._heat_cells.get(roi.rid)
+#            heat = self._heat.get(roi.rid)
+#            if cell is None or heat is None:
+#                continue
+#            x0, y0, x1, y1 = cell
+#            tl = self._to_widget(x0, y0)
+#            br = self._to_widget(x1, y1)
+#            fill = QColor(heat)
+#            fill.setAlpha(self._heat_alpha)
+#            p.setBrush(fill)
+#            p.drawRect(QRectF(tl, br))
 #
 #    def _paint_rois(self, p: QPainter) -> None:
 #        targets = {g.gid: g.target_rid for g in self._groups}
@@ -1671,7 +1789,9 @@ if __name__ == "__main__":
 #            color = self._gcolor(roi.gid)
 #            r = self._rect_to_widget(roi.rect)
 #            heat = self._heat.get(roi.rid)
-#            if heat is not None:                     # value heatmap fill
+#            if heat is not None and roi.rid in self._heat_cells:
+#                fill = Qt.NoBrush                    # the cell under it is the fill
+#            elif heat is not None:                   # value heatmap fill
 #                fill = QColor(heat)
 #                fill.setAlpha(self._heat_alpha)
 #            else:
@@ -1694,7 +1814,7 @@ if __name__ == "__main__":
 #                self._paint_badge(p, r, "T", color)
 #            val = self._roi_values.get(roi.rid)
 #            if val is not None:
-#                self._paint_value(p, r, val)
+#                self._paint_value(p, r, val, roi.rid == self._hover_rid)
 #            if selected and not self._grid_mode:
 #                self._paint_handles(p, r, color)
 #
@@ -1757,17 +1877,30 @@ if __name__ == "__main__":
 #        p.setPen(QColor("#FFFFFF"))
 #        p.drawText(bg, Qt.AlignCenter, text)
 #
-#    def _paint_value(self, p: QPainter, r: QRectF, text: str) -> None:
+#    def _paint_value(self, p: QPainter, r: QRectF, text: str,
+#                     hovered: bool = False) -> None:
+#        """The metric, centred on the ROI — but only where it fits.
+#
+#        Zoomed out, a label is wider than its box: printed anyway they collide
+#        with each other and bury the boxes they belong to. A label that does
+#        not fit is dropped and comes back on zoom; the ROI under the cursor
+#        keeps its label whatever the zoom, floated above the box, so a value
+#        is always one hover away.
+#        """
 #        p.setFont(theme.mono_font(9, weight=700))
 #        fm = p.fontMetrics()
-#        tw = fm.horizontalAdvance(text)
-#        cx, cy = r.center().x(), r.center().y()
-#        bg = QRectF(cx - tw / 2 - 3, cy - fm.height() / 2, tw + 6, fm.height())
+#        # the *text* has to fit the box; its pill may overhang a little, which
+#        # keeps a 4-digit label from vanishing on a box a 3-digit one fits
+#        bg = label_rect(r, float(fm.horizontalAdvance(text)), float(fm.height()),
+#                        hovered)
+#        if bg is None:
+#            return
+#        pill = bg.adjusted(-3, 0, 3, 0)
 #        p.setPen(Qt.NoPen)
 #        p.setBrush(QColor(17, 24, 39, 200))
-#        p.drawRoundedRect(bg, 3, 3)
+#        p.drawRoundedRect(pill, 3, 3)
 #        p.setPen(QColor("#FFFFFF"))
-#        p.drawText(bg, Qt.AlignCenter, text)
+#        p.drawText(pill, Qt.AlignCenter, text)
 #
 #    def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
 #        p.setPen(QPen(QColor("#FFFFFF"), 1.4))
@@ -1985,6 +2118,7 @@ if __name__ == "__main__":
 #            return
 #        if self._interact == "pan":
 #            self._offset = self._pan_at_press + (pos - self._drag_start)
+#            self._fitted = False        # panned away from the fit
 #            self.update()
 #            return
 #        if self._interact == "marquee" and self._marquee is not None:
@@ -2199,10 +2333,17 @@ if __name__ == "__main__":
 #            self.setCursor(Qt.CrossCursor)
 #
 #    def resizeEvent(self, _e) -> None:
-#        if self._pixmap is not None and self._interact is None:
+#        if self._pixmap is None or self._interact is not None:
+#            return
+#        # set_image() fits against whatever size the widget has at load time,
+#        # which is the layout's first guess, not the final one — without this
+#        # the image stays pinned wherever that guess put it
+#        if self._fitted:
+#            self.fit()
+#        else:
 #            self.update()
 #
-#F fcbdd42df948a03bb24dbde88f43d9fc5aaeefd9 765 pear/ui/main_window.py
+#F a52d733a150ac8dda347ee2cbabaa989baf4dacd 852 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2225,14 +2366,15 @@ if __name__ == "__main__":
 #
 #from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
 #                                group_outliers, group_rois, group_snr,
-#                                groups_from_json, groups_to_json, heat_color,
-#                                load_image, roi_center, roi_metric, roi_patch,
-#                                rois_from_json, rois_to_json, snapshot,
-#                                summarize)
+#                                groups_from_json, groups_to_json, heat_cells,
+#                                heat_color, load_image, roi_center, roi_metric,
+#                                roi_patch, rois_from_json, rois_to_json,
+#                                snapshot, summarize, uniformity)
 #from pear.core.attributes import SNR_ID, metric_label
 #from pear.ui import theme
 #from pear.ui.image_view import ImageView
-#from pear.ui.widgets import AnalysisPanel, RailPanel, RoiInspector
+#from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
+#                             StageBar)
 #
 #_FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 #
@@ -2273,8 +2415,11 @@ if __name__ == "__main__":
 #        self._show_metric = ""            # single metric drawn live on ROIs
 #        self._show_values = True          # print the shown metric on each ROI
 #        self._heatmap = False             # colour ROIs by the shown metric
+#        self._heat_field = False          # spread the heat over each ROI's cell
 #        self._flag_outliers = False       # flag Tukey outliers of the shown metric
 #        self._heat_alpha = 70             # heat fill opacity, percent
+#        self._roi_order = "placed"        # ROI list order: placed | asc | desc
+#        self._values: dict = {}           # rid -> shown metric, one pass per refresh
 #        self._outlier_rids: set = set()
 #        self._image_path: Optional[str] = None
 #        self._cmp_mode = "between"
@@ -2296,6 +2441,7 @@ if __name__ == "__main__":
 #        self._build_inspector_window()
 #        self._wire()
 #        self.rail.set_ready(False)
+#        self.stage_bar.setEnabled(False)
 #
 #    # ------------------------------------------------------------------ #
 #    def _build_topbar(self) -> None:
@@ -2335,7 +2481,16 @@ if __name__ == "__main__":
 #
 #    def _build_docks(self) -> None:
 #        self.image_view = ImageView()
-#        self.setCentralWidget(self.image_view)
+#        # The overlay controls sit on the stage, not at the bottom of the rail:
+#        # every one of them changes what the image looks like.
+#        self.stage_bar = StageBar()
+#        stage = QWidget()
+#        slay = QVBoxLayout(stage)
+#        slay.setContentsMargins(0, 0, 0, 0)
+#        slay.setSpacing(0)
+#        slay.addWidget(self.stage_bar)
+#        slay.addWidget(self.image_view, 1)
+#        self.setCentralWidget(stage)
 #        self.rail = RailPanel()
 #        scroll = QScrollArea()
 #        scroll.setWidgetResizable(True)
@@ -2352,6 +2507,12 @@ if __name__ == "__main__":
 #
 #    def _build_status(self) -> None:
 #        bar = self.statusBar()
+#        # the headline numbers, so the one figure you keep glancing at does
+#        # not need the Analysis window opened for it
+#        self.summary_lbl = QLabel("")
+#        self.summary_lbl.setObjectName("Mono")
+#        self.summary_lbl.setFont(theme.mono_font(9))
+#        bar.addPermanentWidget(self.summary_lbl)
 #        self.cursor_lbl = QLabel("")
 #        self.cursor_lbl.setObjectName("Mono")
 #        self.cursor_lbl.setFont(theme.mono_font(9))
@@ -2413,11 +2574,14 @@ if __name__ == "__main__":
 #        self.rail.roi_del.connect(self.delete_roi)
 #        self.rail.roi_hovered.connect(self.image_view.set_hover)
 #        self.rail.metrics_changed.connect(self.set_metrics)
-#        self.rail.show_metric_changed.connect(self.on_show_metric)
-#        self.rail.values_changed.connect(self.on_show_values)
-#        self.rail.heatmap_changed.connect(self.on_heatmap)
-#        self.rail.outliers_changed.connect(self.on_flag_outliers)
-#        self.rail.heat_alpha_changed.connect(self.on_heat_alpha)
+#        self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
+#        self.rail.roi_order_changed.connect(self.on_roi_order)
+#        self.stage_bar.show_changed.connect(self.on_show_metric)
+#        self.stage_bar.values_changed.connect(self.on_show_values)
+#        self.stage_bar.heatmap_changed.connect(self.on_heatmap)
+#        self.stage_bar.cells_changed.connect(self.on_heat_field)
+#        self.stage_bar.outliers_changed.connect(self.on_flag_outliers)
+#        self.stage_bar.heat_alpha_changed.connect(self.on_heat_alpha)
 #        self.rail.open_analysis.connect(self.open_analysis)
 #
 #        self.image_view.roi_created.connect(self.on_roi_created)
@@ -2649,6 +2813,14 @@ if __name__ == "__main__":
 #        self._show_values = bool(on)
 #        self._refresh()
 #
+#    def on_heat_field(self, on: bool) -> None:
+#        self._heat_field = bool(on)
+#        self._update_heatmap()
+#
+#    def on_roi_order(self, order: str) -> None:
+#        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
+#        self._refresh()
+#
 #    def on_heat_alpha(self, pct: int) -> None:
 #        self._heat_alpha = int(max(0, min(100, int(pct))))
 #        self._update_heatmap()
@@ -2672,8 +2844,7 @@ if __name__ == "__main__":
 #
 #    def _update_heatmap(self) -> None:
 #        if self._heatmap and self._image is not None and self._is_glv_show():
-#            vals = {r.rid: roi_metric(self._image, r, self._show_metric)
-#                    for r in self._rois}
+#            vals = self._values
 #            finite = [v for v in vals.values() if np.isfinite(v)]
 #            if finite:
 #                vmin, vmax = min(finite), max(finite)
@@ -2683,25 +2854,70 @@ if __name__ == "__main__":
 #                self.image_view.set_heatmap(
 #                    colors, (vmin, vmax, metric_label(self._show_metric)),
 #                    round(self._heat_alpha * 2.55))
+#                shape = self._image.shape[:2]
+#                self.image_view.set_heat_cells(
+#                    heat_cells(self._rois, (shape[1], shape[0]))
+#                    if self._heat_field else {})
 #                return
 #        self.image_view.set_heatmap({}, None)
+#        self.image_view.set_heat_cells({})
+#
+#    def _compute_values(self) -> None:
+#        """``rid -> shown metric``, once per refresh.
+#
+#        The canvas labels, the heatmap, the ROI list and the status readout
+#        all want the same numbers; computing them here keeps one pass over the
+#        pixels instead of four.
+#        """
+#        vals: dict = {}
+#        if self._image is not None and self._show_metric:
+#            if self._show_metric == SNR_ID:
+#                # SNR is a per-group value; it belongs to the target (T) ROI.
+#                for g in self._groups:
+#                    v = group_snr(self._image, group_rois(self._rois, g.gid),
+#                                  g.target_rid)
+#                    if v is not None and g.target_rid is not None:
+#                        vals[g.target_rid] = float(v)
+#            else:
+#                for r in self._rois:
+#                    vals[r.rid] = roi_metric(self._image, r, self._show_metric)
+#        self._values = vals
 #
 #    def _update_roi_values(self) -> None:
-#        if not self._show_values or not self._show_metric or self._image is None:
+#        if not self._show_values or not self._values:
 #            self.image_view.set_roi_values({})
 #            return
-#        vals = {}
-#        if self._show_metric == SNR_ID:
-#            # SNR is a per-group value; label the target (T) ROI with it.
-#            for g in self._groups:
-#                s = group_snr(self._image, group_rois(self._rois, g.gid),
-#                              g.target_rid)
-#                if s is not None and g.target_rid is not None:
-#                    vals[g.target_rid] = f"{s:.3g}"
-#        else:
-#            for r in self._rois:
-#                vals[r.rid] = f"{roi_metric(self._image, r, self._show_metric):.3g}"
-#        self.image_view.set_roi_values(vals)
+#        self.image_view.set_roi_values(
+#            {rid: f"{v:.3g}" for rid, v in self._values.items()})
+#
+#    def _update_summary(self) -> None:
+#        """Headline numbers in the status bar — counts, then the shown metric."""
+#        if self._image is None:
+#            self.summary_lbl.setText("")
+#            return
+#        parts = [f"{len(self._groups)} groups · {len(self._rois)} ROIs"]
+#        vals = np.asarray([v for v in self._values.values() if np.isfinite(v)],
+#                          dtype=np.float64)
+#        if vals.size:
+#            u = uniformity(vals)
+#            parts.append(f"{metric_label(self._show_metric)}: "
+#                         f"mean {u['mean']:.4g} · range {u['range']:.3g} "
+#                         f"· CV {u['cv_pct']:.2f}%")
+#        self.summary_lbl.setText("   ".join(parts))
+#
+#    def _ordered_rois(self, rois):
+#        """The active group's ROIs in list order — as placed, or by value."""
+#        if self._roi_order == "placed" or not self._values:
+#            return rois
+#        rev = self._roi_order == "desc"
+#
+#        def key(r):
+#            v = self._values.get(r.rid)
+#            if v is None or not np.isfinite(v):
+#                return (1, 0.0)      # no value (SNR reference) — keep it last
+#            return (0, -v if rev else v)
+#
+#        return sorted(rois, key=key)
 #
 #    def on_cmp_mode(self, mode: str) -> None:
 #        self._cmp_mode = mode
@@ -2750,23 +2966,27 @@ if __name__ == "__main__":
 #        self._renumber()
 #        has_img = self._image is not None
 #        self.rail.set_ready(has_img)
+#        self.stage_bar.setEnabled(has_img)   # nothing to overlay without one
 #        self.analysis_btn_top.setEnabled(has_img)
 #        self._save_action.setEnabled(has_img)
 #        self._outlier_rids = (
 #            group_outliers(self._image, self._rois, self._show_metric)
 #            if (self._flag_outliers and has_img and self._is_glv_show())
 #            else set())
+#        self._compute_values()
 #        counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
 #        self.rail.set_groups(self._groups, self._active_gid, counts)
-#        self.rail.set_rois(group_rois(self._rois, self._active_gid),
-#                           self._active_rid, self._target_of_active(),
-#                           self._selected_rids, self._outlier_rids)
+#        self.rail.set_rois(
+#            self._ordered_rois(group_rois(self._rois, self._active_gid)),
+#            self._active_rid, self._target_of_active(),
+#            self._selected_rids, self._outlier_rids, self._values)
 #        self.image_view.set_groups(self._groups, self._active_gid)
 #        self.image_view.set_rois(self._rois, self._active_rid)
 #        self.image_view.set_selection(self._selected_rids)
 #        self.image_view.set_outliers(self._outlier_rids)
 #        self._update_roi_values()
 #        self._update_heatmap()
+#        self._update_summary()
 #        self._update_inspector()
 #        if self._within_gid is None and self._groups:
 #            self._within_gid = self._groups[0].gid
@@ -2852,8 +3072,10 @@ if __name__ == "__main__":
 #            "show_metric": self._show_metric,
 #            "show_values": self._show_values,
 #            "heatmap": self._heatmap,
+#            "heat_field": self._heat_field,
 #            "flag_outliers": self._flag_outliers,
 #            "heat_alpha": self._heat_alpha,
+#            "roi_order": self._roi_order,
 #            "cmp_mode": self._cmp_mode,
 #            "within_gid": self._within_gid,
 #            "active_gid": self._active_gid,
@@ -2894,17 +3116,23 @@ if __name__ == "__main__":
 #        self._show_metric = data.get("show_metric") or ""
 #        self._show_values = bool(data.get("show_values", True))
 #        self._heatmap = bool(data.get("heatmap", False))
+#        self._heat_field = bool(data.get("heat_field", False))
 #        self._flag_outliers = bool(data.get("flag_outliers", False))
 #        self._heat_alpha = int(data.get("heat_alpha", 70))
+#        order = data.get("roi_order", "placed")
+#        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
 #        self._cmp_mode = data.get("cmp_mode", "between")
 #        self._within_gid = data.get("within_gid")
 #        self._active_gid = (data.get("active_gid")
 #                            or (self._groups[0].gid if self._groups else None))
 #        self._active_rid = None
 #        self._selected_rids = set()
-#        self.rail.set_metric_state(self._metrics, self._show_metric,
-#                                   self._heatmap, self._flag_outliers,
-#                                   self._show_values, self._heat_alpha)
+#        self.rail.set_metric_state(self._metrics, [self._show_metric])
+#        self.rail.set_roi_order(self._roi_order)
+#        self.stage_bar.set_metrics(self.rail.metrics.ids())
+#        self.stage_bar.set_state(self._show_metric, self._show_values,
+#                                 self._heatmap, self._heat_field,
+#                                 self._flag_outliers, self._heat_alpha)
 #        self.analysis.set_chart_state(data.get("chart_type", "box"),
 #                                      data.get("pos_axis", "x"))
 #        self._refresh()
@@ -2968,7 +3196,7 @@ if __name__ == "__main__":
 #                        line.append(f"{summarize(vals)['mean']:.6g}")
 #                w.writerow(line)
 #
-#F fd86716a0af4bf9a1a7ba8424d2bbb62e7bf060d 193 pear/ui/theme.py
+#F d2e0f5632ceef07a1d5c29ba41647e1f22d73c04 196 pear/ui/theme.py
 #"""Design tokens and global QSS — a single light instrument theme.
 #
 #Palette and type are adopted from the sibling project's design system
@@ -3082,6 +3310,9 @@ if __name__ == "__main__":
 #    background: {PANEL}; border: 1px solid {LINE}; border-radius: 4px;
 #}}
 #
+#/* stage bar — the overlay controls, docked over the image */
+#QWidget#StageBar {{ background: {PANEL}; border-bottom: 1px solid {LINE}; }}
+#
 #/* cards */
 #QFrame#Card {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 14px; }}
 #QLabel#SectionTitle {{ font-weight: 700; font-size: 13px; color: {INK}; }}
@@ -3162,7 +3393,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 96df3357bdcdde02ac060718da6c989d2a3daf25 1705 pear/ui/widgets.py
+#F fae50381cb161bcb82cb649c25da4b5ee1e8a31e 1805 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3341,26 +3572,43 @@ if __name__ == "__main__":
 #
 #    # -- vertical box + jittered strip -------------------------------- #
 #    def _paint_box(self, p: QPainter) -> None:
-#        lo, hi = self._range()
+#        """Box-and-strip per group, on a shared value axis by default.
+#
+#        A shared axis is the comparison — it is what makes one group sitting
+#        above another visible. But a group whose spread is a hundredth of the
+#        gap between groups collapses to a line on it, and its shape is exactly
+#        what a within-group reader is after; ``own_scale`` gives every lane
+#        its own range, printed above and below the lane so nothing is implied
+#        about how the lanes relate.
+#        """
+#        own = bool(self._opts.get("own_scale", False))
+#        glo, ghi = self._range()
 #        top, left = 34, 54
-#        bottom = self.height() - 42
+#        bottom = self.height() - (54 if own else 42)
 #        right = self.width() - 12
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
 #        n = len(self._series)
 #
-#        def Y(v):
-#            return bottom - (v - lo) / (hi - lo) * H
+#        def lane_range(v):
+#            lo, hi = float(v.min()), float(v.max())
+#            if hi - lo < 1e-9:
+#                lo, hi = lo - 0.5, hi + 0.5
+#            pad = (hi - lo) * 0.08
+#            return lo - pad, hi + pad
 #
 #        p.setFont(theme.mono_font(8))
 #        for t in range(5):
 #            gy = top + H * t / 4.0
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
+#            if own:                     # one label per lane instead, below
+#                continue
 #            p.setPen(QColor(theme.INK3))
 #            p.drawText(QRectF(16, gy - 6, left - 20, 12),
-#                       Qt.AlignRight | Qt.AlignVCenter, _fmt(hi - (hi - lo) * t / 4.0))
-#        self._ytitle(p, "value")
+#                       Qt.AlignRight | Qt.AlignVCenter,
+#                       _fmt(ghi - (ghi - glo) * t / 4.0))
+#        self._ytitle(p, "value · own scale per group" if own else "value")
 #
 #        lane = W / n
 #        for i, s in enumerate(self._series):
@@ -3368,6 +3616,11 @@ if __name__ == "__main__":
 #            col = QColor(s["color"])
 #            cx = left + lane * (i + 0.5)
 #            bw = min(48.0, lane * 0.5)
+#            lo, hi = lane_range(v) if own else (glo, ghi)
+#
+#            def Y(val, lo=lo, hi=hi):
+#                return bottom - (val - lo) / (hi - lo) * H
+#
 #            q25, med, q75 = (float(np.percentile(v, 25)),
 #                             float(np.median(v)), float(np.percentile(v, 75)))
 #            vmin, vmax = float(v.min()), float(v.max())
@@ -3408,6 +3661,15 @@ if __name__ == "__main__":
 #                f"{s['label']} · n={v.size}", Qt.ElideRight, int(lane))
 #            p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
 #                       Qt.AlignHCenter | Qt.AlignVCenter, lab)
+#            if not own:
+#                continue
+#            # this lane's own range, so a stretched lane still says what it
+#            # spans and is never mistaken for the one beside it
+#            span = hi - lo
+#            p.setPen(QColor(theme.INK3))
+#            p.drawText(QRectF(cx - lane / 2, bottom + 18, lane, 13),
+#                       Qt.AlignHCenter | Qt.AlignVCenter,
+#                       f"{_fmt_span(vmin, span)} … {_fmt_span(vmax, span)}")
 #
 #    # -- position profile (metric vs. where the ROI sits) -------------- #
 #    def _paint_position(self, p: QPainter) -> None:
@@ -3858,18 +4120,15 @@ if __name__ == "__main__":
 #
 #
 #class MetricPicker(QWidget):
+#    """Which metrics the analysis reports. The overlay lives on StageBar."""
+#
 #    changed = Signal(list)
-#    show_changed = Signal(str)          # metric id to draw on ROIs ("" = none)
-#    values_changed = Signal(bool)       # print the value on each ROI
-#    heatmap_changed = Signal(bool)      # colour ROIs by the shown metric
-#    outliers_changed = Signal(bool)     # flag Tukey outliers of the shown metric
-#    heat_alpha_changed = Signal(int)    # heat fill opacity, percent
+#    ids_changed = Signal(list)          # every metric id on offer (incl. Q*n)
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
 #        self._selected: List[str] = ["glv_mean", "glv_median"]
 #        self._custom: List[str] = []
-#        self._show = ""
 #        root = QVBoxLayout(self)
 #        root.setContentsMargins(0, 0, 0, 0)
 #        root.setSpacing(8)
@@ -3895,88 +4154,26 @@ if __name__ == "__main__":
 #        qn.addWidget(add)
 #        qn.addStretch(1)
 #        root.addLayout(qn)
-#        # single metric drawn live on each ROI in the image
-#        show = QHBoxLayout()
-#        show.setSpacing(6)
-#        show_lbl = QLabel("show on ROIs")
-#        show_lbl.setObjectName("Hint")
-#        self.show_combo = QComboBox()
-#        self.show_combo.setMinimumHeight(28)
-#        self.show_combo.currentIndexChanged.connect(self._on_show)
-#        show.addWidget(show_lbl)
-#        show.addWidget(self.show_combo, 1)
-#        root.addLayout(show)
-#        # Overlays for the shown metric, each switched on its own: the number,
-#        # the heat fill, and the outlier flags are three separate readings of
-#        # the same metric, and reading one often means hiding the others.
-#        ov = QHBoxLayout()
-#        ov.setSpacing(12)
-#        self.values_chk = QCheckBox("values")
-#        self.values_chk.setChecked(True)
-#        self.values_chk.setToolTip(
-#            "Print the metric on each ROI. Off with heatmap on = colour only.")
-#        self.values_chk.toggled.connect(self.values_changed)
-#        self.heatmap_chk = QCheckBox("heatmap")
-#        self.heatmap_chk.setToolTip("Colour each ROI box by its shown metric value.")
-#        self.heatmap_chk.toggled.connect(self._on_heatmap)
-#        self.outliers_chk = QCheckBox("flag outliers")
-#        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
-#                                     "within their group.")
-#        self.outliers_chk.toggled.connect(self.outliers_changed)
-#        ov.addWidget(self.values_chk)
-#        ov.addWidget(self.heatmap_chk)
-#        ov.addWidget(self.outliers_chk)
-#        ov.addStretch(1)
-#        root.addLayout(ov)
-#        # how much of the image the heat fill leaves visible
-#        op = QHBoxLayout()
-#        op.setSpacing(6)
-#        op_lbl = QLabel("heat opacity")
-#        op_lbl.setObjectName("Hint")
-#        self.alpha_spin = QSpinBox()
-#        self.alpha_spin.setRange(10, 100)
-#        self.alpha_spin.setSingleStep(5)
-#        self.alpha_spin.setValue(70)
-#        self.alpha_spin.setSuffix(" %")
-#        self.alpha_spin.setFixedWidth(74)
-#        self.alpha_spin.setMinimumHeight(28)
-#        self.alpha_spin.setEnabled(False)
-#        self.alpha_spin.setToolTip(
-#            "Opacity of the heat fill — lower it to read the image under the box.")
-#        self.alpha_spin.valueChanged.connect(self.heat_alpha_changed)
-#        op.addWidget(op_lbl)
-#        op.addWidget(self.alpha_spin)
-#        op.addStretch(1)
-#        root.addLayout(op)
 #        self._rebuild()
 #
 #    def selected(self) -> List[str]:
 #        return list(self._selected)
 #
-#    def set_state(self, metrics, show, heatmap, outliers,
-#                  values=True, heat_alpha=70) -> None:
-#        """Restore the picker (used when opening a project)."""
+#    def ids(self) -> List[str]:
+#        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
+#
+#    def set_state(self, metrics, extra_ids=()) -> None:
+#        """Restore the picker (used when opening a project).
+#
+#        ``extra_ids`` re-registers custom quantiles that the project used only
+#        for the overlay, so they stay on offer after reopening.
+#        """
 #        self._selected = list(metrics or [])
-#        self._show = show or ""
-#        for m in list(self._selected) + [self._show]:
+#        for m in list(self._selected) + list(extra_ids):
 #            if (m and m.startswith("glv_q") and m not in GLV_STATS
 #                    and m not in self._custom):
 #                self._custom.append(m)
 #        self._rebuild()
-#        for chk, val in ((self.heatmap_chk, heatmap),
-#                         (self.outliers_chk, outliers),
-#                         (self.values_chk, values)):
-#            chk.blockSignals(True)
-#            chk.setChecked(bool(val))
-#            chk.blockSignals(False)
-#        self.alpha_spin.blockSignals(True)
-#        self.alpha_spin.setValue(int(heat_alpha))
-#        self.alpha_spin.blockSignals(False)
-#        self.alpha_spin.setEnabled(bool(heatmap))
-#
-#    def _on_heatmap(self, on: bool) -> None:
-#        self.alpha_spin.setEnabled(bool(on))   # opacity only bites on a fill
-#        self.heatmap_changed.emit(bool(on))
 #
 #    def _add_custom(self) -> None:
 #        mid = f"glv_q{int(self.qn_spin.value())}"
@@ -3988,26 +4185,15 @@ if __name__ == "__main__":
 #        self.changed.emit(list(self._selected))
 #
 #    def _ids(self) -> List[str]:
-#        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
+#        return self.ids()
 #
 #    def _rebuild(self) -> None:
-#        while self._chip_lay.count():
-#            it = self._chip_lay.takeAt(0)
-#            if it.widget():
-#                it.widget().deleteLater()
+#        _clear(self._chip_lay)
 #        for i, mid in enumerate(self._ids()):
 #            chip = _Chip(mid, mid in self._selected)
 #            chip.clicked.connect(lambda _=False, m=mid: self._toggle(m))
 #            self._chip_lay.addWidget(chip, i // 3, i % 3)
-#        # rebuild the "show on ROIs" combo, preserving the selection
-#        self.show_combo.blockSignals(True)
-#        self.show_combo.clear()
-#        self.show_combo.addItem("— none —", "")
-#        for mid in self._ids():
-#            self.show_combo.addItem(metric_label(mid), mid)
-#        idx = self.show_combo.findData(self._show)
-#        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
-#        self.show_combo.blockSignals(False)
+#        self.ids_changed.emit(self.ids())
 #
 #    def _toggle(self, mid: str) -> None:
 #        if mid in self._selected:
@@ -4015,6 +4201,121 @@ if __name__ == "__main__":
 #        else:
 #            self._selected.append(mid)
 #        self.changed.emit(list(self._selected))
+#
+#
+## --------------------------------------------------------------------------- #
+## Stage bar — the ROI overlay controls, sitting over the image they act on
+## --------------------------------------------------------------------------- #
+#class StageBar(QWidget):
+#    """One strip above the image: which metric to overlay, and how to read it.
+#
+#    These controls belong next to the image, not at the bottom of a long rail
+#    — every one of them changes what the picture looks like, and each is a
+#    separate reading of the same metric, so they switch one at a time.
+#    """
+#
+#    show_changed = Signal(str)          # metric id drawn on the ROIs ("" = none)
+#    values_changed = Signal(bool)
+#    heatmap_changed = Signal(bool)
+#    cells_changed = Signal(bool)        # spread the heat over the ROI's cell
+#    outliers_changed = Signal(bool)
+#    heat_alpha_changed = Signal(int)    # percent
+#
+#    def __init__(self, parent=None):
+#        super().__init__(parent)
+#        self.setObjectName("StageBar")
+#        self._show = ""
+#        lay = QHBoxLayout(self)
+#        lay.setContentsMargins(12, 7, 12, 7)
+#        lay.setSpacing(10)
+#        lbl = QLabel("show on ROIs")
+#        lbl.setObjectName("Hint")
+#        self.show_combo = QComboBox()
+#        self.show_combo.setMinimumWidth(150)
+#        self.show_combo.setMinimumHeight(26)
+#        self.show_combo.setToolTip("The metric every overlay below reads.")
+#        self.show_combo.currentIndexChanged.connect(self._on_show)
+#        lay.addWidget(lbl)
+#        lay.addWidget(self.show_combo)
+#        lay.addSpacing(6)
+#        self.values_chk = QCheckBox("values")
+#        self.values_chk.setChecked(True)
+#        self.values_chk.setToolTip(
+#            "Print the metric on each ROI (where the box is big enough; the "
+#            "hovered ROI always shows its own). Off with heatmap on = colour "
+#            "only.")
+#        self.values_chk.toggled.connect(self.values_changed)
+#        self.heatmap_chk = QCheckBox("heatmap")
+#        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
+#        self.heatmap_chk.toggled.connect(self._on_heatmap)
+#        self.cells_chk = QCheckBox("fill field")
+#        self.cells_chk.setToolTip(
+#            "Spread each ROI's colour over the patch of image it speaks for "
+#            "(midway to its neighbours), so a gradient across the field reads "
+#            "as one surface. The measured box stays outlined on top.")
+#        self.cells_chk.toggled.connect(self.cells_changed)
+#        self.outliers_chk = QCheckBox("flag outliers")
+#        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
+#                                     "within their group.")
+#        self.outliers_chk.toggled.connect(self.outliers_changed)
+#        for chk in (self.values_chk, self.heatmap_chk, self.cells_chk,
+#                    self.outliers_chk):
+#            lay.addWidget(chk)
+#        op = QLabel("opacity")
+#        op.setObjectName("Hint")
+#        self.alpha_spin = QSpinBox()
+#        self.alpha_spin.setRange(10, 100)
+#        self.alpha_spin.setSingleStep(5)
+#        self.alpha_spin.setValue(70)
+#        self.alpha_spin.setSuffix(" %")
+#        self.alpha_spin.setFixedWidth(72)
+#        self.alpha_spin.setMinimumHeight(26)
+#        self.alpha_spin.setToolTip(
+#            "Opacity of the heat fill — lower it to read the image underneath.")
+#        self.alpha_spin.valueChanged.connect(self.heat_alpha_changed)
+#        lay.addWidget(op)
+#        lay.addWidget(self.alpha_spin)
+#        lay.addStretch(1)
+#        self.set_metrics(list(GLV_STATS.keys()) + [SNR_ID])
+#        self._gate()
+#
+#    # -- state -------------------------------------------------------- #
+#    def set_metrics(self, ids) -> None:
+#        """Rebuild the metric list, keeping the current pick if it survives."""
+#        self.show_combo.blockSignals(True)
+#        self.show_combo.clear()
+#        self.show_combo.addItem("— none —", "")
+#        for mid in ids:
+#            self.show_combo.addItem(metric_label(mid), mid)
+#        idx = self.show_combo.findData(self._show)
+#        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
+#        self._show = self.show_combo.currentData() or ""
+#        self.show_combo.blockSignals(False)
+#
+#    def set_state(self, show, values, heatmap, cells, outliers, alpha) -> None:
+#        self._show = show or ""
+#        self.show_combo.blockSignals(True)
+#        idx = self.show_combo.findData(self._show)
+#        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
+#        self.show_combo.blockSignals(False)
+#        for chk, val in ((self.values_chk, values), (self.heatmap_chk, heatmap),
+#                         (self.cells_chk, cells), (self.outliers_chk, outliers)):
+#            chk.blockSignals(True)
+#            chk.setChecked(bool(val))
+#            chk.blockSignals(False)
+#        self.alpha_spin.blockSignals(True)
+#        self.alpha_spin.setValue(int(alpha))
+#        self.alpha_spin.blockSignals(False)
+#        self._gate()
+#
+#    def _gate(self) -> None:
+#        on = self.heatmap_chk.isChecked()
+#        self.cells_chk.setEnabled(on)     # both only bite on a heat fill
+#        self.alpha_spin.setEnabled(on)
+#
+#    def _on_heatmap(self, on: bool) -> None:
+#        self._gate()
+#        self.heatmap_changed.emit(bool(on))
 #
 #    def _on_show(self, _i: int) -> None:
 #        self._show = self.show_combo.currentData() or ""
@@ -4040,11 +4341,8 @@ if __name__ == "__main__":
 #    roi_del = Signal(int)
 #    roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
 #    metrics_changed = Signal(list)
-#    show_metric_changed = Signal(str)
-#    values_changed = Signal(bool)
-#    heatmap_changed = Signal(bool)
-#    outliers_changed = Signal(bool)
-#    heat_alpha_changed = Signal(int)
+#    metric_ids_changed = Signal(list)       # every metric on offer (incl. Q*n)
+#    roi_order_changed = Signal(str)         # "placed" | "asc" | "desc"
 #    open_analysis = Signal()
 #
 #    def __init__(self, parent=None):
@@ -4120,6 +4418,25 @@ if __name__ == "__main__":
 #        grow.addWidget(QLabel("×"))
 #        grow.addWidget(self.grid_cols, 1)
 #        rlay.addLayout(grow)
+#        # Order: the list is where you scan for the odd one out, so it sorts
+#        # by the shown metric as well as by the order the ROIs were placed.
+#        orow = QHBoxLayout()
+#        orow.setSpacing(6)
+#        ol = QLabel("order")
+#        ol.setObjectName("Hint")
+#        self.order_box = QComboBox()
+#        self.order_box.setMinimumHeight(28)
+#        self.order_box.addItem("as placed", "placed")
+#        self.order_box.addItem("value ↑", "asc")
+#        self.order_box.addItem("value ↓", "desc")
+#        self.order_box.setToolTip("Sort the list by the metric shown on the "
+#                                  "ROIs. Labels stay with their ROI.")
+#        self.order_box.currentIndexChanged.connect(
+#            lambda _=0: self.roi_order_changed.emit(
+#                str(self.order_box.currentData() or "placed")))
+#        orow.addWidget(ol)
+#        orow.addWidget(self.order_box, 1)
+#        rlay.addLayout(orow)
 #        # ROI list — capped height so a long list never buries the buttons
 #        self.roi_host = QVBoxLayout()
 #        self.roi_host.setSpacing(4)
@@ -4151,11 +4468,7 @@ if __name__ == "__main__":
 #        met = _card("Metrics", "GLV + SNR")
 #        self.metrics = MetricPicker()
 #        self.metrics.changed.connect(self.metrics_changed)
-#        self.metrics.show_changed.connect(self.show_metric_changed)
-#        self.metrics.values_changed.connect(self.values_changed)
-#        self.metrics.heatmap_changed.connect(self.heatmap_changed)
-#        self.metrics.outliers_changed.connect(self.outliers_changed)
-#        self.metrics.heat_alpha_changed.connect(self.heat_alpha_changed)
+#        self.metrics.ids_changed.connect(self.metric_ids_changed)
 #        met.layout().addWidget(self.metrics)
 #        root.addWidget(met)
 #
@@ -4184,14 +4497,16 @@ if __name__ == "__main__":
 #                self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 #
 #    def set_rois(self, active_group_rois, active_rid, target_rid=None,
-#                 selected_rids=None, outlier_rids=None) -> None:
+#                 selected_rids=None, outlier_rids=None, values=None) -> None:
 #        selected = set(selected_rids or [])
 #        outliers = set(outlier_rids or [])
+#        values = values or {}
 #        _clear(self.roi_host)
 #        self._roi_rows = {}
 #        for r in active_group_rois:
 #            row = self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
-#                                r.rid in selected, r.rid in outliers)
+#                                r.rid in selected, r.rid in outliers,
+#                                values.get(r.rid))
 #            self._roi_rows[r.rid] = row
 #            self.roi_host.addWidget(row)
 #        # size the list to its content, capped so it never buries the buttons
@@ -4203,10 +4518,14 @@ if __name__ == "__main__":
 #        for r, row in getattr(self, "_roi_rows", {}).items():
 #            row.set_hover(r == rid)
 #
-#    def set_metric_state(self, metrics, show, heatmap, outliers,
-#                         values=True, heat_alpha=70) -> None:
-#        self.metrics.set_state(metrics, show, heatmap, outliers,
-#                               values, heat_alpha)
+#    def set_metric_state(self, metrics, extra_ids=()) -> None:
+#        self.metrics.set_state(metrics, extra_ids)
+#
+#    def set_roi_order(self, order: str) -> None:
+#        idx = self.order_box.findData(order)
+#        self.order_box.blockSignals(True)
+#        self.order_box.setCurrentIndex(idx if idx >= 0 else 0)
+#        self.order_box.blockSignals(False)
 #
 #    def grid_shape(self):
 #        return int(self.grid_rows.value()), int(self.grid_cols.value())
@@ -4224,13 +4543,16 @@ if __name__ == "__main__":
 #        return row
 #
 #    def _roi_row(self, r, active: bool, is_target: bool,
-#                 selected: bool, outlier: bool = False) -> QWidget:
+#                 selected: bool, outlier: bool = False,
+#                 value=None) -> QWidget:
 #        row = _ItemRow(active, compact=True, boxed=False, selected=selected)
 #        row.add_name(r.label or f"ROI {r.rid}", None,
 #                     color=(theme.WARNING if outlier else None))
 #        if outlier:
 #            row.add_flag("!", theme.WARNING,
 #                         "Outlier of the shown metric within this group")
+#        if value is not None:
+#            row.add_count(_fmt(float(value)))
 #        row.add_target_toggle(is_target, lambda: self.roi_set_target.emit(r.rid))
 #        row.add_delete(lambda: self.roi_del.emit(r.rid))
 #        row.clicked = lambda: self.roi_pick.emit(r.rid)
@@ -4408,6 +4730,13 @@ if __name__ == "__main__":
 #            chk.setChecked(True)
 #            chk.toggled.connect(self._on_chart_opts)
 #            head.addWidget(chk)
+#        self.ownscale_chk = QCheckBox("own scale")
+#        self.ownscale_chk.setToolTip(
+#            "Give every group its own value range, printed under the lane. "
+#            "Off = one shared axis, where a group with a tiny spread beside a "
+#            "distant one flattens to a line.")
+#        self.ownscale_chk.toggled.connect(self._on_chart_opts)
+#        head.addWidget(self.ownscale_chk)
 #        self.axis_box = QComboBox()
 #        self.axis_box.addItem("X position", "x")
 #        self.axis_box.addItem("Y position", "y")
@@ -4484,6 +4813,7 @@ if __name__ == "__main__":
 #        for chk in (self.points_chk, self.whiskers_chk):
 #            chk.setEnabled(t == "box")
 #            chk.setVisible(t not in ("position", "map"))
+#        self.ownscale_chk.setVisible(t == "box")
 #        self.axis_box.setVisible(t == "position")
 #        self.trend_chk.setVisible(t == "position")
 #        for chk in (self.cells_chk, self.mapval_chk):
@@ -4669,6 +4999,7 @@ if __name__ == "__main__":
 #        grid.setSpacing(10)
 #        opts = {"points": self.points_chk.isChecked(),
 #                "whiskers": self.whiskers_chk.isChecked(),
+#                "own_scale": self.ownscale_chk.isChecked(),
 #                "cells": self.cells_chk.isChecked(),
 #                "map_values": (self.mapval_chk.isChecked()
 #                               and self.cells_chk.isChecked())}
@@ -5038,7 +5369,7 @@ if __name__ == "__main__":
 #    body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
 #    compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
 #
-#F 2664b07f2b01826867e767454b60381e09ef24e6 275 tests/test_core.py
+#F 4c9b13a0f1c86f33f92364eddf6f3966dda54f09 302 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -5053,7 +5384,7 @@ if __name__ == "__main__":
 #
 #from examples.make_sample import CELL_H, CELL_W, make_field
 #from pear.core.analysis import (ROI, Group, attribute_separability, cell_edges,
-#                                cohens_d,
+#                                cohens_d, heat_cells,
 #                                compute_analysis, grid_between, group_outliers,
 #                                group_rois, group_snr, group_values,
 #                                groups_from_json, groups_to_json, heat_color,
@@ -5260,6 +5591,33 @@ if __name__ == "__main__":
 #    assert c.size == 0 and e.size == 0
 #
 #
+#def test_heat_cells_tile_the_field_and_clip_to_the_image():
+#    rois = [ROI(1, "A", (10, 10, 10, 10)), ROI(2, "A", (50, 10, 10, 10)),
+#            ROI(3, "A", (10, 50, 10, 10)), ROI(4, "A", (50, 50, 10, 10))]
+#    cells = heat_cells(rois)
+#    assert set(cells) == {1, 2, 3, 4}
+#    # neighbours share an edge: no gap, no overlap
+#    assert cells[1][2] == cells[2][0] == pytest.approx(35.0)
+#    assert cells[1][3] == cells[3][1] == pytest.approx(35.0)
+#    for r in rois:
+#        x0, y0, x1, y1 = cells[r.rid]
+#        cx, cy = roi_center(r.rect)
+#        assert x0 < cx < x1 and y0 < cy < y1     # the ROI is inside its cell
+#    clipped = heat_cells(rois, (60, 60))
+#    assert clipped[1][:2] == (0.0, 0.0)          # nothing spills off the image
+#    assert clipped[4][2:] == (60.0, 60.0)
+#
+#
+#def test_heat_cells_on_a_single_roi_and_a_single_row():
+#    only = heat_cells([ROI(9, "A", (10, 10, 20, 20))])
+#    assert only[9] == (10.0, 10.0, 30.0, 30.0)   # no neighbour: its own box
+#    row = heat_cells([ROI(1, "A", (0, 0, 10, 10)), ROI(2, "A", (40, 0, 10, 10))])
+#    # one row has no Y pitch — the cells borrow the X one and still tile
+#    assert row[1][2] == row[2][0] == pytest.approx(25.0)
+#    assert row[1][3] - row[1][1] == pytest.approx(40.0)
+#    assert heat_cells([]) == {}
+#
+#
 #def test_linear_trend_recovers_a_known_slope():
 #    x = np.arange(10, dtype=np.float64)
 #    fit = linear_trend(x, 3.0 * x + 7.0)
@@ -5314,7 +5672,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 95aa91eb27684309f093598c9fd858600192f8cd 595 tests/test_ui_smoke.py
+#F c2c523c385f037d958cfeab91a6b96f3cae090a3 723 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -5364,8 +5722,10 @@ if __name__ == "__main__":
 #    assert not win.rail.grp_add_btn.isEnabled()
 #    assert not win.rail.grid_btn.isEnabled()
 #    assert not win.rail.analysis_btn.isEnabled()
+#    assert not win.stage_bar.isEnabled()
 #    win.set_image(make_field(), "f.png")
 #    assert win.rail.grp_add_btn.isEnabled() and win.rail.grid_btn.isEnabled()
+#    assert win.stage_bar.isEnabled()
 #
 #
 #def test_add_rois_to_groups(app):
@@ -5792,6 +6152,127 @@ if __name__ == "__main__":
 #    assert len(win.rail.roi_host.parentWidget().findChildren(_ItemRow)) == roi_rows
 #
 #
+#def test_value_labels_only_where_they_fit(app):
+#    """A label wider than its ROI is dropped — unless that ROI is hovered."""
+#    from PySide6.QtCore import QRectF
+#    from pear.ui.image_view import label_rect
+#    big, small = QRectF(0, 40, 60, 20), QRectF(0, 40, 8, 6)
+#    inside = label_rect(big, 30, 12, False)
+#    assert inside is not None and big.contains(inside)
+#    assert label_rect(small, 30, 12, False) is None      # would bury the box
+#    floated = label_rect(small, 30, 12, True)            # hovered: float it
+#    assert floated is not None and floated.bottom() <= small.top()
+#    # an ROI at the very top has no room above — the label goes below instead
+#    at_top = label_rect(QRectF(0, 0, 8, 6), 30, 12, True)
+#    assert at_top is not None and at_top.top() >= 6
+#
+#
+#def test_fit_survives_a_resize_until_the_user_zooms(app):
+#    """set_image() fits against the layout's first guess at the widget size."""
+#    from pear.ui.image_view import ImageView
+#    iv = ImageView()
+#    iv.resize(320, 240)                       # the "first guess"
+#    iv.show()                                 # hidden widgets defer resizes
+#    app.processEvents()
+#    iv.set_image(make_field())
+#    small = iv._scale
+#    iv.resize(900, 700)                       # …then the real one
+#    app.processEvents()
+#    assert iv._fitted and iv._scale > small
+#    pm = iv._pixmap
+#    assert iv._offset.x() == pytest.approx(
+#        (iv.width() - pm.width() * iv._scale) / 2.0, abs=1.0)
+#    assert iv._offset.y() == pytest.approx(
+#        (iv.height() - pm.height() * iv._scale) / 2.0, abs=1.0)
+#    iv.zoom_in()
+#    assert not iv._fitted
+#    scale, off = iv._scale, iv._offset
+#    iv.resize(700, 500)
+#    app.processEvents()
+#    assert iv._scale == scale and iv._offset == off       # a zoom is not undone
+#
+#
+#def test_stage_bar_drives_the_overlays_and_the_field_fill(app):
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _grid_group(win, 3, 3)
+#    sb = win.stage_bar
+#    assert not sb.cells_chk.isEnabled() and not sb.alpha_spin.isEnabled()
+#    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
+#    assert win._show_metric == "glv_mean" and win.image_view._roi_values
+#    sb.heatmap_chk.setChecked(True)
+#    assert sb.cells_chk.isEnabled() and win.image_view._heat
+#    assert win.image_view._heat_cells == {}          # boxes only, so far
+#    sb.cells_chk.setChecked(True)
+#    cells = win.image_view._heat_cells
+#    assert len(cells) == len(win._rois)
+#    h, w = make_field().shape[:2]
+#    for x0, y0, x1, y1 in cells.values():            # clipped to the image
+#        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h
+#    sb.heatmap_chk.setChecked(False)                 # the fill goes with it
+#    assert win.image_view._heat_cells == {} and not sb.cells_chk.isEnabled()
+#
+#
+#def test_roi_list_shows_and_sorts_by_the_shown_metric(app):
+#    from pear.core.analysis import group_rois
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    gid = _grid_group(win, 2, 3)
+#    win.stage_bar.show_combo.setCurrentIndex(
+#        win.stage_bar.show_combo.findData("glv_mean"))
+#    rois = group_rois(win._rois, gid)
+#    assert len(win._values) == len(rois)
+#
+#    def order(mode):
+#        win.on_roi_order(mode)
+#        return [r.rid for r in win._ordered_rois(rois)]
+#
+#    assert order("placed") == [r.rid for r in rois]
+#    asc = order("asc")
+#    assert [win._values[r] for r in asc] == sorted(win._values[r] for r in asc)
+#    assert order("desc") == asc[::-1]
+#
+#
+#def test_status_bar_carries_the_headline_numbers(app):
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _grid_group(win, 2, 3)
+#    text = win.summary_lbl.text()
+#    assert f"{len(win._groups)} groups" in text and "6 ROIs" in text
+#    win.stage_bar.show_combo.setCurrentIndex(
+#        win.stage_bar.show_combo.findData("glv_mean"))
+#    text = win.summary_lbl.text()
+#    assert "GLV mean" in text and "CV" in text and "range" in text
+#
+#
+#def test_box_chart_can_give_each_group_its_own_scale(app):
+#    """A group with a tiny spread beside a distant one is flat on one axis."""
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("box")
+#    app.processEvents()
+#    assert not ap.ownscale_chk.isHidden()
+#    ap.ownscale_chk.setChecked(True)
+#    app.processEvents()
+#    charts = [c for c in ap.body.findChildren(DistributionChart)
+#              if c._opts.get("own_scale")]
+#    assert charts
+#    for c in charts:
+#        c.grab()                       # exercises the per-lane painter
+#    ap._pick_ctype("map")              # only the box plot offers it
+#    assert ap.ownscale_chk.isHidden()
+#
+#
 #def test_map_draws_touching_cells_and_optional_values(app):
 #    """Cell mode tiles the field; the dot fallback and labels still paint."""
 #    from pear.ui.main_window import MainWindow
@@ -5849,13 +6330,18 @@ if __name__ == "__main__":
 #    assert win.image_view._roi_values
 #
 #    win.on_show_values(False)
+#    win.on_heat_field(True)
+#    win.on_roi_order("desc")
 #    out = tmp_path / "p.pear.json"
 #    win.save_project(str(out))
 #    win2 = MainWindow()
 #    win2.set_image(make_field(), "f.png")
 #    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
 #    assert win2._show_values is False and win2._heat_alpha == 30
-#    assert win2.rail.metrics.alpha_spin.value() == 30
+#    assert win2._heat_field is True and win2._roi_order == "desc"
+#    assert win2.stage_bar.cells_chk.isChecked()
+#    assert win2.rail.order_box.currentData() == "desc"
+#    assert win2.stage_bar.alpha_spin.value() == 30
 #    assert win2.image_view._roi_values == {}
 #    assert win2.image_view._heat_alpha == round(30 * 2.55)
 #

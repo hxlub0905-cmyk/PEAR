@@ -27,6 +27,25 @@ _MIN_ROI = 4
 _DEFAULT = 28          # default single-ROI size (px) for a plain click
 
 
+def label_rect(r: QRectF, bw: float, bh: float,
+               hovered: bool) -> Optional[QRectF]:
+    """Where a ``bw × bh`` value label goes on ROI ``r``, or None: don't draw.
+
+    Zoomed out, a label is wider than its box: printed anyway they collide
+    with each other and bury the boxes they belong to. One that does not fit
+    is dropped and comes back on zoom — except on the ROI under the cursor,
+    which floats its label above the box (below it, at the top edge of the
+    image) so a value is always one hover away.
+    """
+    cx, cy = r.center().x(), r.center().y()
+    if bw <= r.width() and bh <= r.height():
+        return QRectF(cx - bw / 2, cy - bh / 2, bw, bh)
+    if not hovered:
+        return None
+    top = r.top() - bh - 2
+    return QRectF(cx - bw / 2, top if top >= 0 else r.bottom() + 2, bw, bh)
+
+
 class ImageView(QWidget):
     roi_created = Signal(object)            # rect (single ROI into active group)
     grid_committed = Signal(object)         # list[rect] (a row×col grid)
@@ -53,6 +72,7 @@ class ImageView(QWidget):
         self._pixmap: Optional[QPixmap] = None
         self._scale = 1.0
         self._offset = QPointF(0, 0)
+        self._fitted = True     # still showing the fit; a zoom or pan ends it
 
         self._groups: List[Group] = []
         self._active_gid: Optional[str] = None
@@ -63,6 +83,7 @@ class ImageView(QWidget):
         self._heat: dict = {}                  # rid -> hex colour (heatmap)
         self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
         self._heat_alpha = 178                 # heat fill opacity (0-255)
+        self._heat_cells: dict = {}            # rid -> (x0,y0,x1,y1) image px
         self._outliers: set = set()            # rids flagged as outliers
         self._hover_rid: int = -1              # rid under the cursor
 
@@ -123,6 +144,14 @@ class ImageView(QWidget):
         self._heat_alpha = int(np.clip(int(alpha), 0, 255))
         self.update()
 
+    def set_heat_cells(self, cells: dict) -> None:
+        """Tile the heat across the field: rid -> (x0, y0, x1, y1) in image px.
+
+        Empty = paint the heat inside the ROI boxes only.
+        """
+        self._heat_cells = cells or {}
+        self.update()
+
     def set_outliers(self, rids) -> None:
         self._outliers = set(rids or [])
         self.update()
@@ -173,6 +202,7 @@ class ImageView(QWidget):
         self._scale = min(vw / iw, vh / ih) * 0.96
         self._offset = QPointF((vw - iw * self._scale) / 2.0,
                                (vh - ih * self._scale) / 2.0)
+        self._fitted = True
         self.update()
         self.zoom_changed.emit(self._scale)
 
@@ -182,6 +212,7 @@ class ImageView(QWidget):
         if anchor is None:
             anchor = QPointF(self.width() / 2.0, self.height() / 2.0)
         ia = self._to_image(anchor)
+        self._fitted = False
         self._scale = float(np.clip(self._scale * factor, 0.05, 40.0))
         self._offset = QPointF(anchor.x() - ia.x() * self._scale,
                                anchor.y() - ia.y() * self._scale)
@@ -236,6 +267,7 @@ class ImageView(QWidget):
                         self._pixmap.width() * self._scale,
                         self._pixmap.height() * self._scale)
         p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+        self._paint_heat_cells(p)
         self._paint_rois(p)
         self._paint_rubberband(p)
         self._paint_marquee(p)
@@ -243,6 +275,28 @@ class ImageView(QWidget):
         self._paint_colorbar(p)
         self._paint_hud(p)
         p.end()
+
+    def _paint_heat_cells(self, p: QPainter) -> None:
+        """Heat spread over each ROI's cell, under the ROI outlines.
+
+        The ROI keeps its own box on top, so it stays visible which rectangle
+        was actually measured and which area merely carries its colour.
+        """
+        if not self._heat_cells or not self._heat:
+            return
+        p.setPen(Qt.NoPen)
+        for roi in self._rois:
+            cell = self._heat_cells.get(roi.rid)
+            heat = self._heat.get(roi.rid)
+            if cell is None or heat is None:
+                continue
+            x0, y0, x1, y1 = cell
+            tl = self._to_widget(x0, y0)
+            br = self._to_widget(x1, y1)
+            fill = QColor(heat)
+            fill.setAlpha(self._heat_alpha)
+            p.setBrush(fill)
+            p.drawRect(QRectF(tl, br))
 
     def _paint_rois(self, p: QPainter) -> None:
         targets = {g.gid: g.target_rid for g in self._groups}
@@ -253,7 +307,9 @@ class ImageView(QWidget):
             color = self._gcolor(roi.gid)
             r = self._rect_to_widget(roi.rect)
             heat = self._heat.get(roi.rid)
-            if heat is not None:                     # value heatmap fill
+            if heat is not None and roi.rid in self._heat_cells:
+                fill = Qt.NoBrush                    # the cell under it is the fill
+            elif heat is not None:                   # value heatmap fill
                 fill = QColor(heat)
                 fill.setAlpha(self._heat_alpha)
             else:
@@ -276,7 +332,7 @@ class ImageView(QWidget):
                 self._paint_badge(p, r, "T", color)
             val = self._roi_values.get(roi.rid)
             if val is not None:
-                self._paint_value(p, r, val)
+                self._paint_value(p, r, val, roi.rid == self._hover_rid)
             if selected and not self._grid_mode:
                 self._paint_handles(p, r, color)
 
@@ -339,17 +395,30 @@ class ImageView(QWidget):
         p.setPen(QColor("#FFFFFF"))
         p.drawText(bg, Qt.AlignCenter, text)
 
-    def _paint_value(self, p: QPainter, r: QRectF, text: str) -> None:
+    def _paint_value(self, p: QPainter, r: QRectF, text: str,
+                     hovered: bool = False) -> None:
+        """The metric, centred on the ROI — but only where it fits.
+
+        Zoomed out, a label is wider than its box: printed anyway they collide
+        with each other and bury the boxes they belong to. A label that does
+        not fit is dropped and comes back on zoom; the ROI under the cursor
+        keeps its label whatever the zoom, floated above the box, so a value
+        is always one hover away.
+        """
         p.setFont(theme.mono_font(9, weight=700))
         fm = p.fontMetrics()
-        tw = fm.horizontalAdvance(text)
-        cx, cy = r.center().x(), r.center().y()
-        bg = QRectF(cx - tw / 2 - 3, cy - fm.height() / 2, tw + 6, fm.height())
+        # the *text* has to fit the box; its pill may overhang a little, which
+        # keeps a 4-digit label from vanishing on a box a 3-digit one fits
+        bg = label_rect(r, float(fm.horizontalAdvance(text)), float(fm.height()),
+                        hovered)
+        if bg is None:
+            return
+        pill = bg.adjusted(-3, 0, 3, 0)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(17, 24, 39, 200))
-        p.drawRoundedRect(bg, 3, 3)
+        p.drawRoundedRect(pill, 3, 3)
         p.setPen(QColor("#FFFFFF"))
-        p.drawText(bg, Qt.AlignCenter, text)
+        p.drawText(pill, Qt.AlignCenter, text)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
         p.setPen(QPen(QColor("#FFFFFF"), 1.4))
@@ -567,6 +636,7 @@ class ImageView(QWidget):
             return
         if self._interact == "pan":
             self._offset = self._pan_at_press + (pos - self._drag_start)
+            self._fitted = False        # panned away from the fit
             self.update()
             return
         if self._interact == "marquee" and self._marquee is not None:
@@ -781,5 +851,12 @@ class ImageView(QWidget):
             self.setCursor(Qt.CrossCursor)
 
     def resizeEvent(self, _e) -> None:
-        if self._pixmap is not None and self._interact is None:
+        if self._pixmap is None or self._interact is not None:
+            return
+        # set_image() fits against whatever size the widget has at load time,
+        # which is the layout's first guess, not the final one — without this
+        # the image stays pinned wherever that guess put it
+        if self._fitted:
+            self.fit()
+        else:
             self.update()

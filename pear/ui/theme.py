@@ -111,6 +111,9 @@ QDockWidget::float-button, QDockWidget::close-button {{
     background: {PANEL}; border: 1px solid {LINE}; border-radius: 4px;
 }}
 
+/* stage bar — the overlay controls, docked over the image */
+QWidget#StageBar {{ background: {PANEL}; border-bottom: 1px solid {LINE}; }}
+
 /* cards */
 QFrame#Card {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 14px; }}
 QLabel#SectionTitle {{ font-weight: 700; font-size: 13px; color: {INK}; }}

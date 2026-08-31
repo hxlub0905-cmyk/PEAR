@@ -176,26 +176,43 @@ class DistributionChart(QWidget):
 
     # -- vertical box + jittered strip -------------------------------- #
     def _paint_box(self, p: QPainter) -> None:
-        lo, hi = self._range()
+        """Box-and-strip per group, on a shared value axis by default.
+
+        A shared axis is the comparison — it is what makes one group sitting
+        above another visible. But a group whose spread is a hundredth of the
+        gap between groups collapses to a line on it, and its shape is exactly
+        what a within-group reader is after; ``own_scale`` gives every lane
+        its own range, printed above and below the lane so nothing is implied
+        about how the lanes relate.
+        """
+        own = bool(self._opts.get("own_scale", False))
+        glo, ghi = self._range()
         top, left = 34, 54
-        bottom = self.height() - 42
+        bottom = self.height() - (54 if own else 42)
         right = self.width() - 12
         H = max(10, bottom - top)
         W = max(10, right - left)
         n = len(self._series)
 
-        def Y(v):
-            return bottom - (v - lo) / (hi - lo) * H
+        def lane_range(v):
+            lo, hi = float(v.min()), float(v.max())
+            if hi - lo < 1e-9:
+                lo, hi = lo - 0.5, hi + 0.5
+            pad = (hi - lo) * 0.08
+            return lo - pad, hi + pad
 
         p.setFont(theme.mono_font(8))
         for t in range(5):
             gy = top + H * t / 4.0
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
+            if own:                     # one label per lane instead, below
+                continue
             p.setPen(QColor(theme.INK3))
             p.drawText(QRectF(16, gy - 6, left - 20, 12),
-                       Qt.AlignRight | Qt.AlignVCenter, _fmt(hi - (hi - lo) * t / 4.0))
-        self._ytitle(p, "value")
+                       Qt.AlignRight | Qt.AlignVCenter,
+                       _fmt(ghi - (ghi - glo) * t / 4.0))
+        self._ytitle(p, "value · own scale per group" if own else "value")
 
         lane = W / n
         for i, s in enumerate(self._series):
@@ -203,6 +220,11 @@ class DistributionChart(QWidget):
             col = QColor(s["color"])
             cx = left + lane * (i + 0.5)
             bw = min(48.0, lane * 0.5)
+            lo, hi = lane_range(v) if own else (glo, ghi)
+
+            def Y(val, lo=lo, hi=hi):
+                return bottom - (val - lo) / (hi - lo) * H
+
             q25, med, q75 = (float(np.percentile(v, 25)),
                              float(np.median(v)), float(np.percentile(v, 75)))
             vmin, vmax = float(v.min()), float(v.max())
@@ -243,6 +265,15 @@ class DistributionChart(QWidget):
                 f"{s['label']} · n={v.size}", Qt.ElideRight, int(lane))
             p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
                        Qt.AlignHCenter | Qt.AlignVCenter, lab)
+            if not own:
+                continue
+            # this lane's own range, so a stretched lane still says what it
+            # spans and is never mistaken for the one beside it
+            span = hi - lo
+            p.setPen(QColor(theme.INK3))
+            p.drawText(QRectF(cx - lane / 2, bottom + 18, lane, 13),
+                       Qt.AlignHCenter | Qt.AlignVCenter,
+                       f"{_fmt_span(vmin, span)} … {_fmt_span(vmax, span)}")
 
     # -- position profile (metric vs. where the ROI sits) -------------- #
     def _paint_position(self, p: QPainter) -> None:
@@ -693,18 +724,15 @@ class _Chip(QPushButton):
 
 
 class MetricPicker(QWidget):
+    """Which metrics the analysis reports. The overlay lives on StageBar."""
+
     changed = Signal(list)
-    show_changed = Signal(str)          # metric id to draw on ROIs ("" = none)
-    values_changed = Signal(bool)       # print the value on each ROI
-    heatmap_changed = Signal(bool)      # colour ROIs by the shown metric
-    outliers_changed = Signal(bool)     # flag Tukey outliers of the shown metric
-    heat_alpha_changed = Signal(int)    # heat fill opacity, percent
+    ids_changed = Signal(list)          # every metric id on offer (incl. Q*n)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected: List[str] = ["glv_mean", "glv_median"]
         self._custom: List[str] = []
-        self._show = ""
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
@@ -730,88 +758,26 @@ class MetricPicker(QWidget):
         qn.addWidget(add)
         qn.addStretch(1)
         root.addLayout(qn)
-        # single metric drawn live on each ROI in the image
-        show = QHBoxLayout()
-        show.setSpacing(6)
-        show_lbl = QLabel("show on ROIs")
-        show_lbl.setObjectName("Hint")
-        self.show_combo = QComboBox()
-        self.show_combo.setMinimumHeight(28)
-        self.show_combo.currentIndexChanged.connect(self._on_show)
-        show.addWidget(show_lbl)
-        show.addWidget(self.show_combo, 1)
-        root.addLayout(show)
-        # Overlays for the shown metric, each switched on its own: the number,
-        # the heat fill, and the outlier flags are three separate readings of
-        # the same metric, and reading one often means hiding the others.
-        ov = QHBoxLayout()
-        ov.setSpacing(12)
-        self.values_chk = QCheckBox("values")
-        self.values_chk.setChecked(True)
-        self.values_chk.setToolTip(
-            "Print the metric on each ROI. Off with heatmap on = colour only.")
-        self.values_chk.toggled.connect(self.values_changed)
-        self.heatmap_chk = QCheckBox("heatmap")
-        self.heatmap_chk.setToolTip("Colour each ROI box by its shown metric value.")
-        self.heatmap_chk.toggled.connect(self._on_heatmap)
-        self.outliers_chk = QCheckBox("flag outliers")
-        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
-                                     "within their group.")
-        self.outliers_chk.toggled.connect(self.outliers_changed)
-        ov.addWidget(self.values_chk)
-        ov.addWidget(self.heatmap_chk)
-        ov.addWidget(self.outliers_chk)
-        ov.addStretch(1)
-        root.addLayout(ov)
-        # how much of the image the heat fill leaves visible
-        op = QHBoxLayout()
-        op.setSpacing(6)
-        op_lbl = QLabel("heat opacity")
-        op_lbl.setObjectName("Hint")
-        self.alpha_spin = QSpinBox()
-        self.alpha_spin.setRange(10, 100)
-        self.alpha_spin.setSingleStep(5)
-        self.alpha_spin.setValue(70)
-        self.alpha_spin.setSuffix(" %")
-        self.alpha_spin.setFixedWidth(74)
-        self.alpha_spin.setMinimumHeight(28)
-        self.alpha_spin.setEnabled(False)
-        self.alpha_spin.setToolTip(
-            "Opacity of the heat fill — lower it to read the image under the box.")
-        self.alpha_spin.valueChanged.connect(self.heat_alpha_changed)
-        op.addWidget(op_lbl)
-        op.addWidget(self.alpha_spin)
-        op.addStretch(1)
-        root.addLayout(op)
         self._rebuild()
 
     def selected(self) -> List[str]:
         return list(self._selected)
 
-    def set_state(self, metrics, show, heatmap, outliers,
-                  values=True, heat_alpha=70) -> None:
-        """Restore the picker (used when opening a project)."""
+    def ids(self) -> List[str]:
+        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
+
+    def set_state(self, metrics, extra_ids=()) -> None:
+        """Restore the picker (used when opening a project).
+
+        ``extra_ids`` re-registers custom quantiles that the project used only
+        for the overlay, so they stay on offer after reopening.
+        """
         self._selected = list(metrics or [])
-        self._show = show or ""
-        for m in list(self._selected) + [self._show]:
+        for m in list(self._selected) + list(extra_ids):
             if (m and m.startswith("glv_q") and m not in GLV_STATS
                     and m not in self._custom):
                 self._custom.append(m)
         self._rebuild()
-        for chk, val in ((self.heatmap_chk, heatmap),
-                         (self.outliers_chk, outliers),
-                         (self.values_chk, values)):
-            chk.blockSignals(True)
-            chk.setChecked(bool(val))
-            chk.blockSignals(False)
-        self.alpha_spin.blockSignals(True)
-        self.alpha_spin.setValue(int(heat_alpha))
-        self.alpha_spin.blockSignals(False)
-        self.alpha_spin.setEnabled(bool(heatmap))
-
-    def _on_heatmap(self, on: bool) -> None:
-        self.alpha_spin.setEnabled(bool(on))   # opacity only bites on a fill
-        self.heatmap_changed.emit(bool(on))
 
     def _add_custom(self) -> None:
         mid = f"glv_q{int(self.qn_spin.value())}"
@@ -823,26 +789,15 @@ class MetricPicker(QWidget):
         self.changed.emit(list(self._selected))
 
     def _ids(self) -> List[str]:
-        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
+        return self.ids()
 
     def _rebuild(self) -> None:
-        while self._chip_lay.count():
-            it = self._chip_lay.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        _clear(self._chip_lay)
         for i, mid in enumerate(self._ids()):
             chip = _Chip(mid, mid in self._selected)
             chip.clicked.connect(lambda _=False, m=mid: self._toggle(m))
             self._chip_lay.addWidget(chip, i // 3, i % 3)
-        # rebuild the "show on ROIs" combo, preserving the selection
-        self.show_combo.blockSignals(True)
-        self.show_combo.clear()
-        self.show_combo.addItem("— none —", "")
-        for mid in self._ids():
-            self.show_combo.addItem(metric_label(mid), mid)
-        idx = self.show_combo.findData(self._show)
-        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.show_combo.blockSignals(False)
+        self.ids_changed.emit(self.ids())
 
     def _toggle(self, mid: str) -> None:
         if mid in self._selected:
@@ -850,6 +805,121 @@ class MetricPicker(QWidget):
         else:
             self._selected.append(mid)
         self.changed.emit(list(self._selected))
+
+
+# --------------------------------------------------------------------------- #
+# Stage bar — the ROI overlay controls, sitting over the image they act on
+# --------------------------------------------------------------------------- #
+class StageBar(QWidget):
+    """One strip above the image: which metric to overlay, and how to read it.
+
+    These controls belong next to the image, not at the bottom of a long rail
+    — every one of them changes what the picture looks like, and each is a
+    separate reading of the same metric, so they switch one at a time.
+    """
+
+    show_changed = Signal(str)          # metric id drawn on the ROIs ("" = none)
+    values_changed = Signal(bool)
+    heatmap_changed = Signal(bool)
+    cells_changed = Signal(bool)        # spread the heat over the ROI's cell
+    outliers_changed = Signal(bool)
+    heat_alpha_changed = Signal(int)    # percent
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("StageBar")
+        self._show = ""
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 7, 12, 7)
+        lay.setSpacing(10)
+        lbl = QLabel("show on ROIs")
+        lbl.setObjectName("Hint")
+        self.show_combo = QComboBox()
+        self.show_combo.setMinimumWidth(150)
+        self.show_combo.setMinimumHeight(26)
+        self.show_combo.setToolTip("The metric every overlay below reads.")
+        self.show_combo.currentIndexChanged.connect(self._on_show)
+        lay.addWidget(lbl)
+        lay.addWidget(self.show_combo)
+        lay.addSpacing(6)
+        self.values_chk = QCheckBox("values")
+        self.values_chk.setChecked(True)
+        self.values_chk.setToolTip(
+            "Print the metric on each ROI (where the box is big enough; the "
+            "hovered ROI always shows its own). Off with heatmap on = colour "
+            "only.")
+        self.values_chk.toggled.connect(self.values_changed)
+        self.heatmap_chk = QCheckBox("heatmap")
+        self.heatmap_chk.setToolTip("Colour each ROI by its shown metric value.")
+        self.heatmap_chk.toggled.connect(self._on_heatmap)
+        self.cells_chk = QCheckBox("fill field")
+        self.cells_chk.setToolTip(
+            "Spread each ROI's colour over the patch of image it speaks for "
+            "(midway to its neighbours), so a gradient across the field reads "
+            "as one surface. The measured box stays outlined on top.")
+        self.cells_chk.toggled.connect(self.cells_changed)
+        self.outliers_chk = QCheckBox("flag outliers")
+        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
+                                     "within their group.")
+        self.outliers_chk.toggled.connect(self.outliers_changed)
+        for chk in (self.values_chk, self.heatmap_chk, self.cells_chk,
+                    self.outliers_chk):
+            lay.addWidget(chk)
+        op = QLabel("opacity")
+        op.setObjectName("Hint")
+        self.alpha_spin = QSpinBox()
+        self.alpha_spin.setRange(10, 100)
+        self.alpha_spin.setSingleStep(5)
+        self.alpha_spin.setValue(70)
+        self.alpha_spin.setSuffix(" %")
+        self.alpha_spin.setFixedWidth(72)
+        self.alpha_spin.setMinimumHeight(26)
+        self.alpha_spin.setToolTip(
+            "Opacity of the heat fill — lower it to read the image underneath.")
+        self.alpha_spin.valueChanged.connect(self.heat_alpha_changed)
+        lay.addWidget(op)
+        lay.addWidget(self.alpha_spin)
+        lay.addStretch(1)
+        self.set_metrics(list(GLV_STATS.keys()) + [SNR_ID])
+        self._gate()
+
+    # -- state -------------------------------------------------------- #
+    def set_metrics(self, ids) -> None:
+        """Rebuild the metric list, keeping the current pick if it survives."""
+        self.show_combo.blockSignals(True)
+        self.show_combo.clear()
+        self.show_combo.addItem("— none —", "")
+        for mid in ids:
+            self.show_combo.addItem(metric_label(mid), mid)
+        idx = self.show_combo.findData(self._show)
+        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._show = self.show_combo.currentData() or ""
+        self.show_combo.blockSignals(False)
+
+    def set_state(self, show, values, heatmap, cells, outliers, alpha) -> None:
+        self._show = show or ""
+        self.show_combo.blockSignals(True)
+        idx = self.show_combo.findData(self._show)
+        self.show_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.show_combo.blockSignals(False)
+        for chk, val in ((self.values_chk, values), (self.heatmap_chk, heatmap),
+                         (self.cells_chk, cells), (self.outliers_chk, outliers)):
+            chk.blockSignals(True)
+            chk.setChecked(bool(val))
+            chk.blockSignals(False)
+        self.alpha_spin.blockSignals(True)
+        self.alpha_spin.setValue(int(alpha))
+        self.alpha_spin.blockSignals(False)
+        self._gate()
+
+    def _gate(self) -> None:
+        on = self.heatmap_chk.isChecked()
+        self.cells_chk.setEnabled(on)     # both only bite on a heat fill
+        self.alpha_spin.setEnabled(on)
+
+    def _on_heatmap(self, on: bool) -> None:
+        self._gate()
+        self.heatmap_changed.emit(bool(on))
 
     def _on_show(self, _i: int) -> None:
         self._show = self.show_combo.currentData() or ""
@@ -875,11 +945,8 @@ class RailPanel(QWidget):
     roi_del = Signal(int)
     roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
     metrics_changed = Signal(list)
-    show_metric_changed = Signal(str)
-    values_changed = Signal(bool)
-    heatmap_changed = Signal(bool)
-    outliers_changed = Signal(bool)
-    heat_alpha_changed = Signal(int)
+    metric_ids_changed = Signal(list)       # every metric on offer (incl. Q*n)
+    roi_order_changed = Signal(str)         # "placed" | "asc" | "desc"
     open_analysis = Signal()
 
     def __init__(self, parent=None):
@@ -955,6 +1022,25 @@ class RailPanel(QWidget):
         grow.addWidget(QLabel("×"))
         grow.addWidget(self.grid_cols, 1)
         rlay.addLayout(grow)
+        # Order: the list is where you scan for the odd one out, so it sorts
+        # by the shown metric as well as by the order the ROIs were placed.
+        orow = QHBoxLayout()
+        orow.setSpacing(6)
+        ol = QLabel("order")
+        ol.setObjectName("Hint")
+        self.order_box = QComboBox()
+        self.order_box.setMinimumHeight(28)
+        self.order_box.addItem("as placed", "placed")
+        self.order_box.addItem("value ↑", "asc")
+        self.order_box.addItem("value ↓", "desc")
+        self.order_box.setToolTip("Sort the list by the metric shown on the "
+                                  "ROIs. Labels stay with their ROI.")
+        self.order_box.currentIndexChanged.connect(
+            lambda _=0: self.roi_order_changed.emit(
+                str(self.order_box.currentData() or "placed")))
+        orow.addWidget(ol)
+        orow.addWidget(self.order_box, 1)
+        rlay.addLayout(orow)
         # ROI list — capped height so a long list never buries the buttons
         self.roi_host = QVBoxLayout()
         self.roi_host.setSpacing(4)
@@ -986,11 +1072,7 @@ class RailPanel(QWidget):
         met = _card("Metrics", "GLV + SNR")
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
-        self.metrics.show_changed.connect(self.show_metric_changed)
-        self.metrics.values_changed.connect(self.values_changed)
-        self.metrics.heatmap_changed.connect(self.heatmap_changed)
-        self.metrics.outliers_changed.connect(self.outliers_changed)
-        self.metrics.heat_alpha_changed.connect(self.heat_alpha_changed)
+        self.metrics.ids_changed.connect(self.metric_ids_changed)
         met.layout().addWidget(self.metrics)
         root.addWidget(met)
 
@@ -1019,14 +1101,16 @@ class RailPanel(QWidget):
                 self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 
     def set_rois(self, active_group_rois, active_rid, target_rid=None,
-                 selected_rids=None, outlier_rids=None) -> None:
+                 selected_rids=None, outlier_rids=None, values=None) -> None:
         selected = set(selected_rids or [])
         outliers = set(outlier_rids or [])
+        values = values or {}
         _clear(self.roi_host)
         self._roi_rows = {}
         for r in active_group_rois:
             row = self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
-                                r.rid in selected, r.rid in outliers)
+                                r.rid in selected, r.rid in outliers,
+                                values.get(r.rid))
             self._roi_rows[r.rid] = row
             self.roi_host.addWidget(row)
         # size the list to its content, capped so it never buries the buttons
@@ -1038,10 +1122,14 @@ class RailPanel(QWidget):
         for r, row in getattr(self, "_roi_rows", {}).items():
             row.set_hover(r == rid)
 
-    def set_metric_state(self, metrics, show, heatmap, outliers,
-                         values=True, heat_alpha=70) -> None:
-        self.metrics.set_state(metrics, show, heatmap, outliers,
-                               values, heat_alpha)
+    def set_metric_state(self, metrics, extra_ids=()) -> None:
+        self.metrics.set_state(metrics, extra_ids)
+
+    def set_roi_order(self, order: str) -> None:
+        idx = self.order_box.findData(order)
+        self.order_box.blockSignals(True)
+        self.order_box.setCurrentIndex(idx if idx >= 0 else 0)
+        self.order_box.blockSignals(False)
 
     def grid_shape(self):
         return int(self.grid_rows.value()), int(self.grid_cols.value())
@@ -1059,13 +1147,16 @@ class RailPanel(QWidget):
         return row
 
     def _roi_row(self, r, active: bool, is_target: bool,
-                 selected: bool, outlier: bool = False) -> QWidget:
+                 selected: bool, outlier: bool = False,
+                 value=None) -> QWidget:
         row = _ItemRow(active, compact=True, boxed=False, selected=selected)
         row.add_name(r.label or f"ROI {r.rid}", None,
                      color=(theme.WARNING if outlier else None))
         if outlier:
             row.add_flag("!", theme.WARNING,
                          "Outlier of the shown metric within this group")
+        if value is not None:
+            row.add_count(_fmt(float(value)))
         row.add_target_toggle(is_target, lambda: self.roi_set_target.emit(r.rid))
         row.add_delete(lambda: self.roi_del.emit(r.rid))
         row.clicked = lambda: self.roi_pick.emit(r.rid)
@@ -1243,6 +1334,13 @@ class AnalysisPanel(QWidget):
             chk.setChecked(True)
             chk.toggled.connect(self._on_chart_opts)
             head.addWidget(chk)
+        self.ownscale_chk = QCheckBox("own scale")
+        self.ownscale_chk.setToolTip(
+            "Give every group its own value range, printed under the lane. "
+            "Off = one shared axis, where a group with a tiny spread beside a "
+            "distant one flattens to a line.")
+        self.ownscale_chk.toggled.connect(self._on_chart_opts)
+        head.addWidget(self.ownscale_chk)
         self.axis_box = QComboBox()
         self.axis_box.addItem("X position", "x")
         self.axis_box.addItem("Y position", "y")
@@ -1319,6 +1417,7 @@ class AnalysisPanel(QWidget):
         for chk in (self.points_chk, self.whiskers_chk):
             chk.setEnabled(t == "box")
             chk.setVisible(t not in ("position", "map"))
+        self.ownscale_chk.setVisible(t == "box")
         self.axis_box.setVisible(t == "position")
         self.trend_chk.setVisible(t == "position")
         for chk in (self.cells_chk, self.mapval_chk):
@@ -1504,6 +1603,7 @@ class AnalysisPanel(QWidget):
         grid.setSpacing(10)
         opts = {"points": self.points_chk.isChecked(),
                 "whiskers": self.whiskers_chk.isChecked(),
+                "own_scale": self.ownscale_chk.isChecked(),
                 "cells": self.cells_chk.isChecked(),
                 "map_values": (self.mapval_chk.isChecked()
                                and self.cells_chk.isChecked())}

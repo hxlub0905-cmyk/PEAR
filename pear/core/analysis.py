@@ -321,6 +321,53 @@ def cell_edges(positions, decimals: int = 3):
                               [2.0 * c[-1] - mid[-1]]))
 
 
+def heat_cells(rois: List[ROI], bounds=None) -> Dict[int, Tuple[float, float,
+                                                             float, float]]:
+    """``rid -> (x0, y0, x1, y1)``: the patch of image each ROI speaks for.
+
+    The ROI boxes are the measurements; between them the field is unmeasured.
+    Painting each ROI's value across the rectangle bounded by the midlines to
+    its neighbours (:func:`cell_edges` on each axis) fills that gap with the
+    nearest actual measurement, so a gradient across the field shows up as a
+    gradient instead of a row of small tinted boxes. ``bounds = (w, h)`` clips
+    the tiling to the image.
+    """
+    if not rois:
+        return {}
+    cx = np.asarray([roi_center(r.rect)[0] for r in rois], dtype=np.float64)
+    cy = np.asarray([roi_center(r.rect)[1] for r in rois], dtype=np.float64)
+    xc, xe = cell_edges(cx)
+    yc, ye = cell_edges(cy)
+    # a single row (or column) has no pitch of its own — it borrows the other
+    # axis's, and with neither the ROI's own box is all the extent there is
+    def step(e, fallback):
+        return float(np.median(np.diff(e))) if e.size > 2 else fallback
+
+    sx = step(xe, 0.0)
+    sy = step(ye, 0.0)
+    out: Dict[int, Tuple[float, float, float, float]] = {}
+    for r, x, y in zip(rois, cx, cy):
+        w, h = float(r.rect[2]), float(r.rect[3])
+        if xe.size > 2:
+            i = int(np.abs(xc - x).argmin())
+            x0, x1 = float(xe[i]), float(xe[i + 1])
+        else:
+            half = (sy if sy > 0 else w) / 2.0
+            x0, x1 = float(x - half), float(x + half)
+        if ye.size > 2:
+            j = int(np.abs(yc - y).argmin())
+            y0, y1 = float(ye[j]), float(ye[j + 1])
+        else:
+            half = (sx if sx > 0 else h) / 2.0
+            y0, y1 = float(y - half), float(y + half)
+        if bounds:
+            bw, bh = float(bounds[0]), float(bounds[1])
+            x0, x1 = max(0.0, x0), min(bw, x1)
+            y0, y1 = max(0.0, y0), min(bh, y1)
+        out[r.rid] = (x0, y0, x1, y1)
+    return out
+
+
 def profile_by_position(positions, values, decimals: int = 0):
     """Collapse ROIs that share a position into one mean value.
 

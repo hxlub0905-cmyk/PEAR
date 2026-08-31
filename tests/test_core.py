@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
 from pear.core.analysis import (ROI, Group, attribute_separability, cell_edges,
-                                cohens_d,
+                                cohens_d, heat_cells,
                                 compute_analysis, grid_between, group_outliers,
                                 group_rois, group_snr, group_values,
                                 groups_from_json, groups_to_json, heat_color,
@@ -217,6 +217,33 @@ def test_cell_edges_on_degenerate_input():
     assert list(c) == [7.0] and list(e) == [6.5, 7.5]
     c, e = cell_edges([])
     assert c.size == 0 and e.size == 0
+
+
+def test_heat_cells_tile_the_field_and_clip_to_the_image():
+    rois = [ROI(1, "A", (10, 10, 10, 10)), ROI(2, "A", (50, 10, 10, 10)),
+            ROI(3, "A", (10, 50, 10, 10)), ROI(4, "A", (50, 50, 10, 10))]
+    cells = heat_cells(rois)
+    assert set(cells) == {1, 2, 3, 4}
+    # neighbours share an edge: no gap, no overlap
+    assert cells[1][2] == cells[2][0] == pytest.approx(35.0)
+    assert cells[1][3] == cells[3][1] == pytest.approx(35.0)
+    for r in rois:
+        x0, y0, x1, y1 = cells[r.rid]
+        cx, cy = roi_center(r.rect)
+        assert x0 < cx < x1 and y0 < cy < y1     # the ROI is inside its cell
+    clipped = heat_cells(rois, (60, 60))
+    assert clipped[1][:2] == (0.0, 0.0)          # nothing spills off the image
+    assert clipped[4][2:] == (60.0, 60.0)
+
+
+def test_heat_cells_on_a_single_roi_and_a_single_row():
+    only = heat_cells([ROI(9, "A", (10, 10, 20, 20))])
+    assert only[9] == (10.0, 10.0, 30.0, 30.0)   # no neighbour: its own box
+    row = heat_cells([ROI(1, "A", (0, 0, 10, 10)), ROI(2, "A", (40, 0, 10, 10))])
+    # one row has no Y pitch — the cells borrow the X one and still tile
+    assert row[1][2] == row[2][0] == pytest.approx(25.0)
+    assert row[1][3] - row[1][1] == pytest.approx(40.0)
+    assert heat_cells([]) == {}
 
 
 def test_linear_trend_recovers_a_known_slope():

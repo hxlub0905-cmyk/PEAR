@@ -20,14 +20,15 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
 
 from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
                                 group_outliers, group_rois, group_snr,
-                                groups_from_json, groups_to_json, heat_color,
-                                load_image, roi_center, roi_metric, roi_patch,
-                                rois_from_json, rois_to_json, snapshot,
-                                summarize)
+                                groups_from_json, groups_to_json, heat_cells,
+                                heat_color, load_image, roi_center, roi_metric,
+                                roi_patch, rois_from_json, rois_to_json,
+                                snapshot, summarize, uniformity)
 from pear.core.attributes import SNR_ID, metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
-from pear.ui.widgets import AnalysisPanel, RailPanel, RoiInspector
+from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
+                             StageBar)
 
 _FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 
@@ -68,8 +69,11 @@ class MainWindow(QMainWindow):
         self._show_metric = ""            # single metric drawn live on ROIs
         self._show_values = True          # print the shown metric on each ROI
         self._heatmap = False             # colour ROIs by the shown metric
+        self._heat_field = False          # spread the heat over each ROI's cell
         self._flag_outliers = False       # flag Tukey outliers of the shown metric
         self._heat_alpha = 70             # heat fill opacity, percent
+        self._roi_order = "placed"        # ROI list order: placed | asc | desc
+        self._values: dict = {}           # rid -> shown metric, one pass per refresh
         self._outlier_rids: set = set()
         self._image_path: Optional[str] = None
         self._cmp_mode = "between"
@@ -91,6 +95,7 @@ class MainWindow(QMainWindow):
         self._build_inspector_window()
         self._wire()
         self.rail.set_ready(False)
+        self.stage_bar.setEnabled(False)
 
     # ------------------------------------------------------------------ #
     def _build_topbar(self) -> None:
@@ -130,7 +135,16 @@ class MainWindow(QMainWindow):
 
     def _build_docks(self) -> None:
         self.image_view = ImageView()
-        self.setCentralWidget(self.image_view)
+        # The overlay controls sit on the stage, not at the bottom of the rail:
+        # every one of them changes what the image looks like.
+        self.stage_bar = StageBar()
+        stage = QWidget()
+        slay = QVBoxLayout(stage)
+        slay.setContentsMargins(0, 0, 0, 0)
+        slay.setSpacing(0)
+        slay.addWidget(self.stage_bar)
+        slay.addWidget(self.image_view, 1)
+        self.setCentralWidget(stage)
         self.rail = RailPanel()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -147,6 +161,12 @@ class MainWindow(QMainWindow):
 
     def _build_status(self) -> None:
         bar = self.statusBar()
+        # the headline numbers, so the one figure you keep glancing at does
+        # not need the Analysis window opened for it
+        self.summary_lbl = QLabel("")
+        self.summary_lbl.setObjectName("Mono")
+        self.summary_lbl.setFont(theme.mono_font(9))
+        bar.addPermanentWidget(self.summary_lbl)
         self.cursor_lbl = QLabel("")
         self.cursor_lbl.setObjectName("Mono")
         self.cursor_lbl.setFont(theme.mono_font(9))
@@ -208,11 +228,14 @@ class MainWindow(QMainWindow):
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.roi_hovered.connect(self.image_view.set_hover)
         self.rail.metrics_changed.connect(self.set_metrics)
-        self.rail.show_metric_changed.connect(self.on_show_metric)
-        self.rail.values_changed.connect(self.on_show_values)
-        self.rail.heatmap_changed.connect(self.on_heatmap)
-        self.rail.outliers_changed.connect(self.on_flag_outliers)
-        self.rail.heat_alpha_changed.connect(self.on_heat_alpha)
+        self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
+        self.rail.roi_order_changed.connect(self.on_roi_order)
+        self.stage_bar.show_changed.connect(self.on_show_metric)
+        self.stage_bar.values_changed.connect(self.on_show_values)
+        self.stage_bar.heatmap_changed.connect(self.on_heatmap)
+        self.stage_bar.cells_changed.connect(self.on_heat_field)
+        self.stage_bar.outliers_changed.connect(self.on_flag_outliers)
+        self.stage_bar.heat_alpha_changed.connect(self.on_heat_alpha)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -444,6 +467,14 @@ class MainWindow(QMainWindow):
         self._show_values = bool(on)
         self._refresh()
 
+    def on_heat_field(self, on: bool) -> None:
+        self._heat_field = bool(on)
+        self._update_heatmap()
+
+    def on_roi_order(self, order: str) -> None:
+        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
+        self._refresh()
+
     def on_heat_alpha(self, pct: int) -> None:
         self._heat_alpha = int(max(0, min(100, int(pct))))
         self._update_heatmap()
@@ -467,8 +498,7 @@ class MainWindow(QMainWindow):
 
     def _update_heatmap(self) -> None:
         if self._heatmap and self._image is not None and self._is_glv_show():
-            vals = {r.rid: roi_metric(self._image, r, self._show_metric)
-                    for r in self._rois}
+            vals = self._values
             finite = [v for v in vals.values() if np.isfinite(v)]
             if finite:
                 vmin, vmax = min(finite), max(finite)
@@ -478,25 +508,70 @@ class MainWindow(QMainWindow):
                 self.image_view.set_heatmap(
                     colors, (vmin, vmax, metric_label(self._show_metric)),
                     round(self._heat_alpha * 2.55))
+                shape = self._image.shape[:2]
+                self.image_view.set_heat_cells(
+                    heat_cells(self._rois, (shape[1], shape[0]))
+                    if self._heat_field else {})
                 return
         self.image_view.set_heatmap({}, None)
+        self.image_view.set_heat_cells({})
+
+    def _compute_values(self) -> None:
+        """``rid -> shown metric``, once per refresh.
+
+        The canvas labels, the heatmap, the ROI list and the status readout
+        all want the same numbers; computing them here keeps one pass over the
+        pixels instead of four.
+        """
+        vals: dict = {}
+        if self._image is not None and self._show_metric:
+            if self._show_metric == SNR_ID:
+                # SNR is a per-group value; it belongs to the target (T) ROI.
+                for g in self._groups:
+                    v = group_snr(self._image, group_rois(self._rois, g.gid),
+                                  g.target_rid)
+                    if v is not None and g.target_rid is not None:
+                        vals[g.target_rid] = float(v)
+            else:
+                for r in self._rois:
+                    vals[r.rid] = roi_metric(self._image, r, self._show_metric)
+        self._values = vals
 
     def _update_roi_values(self) -> None:
-        if not self._show_values or not self._show_metric or self._image is None:
+        if not self._show_values or not self._values:
             self.image_view.set_roi_values({})
             return
-        vals = {}
-        if self._show_metric == SNR_ID:
-            # SNR is a per-group value; label the target (T) ROI with it.
-            for g in self._groups:
-                s = group_snr(self._image, group_rois(self._rois, g.gid),
-                              g.target_rid)
-                if s is not None and g.target_rid is not None:
-                    vals[g.target_rid] = f"{s:.3g}"
-        else:
-            for r in self._rois:
-                vals[r.rid] = f"{roi_metric(self._image, r, self._show_metric):.3g}"
-        self.image_view.set_roi_values(vals)
+        self.image_view.set_roi_values(
+            {rid: f"{v:.3g}" for rid, v in self._values.items()})
+
+    def _update_summary(self) -> None:
+        """Headline numbers in the status bar — counts, then the shown metric."""
+        if self._image is None:
+            self.summary_lbl.setText("")
+            return
+        parts = [f"{len(self._groups)} groups · {len(self._rois)} ROIs"]
+        vals = np.asarray([v for v in self._values.values() if np.isfinite(v)],
+                          dtype=np.float64)
+        if vals.size:
+            u = uniformity(vals)
+            parts.append(f"{metric_label(self._show_metric)}: "
+                         f"mean {u['mean']:.4g} · range {u['range']:.3g} "
+                         f"· CV {u['cv_pct']:.2f}%")
+        self.summary_lbl.setText("   ".join(parts))
+
+    def _ordered_rois(self, rois):
+        """The active group's ROIs in list order — as placed, or by value."""
+        if self._roi_order == "placed" or not self._values:
+            return rois
+        rev = self._roi_order == "desc"
+
+        def key(r):
+            v = self._values.get(r.rid)
+            if v is None or not np.isfinite(v):
+                return (1, 0.0)      # no value (SNR reference) — keep it last
+            return (0, -v if rev else v)
+
+        return sorted(rois, key=key)
 
     def on_cmp_mode(self, mode: str) -> None:
         self._cmp_mode = mode
@@ -545,23 +620,27 @@ class MainWindow(QMainWindow):
         self._renumber()
         has_img = self._image is not None
         self.rail.set_ready(has_img)
+        self.stage_bar.setEnabled(has_img)   # nothing to overlay without one
         self.analysis_btn_top.setEnabled(has_img)
         self._save_action.setEnabled(has_img)
         self._outlier_rids = (
             group_outliers(self._image, self._rois, self._show_metric)
             if (self._flag_outliers and has_img and self._is_glv_show())
             else set())
+        self._compute_values()
         counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
         self.rail.set_groups(self._groups, self._active_gid, counts)
-        self.rail.set_rois(group_rois(self._rois, self._active_gid),
-                           self._active_rid, self._target_of_active(),
-                           self._selected_rids, self._outlier_rids)
+        self.rail.set_rois(
+            self._ordered_rois(group_rois(self._rois, self._active_gid)),
+            self._active_rid, self._target_of_active(),
+            self._selected_rids, self._outlier_rids, self._values)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
         self.image_view.set_selection(self._selected_rids)
         self.image_view.set_outliers(self._outlier_rids)
         self._update_roi_values()
         self._update_heatmap()
+        self._update_summary()
         self._update_inspector()
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
@@ -647,8 +726,10 @@ class MainWindow(QMainWindow):
             "show_metric": self._show_metric,
             "show_values": self._show_values,
             "heatmap": self._heatmap,
+            "heat_field": self._heat_field,
             "flag_outliers": self._flag_outliers,
             "heat_alpha": self._heat_alpha,
+            "roi_order": self._roi_order,
             "cmp_mode": self._cmp_mode,
             "within_gid": self._within_gid,
             "active_gid": self._active_gid,
@@ -689,17 +770,23 @@ class MainWindow(QMainWindow):
         self._show_metric = data.get("show_metric") or ""
         self._show_values = bool(data.get("show_values", True))
         self._heatmap = bool(data.get("heatmap", False))
+        self._heat_field = bool(data.get("heat_field", False))
         self._flag_outliers = bool(data.get("flag_outliers", False))
         self._heat_alpha = int(data.get("heat_alpha", 70))
+        order = data.get("roi_order", "placed")
+        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
         self._cmp_mode = data.get("cmp_mode", "between")
         self._within_gid = data.get("within_gid")
         self._active_gid = (data.get("active_gid")
                             or (self._groups[0].gid if self._groups else None))
         self._active_rid = None
         self._selected_rids = set()
-        self.rail.set_metric_state(self._metrics, self._show_metric,
-                                   self._heatmap, self._flag_outliers,
-                                   self._show_values, self._heat_alpha)
+        self.rail.set_metric_state(self._metrics, [self._show_metric])
+        self.rail.set_roi_order(self._roi_order)
+        self.stage_bar.set_metrics(self.rail.metrics.ids())
+        self.stage_bar.set_state(self._show_metric, self._show_values,
+                                 self._heatmap, self._heat_field,
+                                 self._flag_outliers, self._heat_alpha)
         self.analysis.set_chart_state(data.get("chart_type", "box"),
                                       data.get("pos_axis", "x"))
         self._refresh()

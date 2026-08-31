@@ -47,8 +47,10 @@ def test_controls_disabled_before_image(app):
     assert not win.rail.grp_add_btn.isEnabled()
     assert not win.rail.grid_btn.isEnabled()
     assert not win.rail.analysis_btn.isEnabled()
+    assert not win.stage_bar.isEnabled()
     win.set_image(make_field(), "f.png")
     assert win.rail.grp_add_btn.isEnabled() and win.rail.grid_btn.isEnabled()
+    assert win.stage_bar.isEnabled()
 
 
 def test_add_rois_to_groups(app):
@@ -475,6 +477,127 @@ def test_rebuilt_lists_leave_no_stale_rows(app):
     assert len(win.rail.roi_host.parentWidget().findChildren(_ItemRow)) == roi_rows
 
 
+def test_value_labels_only_where_they_fit(app):
+    """A label wider than its ROI is dropped — unless that ROI is hovered."""
+    from PySide6.QtCore import QRectF
+    from pear.ui.image_view import label_rect
+    big, small = QRectF(0, 40, 60, 20), QRectF(0, 40, 8, 6)
+    inside = label_rect(big, 30, 12, False)
+    assert inside is not None and big.contains(inside)
+    assert label_rect(small, 30, 12, False) is None      # would bury the box
+    floated = label_rect(small, 30, 12, True)            # hovered: float it
+    assert floated is not None and floated.bottom() <= small.top()
+    # an ROI at the very top has no room above — the label goes below instead
+    at_top = label_rect(QRectF(0, 0, 8, 6), 30, 12, True)
+    assert at_top is not None and at_top.top() >= 6
+
+
+def test_fit_survives_a_resize_until_the_user_zooms(app):
+    """set_image() fits against the layout's first guess at the widget size."""
+    from pear.ui.image_view import ImageView
+    iv = ImageView()
+    iv.resize(320, 240)                       # the "first guess"
+    iv.show()                                 # hidden widgets defer resizes
+    app.processEvents()
+    iv.set_image(make_field())
+    small = iv._scale
+    iv.resize(900, 700)                       # …then the real one
+    app.processEvents()
+    assert iv._fitted and iv._scale > small
+    pm = iv._pixmap
+    assert iv._offset.x() == pytest.approx(
+        (iv.width() - pm.width() * iv._scale) / 2.0, abs=1.0)
+    assert iv._offset.y() == pytest.approx(
+        (iv.height() - pm.height() * iv._scale) / 2.0, abs=1.0)
+    iv.zoom_in()
+    assert not iv._fitted
+    scale, off = iv._scale, iv._offset
+    iv.resize(700, 500)
+    app.processEvents()
+    assert iv._scale == scale and iv._offset == off       # a zoom is not undone
+
+
+def test_stage_bar_drives_the_overlays_and_the_field_fill(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _grid_group(win, 3, 3)
+    sb = win.stage_bar
+    assert not sb.cells_chk.isEnabled() and not sb.alpha_spin.isEnabled()
+    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
+    assert win._show_metric == "glv_mean" and win.image_view._roi_values
+    sb.heatmap_chk.setChecked(True)
+    assert sb.cells_chk.isEnabled() and win.image_view._heat
+    assert win.image_view._heat_cells == {}          # boxes only, so far
+    sb.cells_chk.setChecked(True)
+    cells = win.image_view._heat_cells
+    assert len(cells) == len(win._rois)
+    h, w = make_field().shape[:2]
+    for x0, y0, x1, y1 in cells.values():            # clipped to the image
+        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h
+    sb.heatmap_chk.setChecked(False)                 # the fill goes with it
+    assert win.image_view._heat_cells == {} and not sb.cells_chk.isEnabled()
+
+
+def test_roi_list_shows_and_sorts_by_the_shown_metric(app):
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win, 2, 3)
+    win.stage_bar.show_combo.setCurrentIndex(
+        win.stage_bar.show_combo.findData("glv_mean"))
+    rois = group_rois(win._rois, gid)
+    assert len(win._values) == len(rois)
+
+    def order(mode):
+        win.on_roi_order(mode)
+        return [r.rid for r in win._ordered_rois(rois)]
+
+    assert order("placed") == [r.rid for r in rois]
+    asc = order("asc")
+    assert [win._values[r] for r in asc] == sorted(win._values[r] for r in asc)
+    assert order("desc") == asc[::-1]
+
+
+def test_status_bar_carries_the_headline_numbers(app):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _grid_group(win, 2, 3)
+    text = win.summary_lbl.text()
+    assert f"{len(win._groups)} groups" in text and "6 ROIs" in text
+    win.stage_bar.show_combo.setCurrentIndex(
+        win.stage_bar.show_combo.findData("glv_mean"))
+    text = win.summary_lbl.text()
+    assert "GLV mean" in text and "CV" in text and "range" in text
+
+
+def test_box_chart_can_give_each_group_its_own_scale(app):
+    """A group with a tiny spread beside a distant one is flat on one axis."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("box")
+    app.processEvents()
+    assert not ap.ownscale_chk.isHidden()
+    ap.ownscale_chk.setChecked(True)
+    app.processEvents()
+    charts = [c for c in ap.body.findChildren(DistributionChart)
+              if c._opts.get("own_scale")]
+    assert charts
+    for c in charts:
+        c.grab()                       # exercises the per-lane painter
+    ap._pick_ctype("map")              # only the box plot offers it
+    assert ap.ownscale_chk.isHidden()
+
+
 def test_map_draws_touching_cells_and_optional_values(app):
     """Cell mode tiles the field; the dot fallback and labels still paint."""
     from pear.ui.main_window import MainWindow
@@ -532,13 +655,18 @@ def test_overlay_toggles_are_independent(app, tmp_path):
     assert win.image_view._roi_values
 
     win.on_show_values(False)
+    win.on_heat_field(True)
+    win.on_roi_order("desc")
     out = tmp_path / "p.pear.json"
     win.save_project(str(out))
     win2 = MainWindow()
     win2.set_image(make_field(), "f.png")
     win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
     assert win2._show_values is False and win2._heat_alpha == 30
-    assert win2.rail.metrics.alpha_spin.value() == 30
+    assert win2._heat_field is True and win2._roi_order == "desc"
+    assert win2.stage_bar.cells_chk.isChecked()
+    assert win2.rail.order_box.currentData() == "desc"
+    assert win2.stage_bar.alpha_spin.value() == 30
     assert win2.image_view._roi_values == {}
     assert win2.image_view._heat_alpha == round(30 * 2.55)
 
