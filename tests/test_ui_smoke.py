@@ -753,6 +753,98 @@ def test_distribution_charts_keep_a_printable_shape(app):
     assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
 
 
+def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):
+    """Titles, axis names, tick counts and locked ranges — and they persist."""
+    import json
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import ChartSettingsDialog, DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean", "glv_median"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("hist")
+    app.processEvents()
+
+    dlg = ChartSettingsDialog(None, ["GLV mean", "GLV median"], ap.chart_style())
+    dlg._title_edits["GLV mean"].setText("Figure 1 — layer brightness")
+    dlg.x_edit.setText("grey level (DN)")
+    dlg.y_edit.setText("ROIs")
+    dlg.xt_spin.setValue(7)
+    dlg.yt_spin.setValue(4)
+    dlg.v_auto.setChecked(False)
+    dlg.v_lo.setValue(50.0)
+    dlg.v_hi.setValue(200.0)
+    style = dlg.result_style()
+    assert style["titles"] == {"GLV mean": "Figure 1 — layer brightness"}
+    assert style["xticks"] == 7 and style["yticks"] == 4
+    assert (style["vmin"], style["vmax"]) == (50.0, 200.0)
+
+    ap.set_chart_style(style)
+    app.processEvents()
+    charts = [c for c in ap.body.findChildren(DistributionChart)
+              if c._ctype == "hist" and c._title == "GLV mean"]
+    assert charts
+    c = charts[-1]
+    assert c.title_text() == "Figure 1 — layer brightness"
+    # the other chart keeps its own name; only the axes are shared
+    other = [x for x in ap._chart_widgets if x._title == "GLV median"][0]
+    assert other.title_text() == "GLV median"
+    assert c._st("xlabel") == "grey level (DN)"
+    assert c._range() == (50.0, 200.0)          # locked, not the data's range
+    assert c._nticks("xticks", 5) == 7
+    c.grab()                                     # the painter honours all of it
+    # the export menu follows the new name
+    assert any("Figure 1" in a.text() for a in ap._image_menu.actions())
+
+    out = tmp_path / "p.pear.json"
+    win.save_project(str(out))
+    win2 = MainWindow()
+    win2.set_image(make_field(), "f.png")
+    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+    assert win2.analysis.chart_style()["titles"]["GLV mean"].startswith("Figure 1")
+    assert win2.analysis.chart_style()["vmax"] == 200.0
+
+    dlg._reset()                                 # Reset clears every override
+    assert dlg.result_style() == {"xticks": 5, "yticks": 5}
+
+
+def test_heat_scale_locks_the_image_overlay(app, tmp_path):
+    """A locked range makes the same colour mean the same grey level."""
+    import json
+    from pear.core.analysis import heat_color
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _grid_group(win, 2, 3)
+    sb = win.stage_bar
+    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
+    sb.heatmap_chk.setChecked(True)
+    auto = dict(win.image_view._heat)
+    assert set(auto.values()) & {heat_color(0.0)}      # auto stretches to min
+
+    win.on_heat_range((0.0, 255.0))
+    locked = win.image_view._heat
+    assert locked != auto
+    rid, v = next(iter(win._values.items()))
+    assert locked[rid] == heat_color(v / 255.0)        # the value's own place
+    assert win.image_view._heat_legend[:2] == (0.0, 255.0)
+
+    out = tmp_path / "p.pear.json"
+    win.save_project(str(out))
+    win2 = MainWindow()
+    win2.set_image(make_field(), "f.png")
+    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+    assert win2._heat_range == (0.0, 255.0)
+    assert win2.stage_bar.heat_range() == (0.0, 255.0)
+    assert "255" in win2.stage_bar.scale_btn.text()    # the button says so
+
+    win.on_heat_range(None)                            # back to auto
+    assert win.image_view._heat == auto
+
+
 def test_export_chart_image_writes_png_and_svg(app, tmp_path):
     from pear.ui.main_window import MainWindow
     from pear.ui.widgets import DistributionChart

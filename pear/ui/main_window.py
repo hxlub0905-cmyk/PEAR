@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         self._heat_field = False          # spread the heat over each ROI's cell
         self._flag_outliers = False       # flag Tukey outliers of the shown metric
         self._heat_alpha = 70             # heat fill opacity, percent
+        self._heat_range = None           # locked heat colours, or None = auto
         self._roi_order = "placed"        # ROI list order: placed | asc | desc
         self._values: dict = {}           # rid -> shown metric, one pass per refresh
         self._outlier_rids: set = set()
@@ -251,6 +252,7 @@ class MainWindow(QMainWindow):
         self.stage_bar.cells_changed.connect(self.on_heat_field)
         self.stage_bar.outliers_changed.connect(self.on_flag_outliers)
         self.stage_bar.heat_alpha_changed.connect(self.on_heat_alpha)
+        self.stage_bar.heat_range_changed.connect(self.on_heat_range)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -521,6 +523,11 @@ class MainWindow(QMainWindow):
         self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
         self._refresh()
 
+    def on_heat_range(self, rng) -> None:
+        """Lock the heat colours to a fixed grey-level range (None = auto)."""
+        self._heat_range = tuple(rng) if rng else None
+        self._update_heatmap()
+
     def on_heat_alpha(self, pct: int) -> None:
         self._heat_alpha = int(max(0, min(100, int(pct))))
         self._update_heatmap()
@@ -548,6 +555,8 @@ class MainWindow(QMainWindow):
             finite = [v for v in vals.values() if np.isfinite(v)]
             if finite:
                 vmin, vmax = min(finite), max(finite)
+                if self._heat_range:      # locked: the same colour every image
+                    vmin, vmax = self._heat_range
                 span = (vmax - vmin) or 1.0
                 colors = {rid: heat_color((v - vmin) / span)
                           for rid, v in vals.items() if np.isfinite(v)}
@@ -775,6 +784,8 @@ class MainWindow(QMainWindow):
             "heat_field": self._heat_field,
             "flag_outliers": self._flag_outliers,
             "heat_alpha": self._heat_alpha,
+            "heat_range": list(self._heat_range) if self._heat_range else None,
+            "chart_style": self.analysis.chart_style(),
             "roi_order": self._roi_order,
             "cmp_mode": self._cmp_mode,
             "within_gid": self._within_gid,
@@ -819,6 +830,8 @@ class MainWindow(QMainWindow):
         self._heat_field = bool(data.get("heat_field", False))
         self._flag_outliers = bool(data.get("flag_outliers", False))
         self._heat_alpha = int(data.get("heat_alpha", 70))
+        rng = data.get("heat_range")
+        self._heat_range = (tuple(rng) if rng and len(rng) == 2 else None)
         order = data.get("roi_order", "placed")
         self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
         self._cmp_mode = data.get("cmp_mode", "between")
@@ -835,6 +848,8 @@ class MainWindow(QMainWindow):
                                  self._flag_outliers, self._heat_alpha)
         self.analysis.set_chart_state(data.get("chart_type", "box"),
                                       data.get("pos_axis", "x"))
+        self.analysis.set_chart_style(data.get("chart_style") or {})
+        self.stage_bar.set_heat_range(self._heat_range)
         self._refresh()
 
     # ------------------------------------------------------------------ #

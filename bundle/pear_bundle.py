@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 0625fc22a67aae3c43cec634e411f9dc1e8c879a 255 README.md
+#F 4dc6f64b534af98167f06df456f8e0a102230227 266 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -368,6 +368,15 @@ if __name__ == "__main__":
 #observations drawn as **open markers** so a scatter never fuses into the lines
 #drawn in the same colour beside it.
 #
+#**Chart settings…** makes each figure yours: **rename** it (the title sits
+#centred above the plot, and the export menu follows the new name), give the
+#**axes your own names**, set the **tick counts**, and **lock the value axis or
+#the heat colours to a fixed range** — auto scaling is right while you are
+#looking at one run and wrong the moment you put two side by side, because each
+#picks its own range. The image overlay has the same lock under **scale…** on
+#the stage bar, so the same colour means the same grey level on every image you
+#open. All of it saves with the project.
+#
 #**CSV export** carries every ROI's metrics and a per-group summary.
 #
 ### Every view exports as a picture
@@ -431,8 +440,9 @@ if __name__ == "__main__":
 #
 #- Fully **offline** — no network, no telemetry, all computation local.
 #- **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-#  metrics, and view state (overlay toggles, heat opacity, ROI list order, the
-#  chart type and position axis);
+#  metrics, and view state (overlay toggles, heat opacity and locked range, ROI
+#  list order, chart titles / axis names / ticks / locked scales, the chart type
+#  and position axis);
 #  reopen to pick up where you left off.
 #- Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
 #  normalized to 8-bit grayscale on load (CJK-path safe IO).
@@ -489,7 +499,8 @@ if __name__ == "__main__":
 #  chart aspect, position profile + heat map (cells / dots / values),
 #  independent ROI overlay toggles, field fill, value-label fitting, fit across
 #  a resize, ROI list values / ordering, align buttons, status headline,
-#  per-lane box scale, list rebuilds leaving no stale rows.
+#  per-lane box scale, chart settings (titles, axis names, ticks, locked value
+#  and heat scales), list rebuilds leaving no stale rows.
 #
 ### Repository layout
 #
@@ -2600,7 +2611,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F d0083a203f1d92a0ba57822765b5223a9742cdd8 952 pear/ui/main_window.py
+#F be1586bc3ef900da9913a8b68be352d48f65c9d5 967 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2676,6 +2687,7 @@ if __name__ == "__main__":
 #        self._heat_field = False          # spread the heat over each ROI's cell
 #        self._flag_outliers = False       # flag Tukey outliers of the shown metric
 #        self._heat_alpha = 70             # heat fill opacity, percent
+#        self._heat_range = None           # locked heat colours, or None = auto
 #        self._roi_order = "placed"        # ROI list order: placed | asc | desc
 #        self._values: dict = {}           # rid -> shown metric, one pass per refresh
 #        self._outlier_rids: set = set()
@@ -2854,6 +2866,7 @@ if __name__ == "__main__":
 #        self.stage_bar.cells_changed.connect(self.on_heat_field)
 #        self.stage_bar.outliers_changed.connect(self.on_flag_outliers)
 #        self.stage_bar.heat_alpha_changed.connect(self.on_heat_alpha)
+#        self.stage_bar.heat_range_changed.connect(self.on_heat_range)
 #        self.rail.open_analysis.connect(self.open_analysis)
 #
 #        self.image_view.roi_created.connect(self.on_roi_created)
@@ -3124,6 +3137,11 @@ if __name__ == "__main__":
 #        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
 #        self._refresh()
 #
+#    def on_heat_range(self, rng) -> None:
+#        """Lock the heat colours to a fixed grey-level range (None = auto)."""
+#        self._heat_range = tuple(rng) if rng else None
+#        self._update_heatmap()
+#
 #    def on_heat_alpha(self, pct: int) -> None:
 #        self._heat_alpha = int(max(0, min(100, int(pct))))
 #        self._update_heatmap()
@@ -3151,6 +3169,8 @@ if __name__ == "__main__":
 #            finite = [v for v in vals.values() if np.isfinite(v)]
 #            if finite:
 #                vmin, vmax = min(finite), max(finite)
+#                if self._heat_range:      # locked: the same colour every image
+#                    vmin, vmax = self._heat_range
 #                span = (vmax - vmin) or 1.0
 #                colors = {rid: heat_color((v - vmin) / span)
 #                          for rid, v in vals.items() if np.isfinite(v)}
@@ -3378,6 +3398,8 @@ if __name__ == "__main__":
 #            "heat_field": self._heat_field,
 #            "flag_outliers": self._flag_outliers,
 #            "heat_alpha": self._heat_alpha,
+#            "heat_range": list(self._heat_range) if self._heat_range else None,
+#            "chart_style": self.analysis.chart_style(),
 #            "roi_order": self._roi_order,
 #            "cmp_mode": self._cmp_mode,
 #            "within_gid": self._within_gid,
@@ -3422,6 +3444,8 @@ if __name__ == "__main__":
 #        self._heat_field = bool(data.get("heat_field", False))
 #        self._flag_outliers = bool(data.get("flag_outliers", False))
 #        self._heat_alpha = int(data.get("heat_alpha", 70))
+#        rng = data.get("heat_range")
+#        self._heat_range = (tuple(rng) if rng and len(rng) == 2 else None)
 #        order = data.get("roi_order", "placed")
 #        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
 #        self._cmp_mode = data.get("cmp_mode", "between")
@@ -3438,6 +3462,8 @@ if __name__ == "__main__":
 #                                 self._flag_outliers, self._heat_alpha)
 #        self.analysis.set_chart_state(data.get("chart_type", "box"),
 #                                      data.get("pos_axis", "x"))
+#        self.analysis.set_chart_style(data.get("chart_style") or {})
+#        self.stage_bar.set_heat_range(self._heat_range)
 #        self._refresh()
 #
 #    # ------------------------------------------------------------------ #
@@ -3750,7 +3776,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F ef35c867ac653ee791afa9c816c2533ab28bcf2c 2176 pear/ui/widgets.py
+#F 853fd358860e5a0fa26acecbd1e69ed07c71dc80 2471 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3766,7 +3792,8 @@ if __name__ == "__main__":
 #from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 #from PySide6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,
 #                           QRegion)
-#from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
+#from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog,
+#                               QDialogButtonBox, QDoubleSpinBox, QFrame,
 #                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
 #                               QMenu, QPushButton, QScrollArea, QSpinBox,
 #                               QToolButton, QVBoxLayout, QWidget)
@@ -3894,6 +3921,7 @@ if __name__ == "__main__":
 #        self._axis = "x"
 #        self._trend = True
 #        self._xlabel = ""
+#        self._style: dict = {}
 #        self.setMinimumHeight(212)
 #        # a distribution reads as a figure at roughly 4:3; letterboxed across
 #        # a wide window it flattens and the page looks lopsided
@@ -3903,9 +3931,10 @@ if __name__ == "__main__":
 #
 #    def set_data(self, title: str, series: List[dict], ctype: str = "box",
 #                 opts=None, axis: str = "x", trend: bool = True,
-#                 xlabel: str = "") -> None:
+#                 xlabel: str = "", style=None) -> None:
 #        self._title = title
 #        self._xlabel = xlabel or title
+#        self._style = dict(style or {})
 #        self._ctype = ctype
 #        self._opts = {"points": True, "whiskers": True, "cells": True,
 #                      **(opts or {})}
@@ -3949,13 +3978,30 @@ if __name__ == "__main__":
 #    def heightForWidth(self, w: int) -> int:
 #        return int(max(240, min(w * 0.78, 560)))
 #
+#    # -- style overrides (title, axis names, tick counts, ranges) ------ #
+#    def _st(self, key: str, default=None):
+#        v = self._style.get(key)
+#        return default if v is None or v == "" else v
+#
+#    def _nticks(self, key: str, default: int) -> int:
+#        try:
+#            return int(np.clip(int(self._st(key, default)), 2, 12))
+#        except (TypeError, ValueError):
+#            return default
+#
+#    def title_text(self) -> str:
+#        """What the chart is called — the override, or the metric it plots."""
+#        return str(self._st("title", self._title))
+#
 #    def paintEvent(self, _e) -> None:
 #        p = QPainter(self)
 #        p.setRenderHint(QPainter.Antialiasing, True)
 #        p.fillRect(self.rect(), QColor(theme.CARD))
 #        p.setPen(QColor(theme.INK))
-#        p.setFont(theme.display_font(11, weight=700))
-#        p.drawText(10, 16, self._title)
+#        p.setFont(theme.display_font(12, weight=700))
+#        # centred over the plot, where a figure caption goes
+#        p.drawText(QRectF(8, 5, self.width() - 16, 19),
+#                   Qt.AlignHCenter | Qt.AlignVCenter, self.title_text())
 #        if not self._series:
 #            p.setPen(QColor(theme.INK3))
 #            p.setFont(theme.mono_font(9))
@@ -3997,6 +4043,9 @@ if __name__ == "__main__":
 #        p.drawEllipse(QPointF(x, y), rad, rad)
 #
 #    def _range(self):
+#        vmin, vmax = self._st("vmin"), self._st("vmax")
+#        if vmin is not None and vmax is not None and float(vmax) > float(vmin):
+#            return float(vmin), float(vmax)     # locked: comparable between runs
 #        allv = np.concatenate([s["values"] for s in self._series])
 #        lo, hi = float(allv.min()), float(allv.max())
 #        if hi - lo < 1e-9:
@@ -4043,7 +4092,8 @@ if __name__ == "__main__":
 #            return lo - pad, hi + pad
 #
 #        p.setFont(theme.mono_font(8))
-#        gridys = [top + H * t / 4.0 for t in range(5)]
+#        ny = self._nticks("yticks", 5)
+#        gridys = [top + H * t / (ny - 1.0) for t in range(ny)]
 #        for t, gy in enumerate(gridys):
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
@@ -4052,9 +4102,16 @@ if __name__ == "__main__":
 #            p.setPen(QColor(theme.INK3))
 #            p.drawText(QRectF(16, gy - 6, left - 20, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter,
-#                       _fmt(ghi - (ghi - glo) * t / 4.0))
+#                       _fmt(ghi - (ghi - glo) * t / (ny - 1.0)))
 #        self._frame(p, left, top, right, bottom, yticks=() if own else gridys)
-#        self._ytitle(p, "value · own scale per group" if own else "value")
+#        self._ytitle(p, self._st("ylabel", "value · own scale per group"
+#                                 if own else "value"))
+#        xlab = self._st("xlabel", "")
+#        if xlab:
+#            p.setPen(QColor(theme.INK2))
+#            p.setFont(theme.mono_font(8, weight=700))
+#            p.drawText(QRectF(left, self.height() - 16, W, 13),
+#                       Qt.AlignHCenter, str(xlab))
 #
 #        lane = W / n
 #        for i, s in enumerate(self._series):
@@ -4148,7 +4205,9 @@ if __name__ == "__main__":
 #        # the gutter from the widest one rather than a fixed guess
 #        p.setFont(theme.mono_font(8))
 #        fm = p.fontMetrics()
-#        ticks = [_fmt_span(hi - (hi - lo) * t / 4.0, hi - lo) for t in range(5)]
+#        ny = self._nticks("yticks", 5)
+#        ticks = [_fmt_span(hi - (hi - lo) * t / (ny - 1.0), hi - lo)
+#                 for t in range(ny)]
 #        top = 34
 #        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ticks) + 26,
 #                           46, 120))
@@ -4165,24 +4224,26 @@ if __name__ == "__main__":
 #            return bottom - (v - lo) / (hi - lo) * H
 #
 #        # grid + value axis
-#        gridys = [top + H * t / 4.0 for t in range(5)]
+#        gridys = [top + H * t / (ny - 1.0) for t in range(ny)]
 #        for gy, lab in zip(gridys, ticks):
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
 #            p.setPen(QColor(theme.INK3))
 #            p.drawText(QRectF(18, gy - 6, left - 24, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter, lab)
-#        self._ytitle(p, "value")
+#        self._ytitle(p, self._st("ylabel", "value"))
 #
 #        # position axis
-#        xs = [left + W * t / 4.0 for t in range(5)]
+#        nx = self._nticks("xticks", 5)
+#        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
 #        self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
 #        p.setPen(QColor(theme.INK3))
 #        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-#                       f"{xlo + (xhi - xlo) * t / 4.0:.0f}")
+#                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
 #        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
-#                   f"ROI centre {self._axis.upper()} (px)")
+#                   str(self._st("xlabel",
+#                                f"ROI centre {self._axis.upper()} (px)")))
 #
 #        ly = bottom + 30
 #        for s in series:
@@ -4306,6 +4367,9 @@ if __name__ == "__main__":
 #        allx = np.concatenate([s["pos_x"] for s in series])
 #        ally = np.concatenate([s["pos_y"] for s in series])
 #        lo, hi = float(allv.min()), float(allv.max())
+#        hmin, hmax = self._st("heat_vmin"), self._st("heat_vmax")
+#        if hmin is not None and hmax is not None and float(hmax) > float(hmin):
+#            lo, hi = float(hmin), float(hmax)   # locked: comparable between runs
 #        flat = (hi - lo) < 1e-9
 #        vspan = 1.0 if flat else hi - lo
 #
@@ -4363,18 +4427,19 @@ if __name__ == "__main__":
 #        p.drawRect(int(left), int(top), int(W), int(H))
 #        p.setFont(theme.mono_font(8))
 #        p.setPen(QColor(theme.INK3))
-#        for t in range(3):              # X ticks
-#            gx = left + W * t / 2.0
+#        nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
+#        for t in range(nx):             # X ticks
+#            gx = left + W * t / (nx - 1.0)
 #            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-#                       f"{xlo + (xhi - xlo) * t / 2.0:.0f}")
-#        for t in range(3):              # Y ticks (top = small y, like the image)
-#            gy = top + H * t / 2.0
+#                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
+#        for t in range(ny):             # Y ticks (top = small y, like the image)
+#            gy = top + H * t / (ny - 1.0)
 #            p.drawText(QRectF(6, gy - 6, left - 10, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter,
-#                       f"{ylo + (yhi - ylo) * t / 2.0:.0f}")
+#                       f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
 #        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
-#                   "ROI centre X (px)")
-#        self._ytitle(p, "ROI centre Y (px)")
+#                   str(self._st("xlabel", "ROI centre X (px)")))
+#        self._ytitle(p, self._st("ylabel", "ROI centre Y (px)"))
 #
 #        ring = len(series) > 1        # only needed to tell groups apart
 #        if cells:
@@ -4445,6 +4510,9 @@ if __name__ == "__main__":
 #                   Qt.AlignLeft, _fmt_span(hi, hi - lo))
 #        p.drawText(QRectF(bx + bw + 2, top + bh - 10, cbar_w - bw - 4, 12),
 #                   Qt.AlignLeft, _fmt_span(lo, hi - lo))
+#        if hmin is not None and hmax is not None:
+#            p.drawText(QRectF(bx - 2, top - 15, cbar_w, 12), Qt.AlignLeft,
+#                       "locked")
 #
 #        u = uniformity(allv)
 #        txt = (f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
@@ -4480,7 +4548,8 @@ if __name__ == "__main__":
 #        else:
 #            bars = [c.astype(np.float64) for c in counts]
 #        peak = max([float(b.max()) for b in bars] + [0.0])
-#        step = _nice_step(peak if peak > 0 else 1.0, 4)
+#        ny = self._nticks("yticks", 5)
+#        step = _nice_step(peak if peak > 0 else 1.0, ny - 1)
 #        if not pct:
 #            step = max(1.0, round(step))        # counts are whole numbers
 #        ymax = max(step, float(np.ceil(peak / step) * step))
@@ -4530,19 +4599,21 @@ if __name__ == "__main__":
 #                y = Y(float(b[k]))
 #                p.drawRect(QRectF(x0, y, max(1.0, x1 - x0), bottom - y))
 #        span = hi - lo
-#        xs = [left + W * t / 4.0 for t in range(5)]
+#        nx = self._nticks("xticks", 5)
+#        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
 #        self._frame(p, left, top, right, bottom, xticks=xs,
 #                    yticks=[Y(v) for v in yticks])
 #        p.setFont(theme.mono_font(8))
 #        p.setPen(QColor(theme.INK3))
 #        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
-#                       _fmt_span(lo + span * t / 4.0, span))
+#                       _fmt_span(lo + span * t / (nx - 1.0), span))
 #        p.setPen(QColor(theme.INK2))
 #        p.setFont(theme.mono_font(8, weight=700))
 #        p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
-#                   self._xlabel or "value")
-#        self._ytitle(p, "share of group (%)" if pct else "count")
+#                   str(self._st("xlabel", self._xlabel or "value")))
+#        self._ytitle(p, self._st("ylabel", "share of group (%)" if pct
+#                                 else "count (ROIs)"))
 #        self._legend(p, left, top, right,
 #                     [(s["label"], s["color"], f"n={s['values'].size}")
 #                      for s in self._series])
@@ -4755,12 +4826,14 @@ if __name__ == "__main__":
 #    cells_changed = Signal(bool)        # spread the heat over the ROI's cell
 #    outliers_changed = Signal(bool)
 #    heat_alpha_changed = Signal(int)    # percent
+#    heat_range_changed = Signal(object)  # (vmin, vmax) or None for auto
 #    export_image_requested = Signal()
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
 #        self.setObjectName("StageBar")
 #        self._show = ""
+#        self._heat_range = None         # locked colour range, or None for auto
 #        lay = QHBoxLayout(self)
 #        lay.setContentsMargins(12, 7, 12, 7)
 #        lay.setSpacing(10)
@@ -4812,6 +4885,13 @@ if __name__ == "__main__":
 #        lay.addWidget(op)
 #        lay.addWidget(self.alpha_spin)
 #        lay.addStretch(1)
+#        self.scale_btn = QPushButton("scale…")
+#        self.scale_btn.setFixedHeight(26)
+#        self.scale_btn.setToolTip(
+#            "Lock the heat colours to a fixed range, so the same colour means "
+#            "the same grey level on every image you open.")
+#        self.scale_btn.clicked.connect(self.edit_heat_range)
+#        lay.addWidget(self.scale_btn)
 #        self.image_btn = QPushButton("Export image")
 #        self.image_btn.setFixedHeight(26)
 #        self.image_btn.setToolTip(
@@ -4854,8 +4934,50 @@ if __name__ == "__main__":
 #
 #    def _gate(self) -> None:
 #        on = self.heatmap_chk.isChecked()
-#        self.cells_chk.setEnabled(on)     # both only bite on a heat fill
-#        self.alpha_spin.setEnabled(on)
+#        for w in (self.cells_chk, self.alpha_spin, self.scale_btn):
+#            w.setEnabled(on)              # all three only bite on a heat fill
+#
+#    def set_heat_range(self, rng) -> None:
+#        """Restore the locked colour range (or None for auto)."""
+#        self._heat_range = tuple(rng) if rng else None
+#        self._label_scale()
+#
+#    def heat_range(self):
+#        return self._heat_range
+#
+#    def _label_scale(self) -> None:
+#        r = self._heat_range
+#        self.scale_btn.setText("scale…" if not r
+#                               else f"{r[0]:.4g} – {r[1]:.4g}")
+#
+#    def edit_heat_range(self) -> None:
+#        style = ({} if not self._heat_range
+#                 else {"heat_vmin": self._heat_range[0],
+#                       "heat_vmax": self._heat_range[1]})
+#        dlg = QDialog(self)
+#        dlg.setWindowTitle("Heat colour scale")
+#        lay = QVBoxLayout(dlg)
+#        lay.setContentsMargins(16, 14, 16, 14)
+#        lay.setSpacing(10)
+#        row, auto, lo, hi = _num_row("grey level", style,
+#                                     "heat_vmin", "heat_vmax")
+#        lay.addLayout(row)
+#        hint = QLabel("With auto, the colours span this image's own min and "
+#                      "max — the same colour means a different value on the "
+#                      "next image. Lock the range to compare across images.")
+#        hint.setObjectName("Hint")
+#        hint.setWordWrap(True)
+#        lay.addWidget(hint)
+#        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+#        buttons.accepted.connect(dlg.accept)
+#        buttons.rejected.connect(dlg.reject)
+#        lay.addWidget(buttons)
+#        if dlg.exec() != QDialog.Accepted:
+#            return
+#        rng = (None if auto.isChecked() or hi.value() <= lo.value()
+#               else (lo.value(), hi.value()))
+#        self.set_heat_range(rng)
+#        self.heat_range_changed.emit(rng)
 #
 #    def _on_heatmap(self, on: bool) -> None:
 #        self._gate()
@@ -4864,6 +4986,174 @@ if __name__ == "__main__":
 #    def _on_show(self, _i: int) -> None:
 #        self._show = self.show_combo.currentData() or ""
 #        self.show_changed.emit(self._show)
+#
+#
+## --------------------------------------------------------------------------- #
+## Chart settings — what a figure is called and how its axes are scaled
+## --------------------------------------------------------------------------- #
+#def _num_row(label: str, style: dict, kmin: str, kmax: str, unit: str = ""):
+#    """An "auto / from … to …" range row. Returns (layout, auto, lo, hi)."""
+#    row = QHBoxLayout()
+#    row.setSpacing(6)
+#    lab = QLabel(label)
+#    lab.setObjectName("Hint")
+#    lab.setMinimumWidth(96)
+#    auto = QCheckBox("auto")
+#    lo, hi = QDoubleSpinBox(), QDoubleSpinBox()
+#    for sp in (lo, hi):
+#        sp.setRange(-1e9, 1e9)
+#        sp.setDecimals(3)
+#        sp.setMinimumWidth(96)
+#        if unit:
+#            sp.setSuffix(unit)
+#    have = style.get(kmin) is not None and style.get(kmax) is not None
+#    auto.setChecked(not have)
+#    if have:
+#        lo.setValue(float(style[kmin]))
+#        hi.setValue(float(style[kmax]))
+#    for sp in (lo, hi):
+#        sp.setEnabled(have)
+#    auto.toggled.connect(lambda on: [sp.setEnabled(not on) for sp in (lo, hi)])
+#    row.addWidget(lab)
+#    row.addWidget(auto)
+#    row.addWidget(QLabel("from"))
+#    row.addWidget(lo)
+#    row.addWidget(QLabel("to"))
+#    row.addWidget(hi)
+#    row.addStretch(1)
+#    return row, auto, lo, hi
+#
+#
+#class ChartSettingsDialog(QDialog):
+#    """Rename the figures and set their axes by hand.
+#
+#    Auto scaling is right while you are looking; it is wrong the moment you
+#    put two runs side by side, because each picks its own range. Everything
+#    here is an override — leave a field blank or on *auto* and the chart goes
+#    back to deciding for itself.
+#    """
+#
+#    def __init__(self, parent, chart_titles: List[str], style: dict):
+#        super().__init__(parent)
+#        self.setWindowTitle("Chart settings")
+#        self.setMinimumWidth(460)
+#        style = dict(style or {})
+#        titles = dict(style.get("titles") or {})
+#        root = QVBoxLayout(self)
+#        root.setContentsMargins(16, 14, 16, 14)
+#        root.setSpacing(10)
+#
+#        head = QLabel("Titles")
+#        head.setObjectName("SectionTitle")
+#        head.setFont(theme.display_font(12, weight=700))
+#        root.addWidget(head)
+#        self._title_edits = {}
+#        for name in chart_titles:
+#            row = QHBoxLayout()
+#            row.setSpacing(6)
+#            lab = QLabel(name)
+#            lab.setObjectName("Hint")
+#            lab.setMinimumWidth(96)
+#            ed = QLineEdit(titles.get(name, ""))
+#            ed.setPlaceholderText(name)
+#            ed.setMinimumHeight(28)
+#            self._title_edits[name] = ed
+#            row.addWidget(lab)
+#            row.addWidget(ed, 1)
+#            root.addLayout(row)
+#
+#        head = QLabel("Axes")
+#        head.setObjectName("SectionTitle")
+#        head.setFont(theme.display_font(12, weight=700))
+#        root.addWidget(head)
+#        self.x_edit = QLineEdit(style.get("xlabel") or "")
+#        self.x_edit.setPlaceholderText("(default for this chart type)")
+#        self.y_edit = QLineEdit(style.get("ylabel") or "")
+#        self.y_edit.setPlaceholderText("(default for this chart type)")
+#        for lab, ed in (("X axis name", self.x_edit), ("Y axis name", self.y_edit)):
+#            row = QHBoxLayout()
+#            row.setSpacing(6)
+#            l = QLabel(lab)
+#            l.setObjectName("Hint")
+#            l.setMinimumWidth(96)
+#            ed.setMinimumHeight(28)
+#            row.addWidget(l)
+#            row.addWidget(ed, 1)
+#            root.addLayout(row)
+#        trow = QHBoxLayout()
+#        trow.setSpacing(6)
+#        tl = QLabel("ticks")
+#        tl.setObjectName("Hint")
+#        tl.setMinimumWidth(96)
+#        self.xt_spin, self.yt_spin = QSpinBox(), QSpinBox()
+#        for sp, key, default in ((self.xt_spin, "xticks", 5),
+#                                 (self.yt_spin, "yticks", 5)):
+#            sp.setRange(2, 12)
+#            sp.setValue(int(style.get(key) or default))
+#            sp.setMinimumHeight(28)
+#            sp.setFixedWidth(70)
+#        trow.addWidget(tl)
+#        trow.addWidget(QLabel("X"))
+#        trow.addWidget(self.xt_spin)
+#        trow.addWidget(QLabel("Y"))
+#        trow.addWidget(self.yt_spin)
+#        trow.addStretch(1)
+#        root.addLayout(trow)
+#        tip = QLabel("A count axis rounds to whole steps, so it lands near "
+#                     "that number rather than exactly on it.")
+#        tip.setObjectName("Hint")
+#        tip.setWordWrap(True)
+#        root.addWidget(tip)
+#
+#        head = QLabel("Scales")
+#        head.setObjectName("SectionTitle")
+#        head.setFont(theme.display_font(12, weight=700))
+#        root.addWidget(head)
+#        vrow, self.v_auto, self.v_lo, self.v_hi = _num_row(
+#            "value axis", style, "vmin", "vmax")
+#        hrow, self.h_auto, self.h_lo, self.h_hi = _num_row(
+#            "heat colours", style, "heat_vmin", "heat_vmax")
+#        root.addLayout(vrow)
+#        root.addLayout(hrow)
+#        hint = QLabel("Locked scales are what make two images, two lots or two "
+#                      "days comparable — with auto, each picks its own range.")
+#        hint.setObjectName("Hint")
+#        hint.setWordWrap(True)
+#        root.addWidget(hint)
+#
+#        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+#        buttons.accepted.connect(self.accept)
+#        buttons.rejected.connect(self.reject)
+#        reset = buttons.addButton("Reset", QDialogButtonBox.ResetRole)
+#        reset.clicked.connect(self._reset)
+#        root.addWidget(buttons)
+#
+#    def _reset(self) -> None:
+#        for ed in list(self._title_edits.values()) + [self.x_edit, self.y_edit]:
+#            ed.clear()
+#        self.xt_spin.setValue(5)
+#        self.yt_spin.setValue(5)
+#        self.v_auto.setChecked(True)
+#        self.h_auto.setChecked(True)
+#
+#    def result_style(self) -> dict:
+#        """The overrides, with anything left at its default omitted."""
+#        out: dict = {}
+#        titles = {k: ed.text().strip() for k, ed in self._title_edits.items()
+#                  if ed.text().strip()}
+#        if titles:
+#            out["titles"] = titles
+#        for key, ed in (("xlabel", self.x_edit), ("ylabel", self.y_edit)):
+#            if ed.text().strip():
+#                out[key] = ed.text().strip()
+#        out["xticks"] = int(self.xt_spin.value())
+#        out["yticks"] = int(self.yt_spin.value())
+#        if not self.v_auto.isChecked() and self.v_hi.value() > self.v_lo.value():
+#            out["vmin"], out["vmax"] = self.v_lo.value(), self.v_hi.value()
+#        if not self.h_auto.isChecked() and self.h_hi.value() > self.h_lo.value():
+#            out["heat_vmin"], out["heat_vmax"] = (self.h_lo.value(),
+#                                                  self.h_hi.value())
+#        return out
 #
 #
 ## --------------------------------------------------------------------------- #
@@ -5373,6 +5663,12 @@ if __name__ == "__main__":
 #        self.sub = QLabel("")
 #        self.sub.setObjectName("Hint")
 #        head.addWidget(self.sub)
+#        self.axes_btn = QPushButton("Chart settings…")
+#        self.axes_btn.setToolTip(
+#            "Rename the figures, name the axes, set the tick counts and lock "
+#            "the value and heat scales.")
+#        self.axes_btn.clicked.connect(self.edit_chart_settings)
+#        head.addWidget(self.axes_btn)
 #        self.image_btn = QToolButton()
 #        self.image_btn.setText("Export image ▾")
 #        self.image_btn.setPopupMode(QToolButton.InstantPopup)
@@ -5407,6 +5703,7 @@ if __name__ == "__main__":
 #        self._suppress = False
 #        self._cards: dict = {}          # scope -> the widget to export
 #        self._chart_widgets: List[DistributionChart] = []
+#        self._style: dict = {}          # title / axis / tick / scale overrides
 #        self._main = self.body_lay      # figures column
 #        self._side = self.body_lay      # annotations column
 #
@@ -5451,6 +5748,30 @@ if __name__ == "__main__":
 #    def _on_chart_opts(self, _=False) -> None:
 #        if self._last_result is not None:
 #            self._render_body(self._last_result)
+#
+#    # -- chart settings ------------------------------------------------ #
+#    def chart_style(self) -> dict:
+#        """The title / axis / tick / scale overrides — saved with the project."""
+#        return dict(self._style)
+#
+#    def set_chart_style(self, style) -> None:
+#        self._style = dict(style or {})
+#        if self._last_result is not None:
+#            self._render_body(self._last_result)
+#
+#    def edit_chart_settings(self) -> None:
+#        names = [c._title for c in self._chart_widgets] or ["chart"]
+#        dlg = ChartSettingsDialog(self, names, self._style)
+#        if dlg.exec() == QDialog.Accepted:
+#            self.set_chart_style(dlg.result_style())
+#
+#    def _style_for(self, title: str) -> dict:
+#        """The shared overrides plus this chart's own title, if it has one."""
+#        st = {k: v for k, v in self._style.items() if k != "titles"}
+#        custom = (self._style.get("titles") or {}).get(title)
+#        if custom:
+#            st["title"] = custom
+#        return st
 #
 #    def chart_state(self) -> tuple:
 #        """(chart type, position axis) — persisted with the project."""
@@ -5559,7 +5880,7 @@ if __name__ == "__main__":
 #                # one figure per file is what a document actually takes
 #                for i, c in enumerate(self._chart_widgets):
 #                    self._image_menu.addAction(
-#                        f"    {c._title}…",
+#                        f"    {c.title_text()}…",
 #                        lambda _=False, k=f"chart:{i}":
 #                        self.export_image_requested.emit(k))
 #        self.image_btn.setEnabled(bool(scopes))
@@ -5723,7 +6044,7 @@ if __name__ == "__main__":
 #            chart = DistributionChart()
 #            chart.set_data(title, series, self._chart_type, opts,
 #                           axis=self._pos_axis, trend=self.trend_chk.isChecked(),
-#                           xlabel=title)
+#                           xlabel=title, style=self._style_for(title))
 #            self._chart_widgets.append(chart)
 #            if wide:
 #                grid.addWidget(chart, i, 0, 1, 3)
@@ -6441,7 +6762,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 22c9d6901b05f84f3751af27976e0971c7b323a2 925 tests/test_ui_smoke.py
+#F 148e301791fc1569ed1830a65587d7906b0b501a 1017 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7195,6 +7516,98 @@ if __name__ == "__main__":
 #    c = charts[-1]
 #    assert 340 <= c.width() <= 720                     # capped, not stretched
 #    assert c.height() == pytest.approx(c.heightForWidth(c.width()), abs=2)
+#
+#
+#def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):
+#    """Titles, axis names, tick counts and locked ranges — and they persist."""
+#    import json
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import ChartSettingsDialog, DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean", "glv_median"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("hist")
+#    app.processEvents()
+#
+#    dlg = ChartSettingsDialog(None, ["GLV mean", "GLV median"], ap.chart_style())
+#    dlg._title_edits["GLV mean"].setText("Figure 1 — layer brightness")
+#    dlg.x_edit.setText("grey level (DN)")
+#    dlg.y_edit.setText("ROIs")
+#    dlg.xt_spin.setValue(7)
+#    dlg.yt_spin.setValue(4)
+#    dlg.v_auto.setChecked(False)
+#    dlg.v_lo.setValue(50.0)
+#    dlg.v_hi.setValue(200.0)
+#    style = dlg.result_style()
+#    assert style["titles"] == {"GLV mean": "Figure 1 — layer brightness"}
+#    assert style["xticks"] == 7 and style["yticks"] == 4
+#    assert (style["vmin"], style["vmax"]) == (50.0, 200.0)
+#
+#    ap.set_chart_style(style)
+#    app.processEvents()
+#    charts = [c for c in ap.body.findChildren(DistributionChart)
+#              if c._ctype == "hist" and c._title == "GLV mean"]
+#    assert charts
+#    c = charts[-1]
+#    assert c.title_text() == "Figure 1 — layer brightness"
+#    # the other chart keeps its own name; only the axes are shared
+#    other = [x for x in ap._chart_widgets if x._title == "GLV median"][0]
+#    assert other.title_text() == "GLV median"
+#    assert c._st("xlabel") == "grey level (DN)"
+#    assert c._range() == (50.0, 200.0)          # locked, not the data's range
+#    assert c._nticks("xticks", 5) == 7
+#    c.grab()                                     # the painter honours all of it
+#    # the export menu follows the new name
+#    assert any("Figure 1" in a.text() for a in ap._image_menu.actions())
+#
+#    out = tmp_path / "p.pear.json"
+#    win.save_project(str(out))
+#    win2 = MainWindow()
+#    win2.set_image(make_field(), "f.png")
+#    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+#    assert win2.analysis.chart_style()["titles"]["GLV mean"].startswith("Figure 1")
+#    assert win2.analysis.chart_style()["vmax"] == 200.0
+#
+#    dlg._reset()                                 # Reset clears every override
+#    assert dlg.result_style() == {"xticks": 5, "yticks": 5}
+#
+#
+#def test_heat_scale_locks_the_image_overlay(app, tmp_path):
+#    """A locked range makes the same colour mean the same grey level."""
+#    import json
+#    from pear.core.analysis import heat_color
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _grid_group(win, 2, 3)
+#    sb = win.stage_bar
+#    sb.show_combo.setCurrentIndex(sb.show_combo.findData("glv_mean"))
+#    sb.heatmap_chk.setChecked(True)
+#    auto = dict(win.image_view._heat)
+#    assert set(auto.values()) & {heat_color(0.0)}      # auto stretches to min
+#
+#    win.on_heat_range((0.0, 255.0))
+#    locked = win.image_view._heat
+#    assert locked != auto
+#    rid, v = next(iter(win._values.items()))
+#    assert locked[rid] == heat_color(v / 255.0)        # the value's own place
+#    assert win.image_view._heat_legend[:2] == (0.0, 255.0)
+#
+#    out = tmp_path / "p.pear.json"
+#    win.save_project(str(out))
+#    win2 = MainWindow()
+#    win2.set_image(make_field(), "f.png")
+#    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+#    assert win2._heat_range == (0.0, 255.0)
+#    assert win2.stage_bar.heat_range() == (0.0, 255.0)
+#    assert "255" in win2.stage_bar.scale_btn.text()    # the button says so
+#
+#    win.on_heat_range(None)                            # back to auto
+#    assert win.image_view._heat == auto
 #
 #
 #def test_export_chart_image_writes_png_and_svg(app, tmp_path):

@@ -13,7 +13,8 @@ import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,
                            QRegion)
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog,
+                               QDialogButtonBox, QDoubleSpinBox, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QMenu, QPushButton, QScrollArea, QSpinBox,
                                QToolButton, QVBoxLayout, QWidget)
@@ -141,6 +142,7 @@ class DistributionChart(QWidget):
         self._axis = "x"
         self._trend = True
         self._xlabel = ""
+        self._style: dict = {}
         self.setMinimumHeight(212)
         # a distribution reads as a figure at roughly 4:3; letterboxed across
         # a wide window it flattens and the page looks lopsided
@@ -150,9 +152,10 @@ class DistributionChart(QWidget):
 
     def set_data(self, title: str, series: List[dict], ctype: str = "box",
                  opts=None, axis: str = "x", trend: bool = True,
-                 xlabel: str = "") -> None:
+                 xlabel: str = "", style=None) -> None:
         self._title = title
         self._xlabel = xlabel or title
+        self._style = dict(style or {})
         self._ctype = ctype
         self._opts = {"points": True, "whiskers": True, "cells": True,
                       **(opts or {})}
@@ -196,13 +199,30 @@ class DistributionChart(QWidget):
     def heightForWidth(self, w: int) -> int:
         return int(max(240, min(w * 0.78, 560)))
 
+    # -- style overrides (title, axis names, tick counts, ranges) ------ #
+    def _st(self, key: str, default=None):
+        v = self._style.get(key)
+        return default if v is None or v == "" else v
+
+    def _nticks(self, key: str, default: int) -> int:
+        try:
+            return int(np.clip(int(self._st(key, default)), 2, 12))
+        except (TypeError, ValueError):
+            return default
+
+    def title_text(self) -> str:
+        """What the chart is called — the override, or the metric it plots."""
+        return str(self._st("title", self._title))
+
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.fillRect(self.rect(), QColor(theme.CARD))
         p.setPen(QColor(theme.INK))
-        p.setFont(theme.display_font(11, weight=700))
-        p.drawText(10, 16, self._title)
+        p.setFont(theme.display_font(12, weight=700))
+        # centred over the plot, where a figure caption goes
+        p.drawText(QRectF(8, 5, self.width() - 16, 19),
+                   Qt.AlignHCenter | Qt.AlignVCenter, self.title_text())
         if not self._series:
             p.setPen(QColor(theme.INK3))
             p.setFont(theme.mono_font(9))
@@ -244,6 +264,9 @@ class DistributionChart(QWidget):
         p.drawEllipse(QPointF(x, y), rad, rad)
 
     def _range(self):
+        vmin, vmax = self._st("vmin"), self._st("vmax")
+        if vmin is not None and vmax is not None and float(vmax) > float(vmin):
+            return float(vmin), float(vmax)     # locked: comparable between runs
         allv = np.concatenate([s["values"] for s in self._series])
         lo, hi = float(allv.min()), float(allv.max())
         if hi - lo < 1e-9:
@@ -290,7 +313,8 @@ class DistributionChart(QWidget):
             return lo - pad, hi + pad
 
         p.setFont(theme.mono_font(8))
-        gridys = [top + H * t / 4.0 for t in range(5)]
+        ny = self._nticks("yticks", 5)
+        gridys = [top + H * t / (ny - 1.0) for t in range(ny)]
         for t, gy in enumerate(gridys):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
@@ -299,9 +323,16 @@ class DistributionChart(QWidget):
             p.setPen(QColor(theme.INK3))
             p.drawText(QRectF(16, gy - 6, left - 20, 12),
                        Qt.AlignRight | Qt.AlignVCenter,
-                       _fmt(ghi - (ghi - glo) * t / 4.0))
+                       _fmt(ghi - (ghi - glo) * t / (ny - 1.0)))
         self._frame(p, left, top, right, bottom, yticks=() if own else gridys)
-        self._ytitle(p, "value · own scale per group" if own else "value")
+        self._ytitle(p, self._st("ylabel", "value · own scale per group"
+                                 if own else "value"))
+        xlab = self._st("xlabel", "")
+        if xlab:
+            p.setPen(QColor(theme.INK2))
+            p.setFont(theme.mono_font(8, weight=700))
+            p.drawText(QRectF(left, self.height() - 16, W, 13),
+                       Qt.AlignHCenter, str(xlab))
 
         lane = W / n
         for i, s in enumerate(self._series):
@@ -395,7 +426,9 @@ class DistributionChart(QWidget):
         # the gutter from the widest one rather than a fixed guess
         p.setFont(theme.mono_font(8))
         fm = p.fontMetrics()
-        ticks = [_fmt_span(hi - (hi - lo) * t / 4.0, hi - lo) for t in range(5)]
+        ny = self._nticks("yticks", 5)
+        ticks = [_fmt_span(hi - (hi - lo) * t / (ny - 1.0), hi - lo)
+                 for t in range(ny)]
         top = 34
         left = int(np.clip(max(fm.horizontalAdvance(t) for t in ticks) + 26,
                            46, 120))
@@ -412,24 +445,26 @@ class DistributionChart(QWidget):
             return bottom - (v - lo) / (hi - lo) * H
 
         # grid + value axis
-        gridys = [top + H * t / 4.0 for t in range(5)]
+        gridys = [top + H * t / (ny - 1.0) for t in range(ny)]
         for gy, lab in zip(gridys, ticks):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
             p.setPen(QColor(theme.INK3))
             p.drawText(QRectF(18, gy - 6, left - 24, 12),
                        Qt.AlignRight | Qt.AlignVCenter, lab)
-        self._ytitle(p, "value")
+        self._ytitle(p, self._st("ylabel", "value"))
 
         # position axis
-        xs = [left + W * t / 4.0 for t in range(5)]
+        nx = self._nticks("xticks", 5)
+        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
         self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
         p.setPen(QColor(theme.INK3))
         for t, gx in enumerate(xs):
             p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-                       f"{xlo + (xhi - xlo) * t / 4.0:.0f}")
+                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
         p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
-                   f"ROI centre {self._axis.upper()} (px)")
+                   str(self._st("xlabel",
+                                f"ROI centre {self._axis.upper()} (px)")))
 
         ly = bottom + 30
         for s in series:
@@ -553,6 +588,9 @@ class DistributionChart(QWidget):
         allx = np.concatenate([s["pos_x"] for s in series])
         ally = np.concatenate([s["pos_y"] for s in series])
         lo, hi = float(allv.min()), float(allv.max())
+        hmin, hmax = self._st("heat_vmin"), self._st("heat_vmax")
+        if hmin is not None and hmax is not None and float(hmax) > float(hmin):
+            lo, hi = float(hmin), float(hmax)   # locked: comparable between runs
         flat = (hi - lo) < 1e-9
         vspan = 1.0 if flat else hi - lo
 
@@ -610,18 +648,19 @@ class DistributionChart(QWidget):
         p.drawRect(int(left), int(top), int(W), int(H))
         p.setFont(theme.mono_font(8))
         p.setPen(QColor(theme.INK3))
-        for t in range(3):              # X ticks
-            gx = left + W * t / 2.0
+        nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
+        for t in range(nx):             # X ticks
+            gx = left + W * t / (nx - 1.0)
             p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
-                       f"{xlo + (xhi - xlo) * t / 2.0:.0f}")
-        for t in range(3):              # Y ticks (top = small y, like the image)
-            gy = top + H * t / 2.0
+                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
+        for t in range(ny):             # Y ticks (top = small y, like the image)
+            gy = top + H * t / (ny - 1.0)
             p.drawText(QRectF(6, gy - 6, left - 10, 12),
                        Qt.AlignRight | Qt.AlignVCenter,
-                       f"{ylo + (yhi - ylo) * t / 2.0:.0f}")
+                       f"{ylo + (yhi - ylo) * t / (ny - 1.0):.0f}")
         p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
-                   "ROI centre X (px)")
-        self._ytitle(p, "ROI centre Y (px)")
+                   str(self._st("xlabel", "ROI centre X (px)")))
+        self._ytitle(p, self._st("ylabel", "ROI centre Y (px)"))
 
         ring = len(series) > 1        # only needed to tell groups apart
         if cells:
@@ -692,6 +731,9 @@ class DistributionChart(QWidget):
                    Qt.AlignLeft, _fmt_span(hi, hi - lo))
         p.drawText(QRectF(bx + bw + 2, top + bh - 10, cbar_w - bw - 4, 12),
                    Qt.AlignLeft, _fmt_span(lo, hi - lo))
+        if hmin is not None and hmax is not None:
+            p.drawText(QRectF(bx - 2, top - 15, cbar_w, 12), Qt.AlignLeft,
+                       "locked")
 
         u = uniformity(allv)
         txt = (f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
@@ -727,7 +769,8 @@ class DistributionChart(QWidget):
         else:
             bars = [c.astype(np.float64) for c in counts]
         peak = max([float(b.max()) for b in bars] + [0.0])
-        step = _nice_step(peak if peak > 0 else 1.0, 4)
+        ny = self._nticks("yticks", 5)
+        step = _nice_step(peak if peak > 0 else 1.0, ny - 1)
         if not pct:
             step = max(1.0, round(step))        # counts are whole numbers
         ymax = max(step, float(np.ceil(peak / step) * step))
@@ -777,19 +820,21 @@ class DistributionChart(QWidget):
                 y = Y(float(b[k]))
                 p.drawRect(QRectF(x0, y, max(1.0, x1 - x0), bottom - y))
         span = hi - lo
-        xs = [left + W * t / 4.0 for t in range(5)]
+        nx = self._nticks("xticks", 5)
+        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
         self._frame(p, left, top, right, bottom, xticks=xs,
                     yticks=[Y(v) for v in yticks])
         p.setFont(theme.mono_font(8))
         p.setPen(QColor(theme.INK3))
         for t, gx in enumerate(xs):
             p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
-                       _fmt_span(lo + span * t / 4.0, span))
+                       _fmt_span(lo + span * t / (nx - 1.0), span))
         p.setPen(QColor(theme.INK2))
         p.setFont(theme.mono_font(8, weight=700))
         p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
-                   self._xlabel or "value")
-        self._ytitle(p, "share of group (%)" if pct else "count")
+                   str(self._st("xlabel", self._xlabel or "value")))
+        self._ytitle(p, self._st("ylabel", "share of group (%)" if pct
+                                 else "count (ROIs)"))
         self._legend(p, left, top, right,
                      [(s["label"], s["color"], f"n={s['values'].size}")
                       for s in self._series])
@@ -1002,12 +1047,14 @@ class StageBar(QWidget):
     cells_changed = Signal(bool)        # spread the heat over the ROI's cell
     outliers_changed = Signal(bool)
     heat_alpha_changed = Signal(int)    # percent
+    heat_range_changed = Signal(object)  # (vmin, vmax) or None for auto
     export_image_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("StageBar")
         self._show = ""
+        self._heat_range = None         # locked colour range, or None for auto
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 7, 12, 7)
         lay.setSpacing(10)
@@ -1059,6 +1106,13 @@ class StageBar(QWidget):
         lay.addWidget(op)
         lay.addWidget(self.alpha_spin)
         lay.addStretch(1)
+        self.scale_btn = QPushButton("scale…")
+        self.scale_btn.setFixedHeight(26)
+        self.scale_btn.setToolTip(
+            "Lock the heat colours to a fixed range, so the same colour means "
+            "the same grey level on every image you open.")
+        self.scale_btn.clicked.connect(self.edit_heat_range)
+        lay.addWidget(self.scale_btn)
         self.image_btn = QPushButton("Export image")
         self.image_btn.setFixedHeight(26)
         self.image_btn.setToolTip(
@@ -1101,8 +1155,50 @@ class StageBar(QWidget):
 
     def _gate(self) -> None:
         on = self.heatmap_chk.isChecked()
-        self.cells_chk.setEnabled(on)     # both only bite on a heat fill
-        self.alpha_spin.setEnabled(on)
+        for w in (self.cells_chk, self.alpha_spin, self.scale_btn):
+            w.setEnabled(on)              # all three only bite on a heat fill
+
+    def set_heat_range(self, rng) -> None:
+        """Restore the locked colour range (or None for auto)."""
+        self._heat_range = tuple(rng) if rng else None
+        self._label_scale()
+
+    def heat_range(self):
+        return self._heat_range
+
+    def _label_scale(self) -> None:
+        r = self._heat_range
+        self.scale_btn.setText("scale…" if not r
+                               else f"{r[0]:.4g} – {r[1]:.4g}")
+
+    def edit_heat_range(self) -> None:
+        style = ({} if not self._heat_range
+                 else {"heat_vmin": self._heat_range[0],
+                       "heat_vmax": self._heat_range[1]})
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Heat colour scale")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
+        row, auto, lo, hi = _num_row("grey level", style,
+                                     "heat_vmin", "heat_vmax")
+        lay.addLayout(row)
+        hint = QLabel("With auto, the colours span this image's own min and "
+                      "max — the same colour means a different value on the "
+                      "next image. Lock the range to compare across images.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        rng = (None if auto.isChecked() or hi.value() <= lo.value()
+               else (lo.value(), hi.value()))
+        self.set_heat_range(rng)
+        self.heat_range_changed.emit(rng)
 
     def _on_heatmap(self, on: bool) -> None:
         self._gate()
@@ -1111,6 +1207,174 @@ class StageBar(QWidget):
     def _on_show(self, _i: int) -> None:
         self._show = self.show_combo.currentData() or ""
         self.show_changed.emit(self._show)
+
+
+# --------------------------------------------------------------------------- #
+# Chart settings — what a figure is called and how its axes are scaled
+# --------------------------------------------------------------------------- #
+def _num_row(label: str, style: dict, kmin: str, kmax: str, unit: str = ""):
+    """An "auto / from … to …" range row. Returns (layout, auto, lo, hi)."""
+    row = QHBoxLayout()
+    row.setSpacing(6)
+    lab = QLabel(label)
+    lab.setObjectName("Hint")
+    lab.setMinimumWidth(96)
+    auto = QCheckBox("auto")
+    lo, hi = QDoubleSpinBox(), QDoubleSpinBox()
+    for sp in (lo, hi):
+        sp.setRange(-1e9, 1e9)
+        sp.setDecimals(3)
+        sp.setMinimumWidth(96)
+        if unit:
+            sp.setSuffix(unit)
+    have = style.get(kmin) is not None and style.get(kmax) is not None
+    auto.setChecked(not have)
+    if have:
+        lo.setValue(float(style[kmin]))
+        hi.setValue(float(style[kmax]))
+    for sp in (lo, hi):
+        sp.setEnabled(have)
+    auto.toggled.connect(lambda on: [sp.setEnabled(not on) for sp in (lo, hi)])
+    row.addWidget(lab)
+    row.addWidget(auto)
+    row.addWidget(QLabel("from"))
+    row.addWidget(lo)
+    row.addWidget(QLabel("to"))
+    row.addWidget(hi)
+    row.addStretch(1)
+    return row, auto, lo, hi
+
+
+class ChartSettingsDialog(QDialog):
+    """Rename the figures and set their axes by hand.
+
+    Auto scaling is right while you are looking; it is wrong the moment you
+    put two runs side by side, because each picks its own range. Everything
+    here is an override — leave a field blank or on *auto* and the chart goes
+    back to deciding for itself.
+    """
+
+    def __init__(self, parent, chart_titles: List[str], style: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Chart settings")
+        self.setMinimumWidth(460)
+        style = dict(style or {})
+        titles = dict(style.get("titles") or {})
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+
+        head = QLabel("Titles")
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(12, weight=700))
+        root.addWidget(head)
+        self._title_edits = {}
+        for name in chart_titles:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            lab = QLabel(name)
+            lab.setObjectName("Hint")
+            lab.setMinimumWidth(96)
+            ed = QLineEdit(titles.get(name, ""))
+            ed.setPlaceholderText(name)
+            ed.setMinimumHeight(28)
+            self._title_edits[name] = ed
+            row.addWidget(lab)
+            row.addWidget(ed, 1)
+            root.addLayout(row)
+
+        head = QLabel("Axes")
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(12, weight=700))
+        root.addWidget(head)
+        self.x_edit = QLineEdit(style.get("xlabel") or "")
+        self.x_edit.setPlaceholderText("(default for this chart type)")
+        self.y_edit = QLineEdit(style.get("ylabel") or "")
+        self.y_edit.setPlaceholderText("(default for this chart type)")
+        for lab, ed in (("X axis name", self.x_edit), ("Y axis name", self.y_edit)):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            l = QLabel(lab)
+            l.setObjectName("Hint")
+            l.setMinimumWidth(96)
+            ed.setMinimumHeight(28)
+            row.addWidget(l)
+            row.addWidget(ed, 1)
+            root.addLayout(row)
+        trow = QHBoxLayout()
+        trow.setSpacing(6)
+        tl = QLabel("ticks")
+        tl.setObjectName("Hint")
+        tl.setMinimumWidth(96)
+        self.xt_spin, self.yt_spin = QSpinBox(), QSpinBox()
+        for sp, key, default in ((self.xt_spin, "xticks", 5),
+                                 (self.yt_spin, "yticks", 5)):
+            sp.setRange(2, 12)
+            sp.setValue(int(style.get(key) or default))
+            sp.setMinimumHeight(28)
+            sp.setFixedWidth(70)
+        trow.addWidget(tl)
+        trow.addWidget(QLabel("X"))
+        trow.addWidget(self.xt_spin)
+        trow.addWidget(QLabel("Y"))
+        trow.addWidget(self.yt_spin)
+        trow.addStretch(1)
+        root.addLayout(trow)
+        tip = QLabel("A count axis rounds to whole steps, so it lands near "
+                     "that number rather than exactly on it.")
+        tip.setObjectName("Hint")
+        tip.setWordWrap(True)
+        root.addWidget(tip)
+
+        head = QLabel("Scales")
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(12, weight=700))
+        root.addWidget(head)
+        vrow, self.v_auto, self.v_lo, self.v_hi = _num_row(
+            "value axis", style, "vmin", "vmax")
+        hrow, self.h_auto, self.h_lo, self.h_hi = _num_row(
+            "heat colours", style, "heat_vmin", "heat_vmax")
+        root.addLayout(vrow)
+        root.addLayout(hrow)
+        hint = QLabel("Locked scales are what make two images, two lots or two "
+                      "days comparable — with auto, each picks its own range.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        reset = buttons.addButton("Reset", QDialogButtonBox.ResetRole)
+        reset.clicked.connect(self._reset)
+        root.addWidget(buttons)
+
+    def _reset(self) -> None:
+        for ed in list(self._title_edits.values()) + [self.x_edit, self.y_edit]:
+            ed.clear()
+        self.xt_spin.setValue(5)
+        self.yt_spin.setValue(5)
+        self.v_auto.setChecked(True)
+        self.h_auto.setChecked(True)
+
+    def result_style(self) -> dict:
+        """The overrides, with anything left at its default omitted."""
+        out: dict = {}
+        titles = {k: ed.text().strip() for k, ed in self._title_edits.items()
+                  if ed.text().strip()}
+        if titles:
+            out["titles"] = titles
+        for key, ed in (("xlabel", self.x_edit), ("ylabel", self.y_edit)):
+            if ed.text().strip():
+                out[key] = ed.text().strip()
+        out["xticks"] = int(self.xt_spin.value())
+        out["yticks"] = int(self.yt_spin.value())
+        if not self.v_auto.isChecked() and self.v_hi.value() > self.v_lo.value():
+            out["vmin"], out["vmax"] = self.v_lo.value(), self.v_hi.value()
+        if not self.h_auto.isChecked() and self.h_hi.value() > self.h_lo.value():
+            out["heat_vmin"], out["heat_vmax"] = (self.h_lo.value(),
+                                                  self.h_hi.value())
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1620,6 +1884,12 @@ class AnalysisPanel(QWidget):
         self.sub = QLabel("")
         self.sub.setObjectName("Hint")
         head.addWidget(self.sub)
+        self.axes_btn = QPushButton("Chart settings…")
+        self.axes_btn.setToolTip(
+            "Rename the figures, name the axes, set the tick counts and lock "
+            "the value and heat scales.")
+        self.axes_btn.clicked.connect(self.edit_chart_settings)
+        head.addWidget(self.axes_btn)
         self.image_btn = QToolButton()
         self.image_btn.setText("Export image ▾")
         self.image_btn.setPopupMode(QToolButton.InstantPopup)
@@ -1654,6 +1924,7 @@ class AnalysisPanel(QWidget):
         self._suppress = False
         self._cards: dict = {}          # scope -> the widget to export
         self._chart_widgets: List[DistributionChart] = []
+        self._style: dict = {}          # title / axis / tick / scale overrides
         self._main = self.body_lay      # figures column
         self._side = self.body_lay      # annotations column
 
@@ -1698,6 +1969,30 @@ class AnalysisPanel(QWidget):
     def _on_chart_opts(self, _=False) -> None:
         if self._last_result is not None:
             self._render_body(self._last_result)
+
+    # -- chart settings ------------------------------------------------ #
+    def chart_style(self) -> dict:
+        """The title / axis / tick / scale overrides — saved with the project."""
+        return dict(self._style)
+
+    def set_chart_style(self, style) -> None:
+        self._style = dict(style or {})
+        if self._last_result is not None:
+            self._render_body(self._last_result)
+
+    def edit_chart_settings(self) -> None:
+        names = [c._title for c in self._chart_widgets] or ["chart"]
+        dlg = ChartSettingsDialog(self, names, self._style)
+        if dlg.exec() == QDialog.Accepted:
+            self.set_chart_style(dlg.result_style())
+
+    def _style_for(self, title: str) -> dict:
+        """The shared overrides plus this chart's own title, if it has one."""
+        st = {k: v for k, v in self._style.items() if k != "titles"}
+        custom = (self._style.get("titles") or {}).get(title)
+        if custom:
+            st["title"] = custom
+        return st
 
     def chart_state(self) -> tuple:
         """(chart type, position axis) — persisted with the project."""
@@ -1806,7 +2101,7 @@ class AnalysisPanel(QWidget):
                 # one figure per file is what a document actually takes
                 for i, c in enumerate(self._chart_widgets):
                     self._image_menu.addAction(
-                        f"    {c._title}…",
+                        f"    {c.title_text()}…",
                         lambda _=False, k=f"chart:{i}":
                         self.export_image_requested.emit(k))
         self.image_btn.setEnabled(bool(scopes))
@@ -1970,7 +2265,7 @@ class AnalysisPanel(QWidget):
             chart = DistributionChart()
             chart.set_data(title, series, self._chart_type, opts,
                            axis=self._pos_axis, trend=self.trend_chk.isChecked(),
-                           xlabel=title)
+                           xlabel=title, style=self._style_for(title))
             self._chart_widgets.append(chart)
             if wide:
                 grid.addWidget(chart, i, 0, 1, 3)

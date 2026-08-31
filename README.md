@@ -90,6 +90,15 @@ needs: a boxed plot area with inward tick marks, labelled axes, and
 observations drawn as **open markers** so a scatter never fuses into the lines
 drawn in the same colour beside it.
 
+**Chart settings…** makes each figure yours: **rename** it (the title sits
+centred above the plot, and the export menu follows the new name), give the
+**axes your own names**, set the **tick counts**, and **lock the value axis or
+the heat colours to a fixed range** — auto scaling is right while you are
+looking at one run and wrong the moment you put two side by side, because each
+picks its own range. The image overlay has the same lock under **scale…** on
+the stage bar, so the same colour means the same grey level on every image you
+open. All of it saves with the project.
+
 **CSV export** carries every ROI's metrics and a per-group summary.
 
 ## Every view exports as a picture
@@ -153,8 +162,9 @@ vertical intensity profiles.
 
 - Fully **offline** — no network, no telemetry, all computation local.
 - **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-  metrics, and view state (overlay toggles, heat opacity, ROI list order, the
-  chart type and position axis);
+  metrics, and view state (overlay toggles, heat opacity and locked range, ROI
+  list order, chart titles / axis names / ticks / locked scales, the chart type
+  and position axis);
   reopen to pick up where you left off.
 - Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
   normalized to 8-bit grayscale on load (CJK-path safe IO).
@@ -211,7 +221,8 @@ pytest                              # headless core + offscreen UI smoke
   chart aspect, position profile + heat map (cells / dots / values),
   independent ROI overlay toggles, field fill, value-label fitting, fit across
   a resize, ROI list values / ordering, align buttons, status headline,
-  per-lane box scale, list rebuilds leaving no stale rows.
+  per-lane box scale, chart settings (titles, axis names, ticks, locked value
+  and heat scales), list rebuilds leaving no stale rows.
 
 ## Repository layout
 
