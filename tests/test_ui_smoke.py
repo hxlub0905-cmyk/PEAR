@@ -936,7 +936,9 @@ def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):
 
     dlg._reset()                                 # Reset clears every override
     assert dlg.result_style() == {"xticks": 5, "yticks": 5, "font_pt": 8.0,
-                                  "point_size": 3.2, "line_width": 2.2}
+                                  "label_pt": 8.0, "tick_bold": False,
+                                  "label_bold": True, "point_size": 3.2,
+                                  "line_width": 2.2}
 
 
 def test_heat_scale_locks_the_image_overlay(app, tmp_path):
@@ -1017,6 +1019,16 @@ def test_chart_text_and_marks_are_adjustable(app):
     back = dlg.result_style()
     assert back["font_pt"] == 8.0 and "point_color" not in back
 
+    # the tick values take their own size and weight, the axis names another
+    ap.set_chart_style({"font_pt": 7.0, "tick_bold": True, "label_pt": 14.0,
+                        "label_bold": False})
+    app.processEvents()
+    c = [x for x in ap._chart_widgets if x._ctype == "box"][-1]
+    assert c._font().bold() and c._font().pointSizeF() == pytest.approx(7.0)
+    assert not c._label_font().bold()
+    assert c._label_font().pointSizeF() == pytest.approx(14.0, abs=0.5)
+    c.grab()
+
 
 def test_right_drag_pans_while_placing_a_grid(app):
     """Reaching the far corner is exactly when panning matters."""
@@ -1041,6 +1053,49 @@ def test_right_drag_pans_while_placing_a_grid(app):
     assert iv._offset.y() == pytest.approx(before.y() + 40.0)
     assert iv._grid_stage == 0        # panning placed no grid anchor
     assert win._rois == []
+
+
+def test_legend_is_opt_in_and_nothing_else_sits_under_the_axis(app):
+    """The key is furniture: off by default, and it holds the numbers that
+    used to crowd the axis."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+
+    for ctype in ("box", "hist"):
+        ap._pick_ctype(ctype)
+        app.processEvents()
+        assert not ap.legend_chk.isHidden() and not ap.legend_chk.isChecked()
+        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+        assert c._opts["legend"] is False and not c._legend_on()
+        c.grab()
+    ap.legend_chk.setChecked(True)
+    app.processEvents()
+    c = [x for x in ap._chart_widgets if x._ctype == "hist"][-1]
+    assert c._legend_on()
+    c.grab()
+
+    ap._pick_ctype("map")                 # a map has no legend to offer
+    assert ap.legend_chk.isHidden()
+
+    # the profile's per-group numbers ride in the key now, not below the axis
+    win.on_cmp_mode("within")
+    win.on_within_group(win._groups[0].gid)
+    win.render_analysis_sync()
+    ap._pick_ctype("position")
+    app.processEvents()
+    prof = [x for x in ap._chart_widgets if x._ctype == "position"][-1]
+    assert len(prof._line_key_rows()) == 3
+    prof.grab()
+    ap.legend_chk.setChecked(False)
+    app.processEvents()
+    [x for x in ap._chart_widgets if x._ctype == "position"][-1].grab()
 
 
 def test_export_chart_image_writes_png_and_svg(app, tmp_path):

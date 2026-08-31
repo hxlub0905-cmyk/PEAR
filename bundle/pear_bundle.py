@@ -4115,7 +4115,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 7622c402a30e62e748509fd41713e317b992f2b5 2798 pear/ui/widgets.py
+#F 96c34e0de370b9332810249dd03ffe88080931c3 2852 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -4313,7 +4313,7 @@ if __name__ == "__main__":
 #            clean.append(item)
 #        self._series = clean
 #        if ctype == "position":
-#            self.setMinimumHeight(300 + 15 * len(clean))
+#            self.setMinimumHeight(300)
 #        elif ctype == "map":
 #            self.setMinimumHeight(320)
 #        else:
@@ -4349,15 +4349,30 @@ if __name__ == "__main__":
 #        return default if v is None or v == "" else v
 #
 #    def _font(self, delta: int = 0, weight=None):
-#        """Axis text at the size the user asked for (8 pt by default)."""
+#        """Tick-value text: the size the user asked for (8 pt by default),
+#        bold if they asked for that too."""
 #        size = self._st("font_pt", 8)
 #        try:
 #            size = float(size)
 #        except (TypeError, ValueError):
 #            size = 8.0
 #        size = float(np.clip(size + delta, 5.0, 24.0))
+#        if weight is None and self._st("tick_bold", False):
+#            weight = 700
 #        return (theme.mono_font(size, weight=weight) if weight
 #                else theme.mono_font(size))
+#
+#    def _label_font(self):
+#        """Axis-name text — its own size and weight, so the names can carry
+#        the figure while the tick values stay small (or the other way round)."""
+#        size = self._st("label_pt", self._st("font_pt", 8))
+#        try:
+#            size = float(size)
+#        except (TypeError, ValueError):
+#            size = 8.0
+#        size = float(np.clip(size, 5.0, 24.0))
+#        bold = self._st("label_bold", True)
+#        return theme.mono_font(size, weight=700 if bold else 500)
 #
 #    def _axis_ink(self) -> "QColor":
 #        """Tick and axis-name ink. Dark by default — a chart that ends up in a
@@ -4454,7 +4469,7 @@ if __name__ == "__main__":
 #
 #    def _ytitle(self, p: QPainter, text: str) -> None:
 #        p.save()
-#        p.setFont(self._font())
+#        p.setFont(self._label_font())
 #        p.setPen(self._axis_ink())
 #        tw = p.fontMetrics().horizontalAdvance(text)
 #        p.translate(11, self.height() / 2.0)
@@ -4507,7 +4522,7 @@ if __name__ == "__main__":
 #        xlab = self._st("xlabel", "")
 #        if xlab:
 #            p.setPen(self._axis_ink())
-#            p.setFont(self._font(weight=700))
+#            p.setFont(self._label_font())
 #            p.drawText(QRectF(left, self.height() - 16, W, 13),
 #                       Qt.AlignHCenter, str(xlab))
 #
@@ -4555,8 +4570,8 @@ if __name__ == "__main__":
 #            # label below the column
 #            p.setPen(self._axis_ink())
 #            p.setFont(self._font())
-#            lab = p.fontMetrics().elidedText(
-#                f"{s['label']} · n={v.size}", Qt.ElideRight, int(lane))
+#            lab = p.fontMetrics().elidedText(str(s["label"]), Qt.ElideRight,
+#                                             int(lane))
 #            p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
 #                       Qt.AlignHCenter | Qt.AlignVCenter, lab)
 #            if not own:
@@ -4568,6 +4583,10 @@ if __name__ == "__main__":
 #            p.drawText(QRectF(cx - lane / 2, bottom + 18, lane, 13),
 #                       Qt.AlignHCenter | Qt.AlignVCenter,
 #                       f"{_fmt_span(vmin, span)} … {_fmt_span(vmax, span)}")
+#        if self._legend_on():
+#            self._legend(p, left, top, right,
+#                         [(s["label"], s["color"], f"n={s['values'].size}")
+#                          for s in self._series])
 #
 #    # -- position profile (metric vs. where the ROI sits) -------------- #
 #    def _paint_position(self, p: QPainter) -> None:
@@ -4610,8 +4629,7 @@ if __name__ == "__main__":
 #        top = 34
 #        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ticks) + 26,
 #                           46, 120))
-#        legend_h = 15 * len(series)
-#        bottom = max(top + 40, self.height() - (32 + legend_h))
+#        bottom = max(top + 40, self.height() - 40)
 #        right = self.width() - 12
 #        H = max(10, bottom - top)
 #        W = max(10, right - left)
@@ -4640,11 +4658,12 @@ if __name__ == "__main__":
 #        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
 #                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
-#        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
+#        p.setFont(self._label_font())
+#        p.drawText(QRectF(left, bottom + 16, W, 14), Qt.AlignHCenter,
 #                   str(self._st("xlabel",
 #                                f"ROI centre {self._axis.upper()} (px)")))
 #
-#        ly = bottom + 30
+#        rows = []
 #        for s in series:
 #            col = QColor(s["color"])
 #            px_, v = s[key], s["values"]
@@ -4692,56 +4711,28 @@ if __name__ == "__main__":
 #                for a, b in zip(pts, pts[1:]):
 #                    p.drawLine(a, b)
 #
-#            # legend row: the flatness numbers, no verdict
+#            # the flatness numbers ride in the legend, not under the axis:
+#            # below the plot they crowd the axis name and get clipped
 #            u = uniformity(v)
-#            txt = (f"{s['label']} · n={u['n']}"
+#            txt = (f"n={u['n']}"
 #                   f" · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
 #                   f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
 #                   f" · CV {_pct(u['cv_pct'])}")
 #            if fit is not None:
 #                txt += f" · slope {fit[0] * 100:+.3g}/100px"
-#            p.setBrush(col)
-#            p.setPen(Qt.NoPen)
-#            p.drawRect(int(left), int(ly) + 2, 8, 8)
-#            p.setPen(self._axis_ink())
-#            p.setFont(self._font())
-#            p.drawText(QRectF(left + 12, ly - 2, W - 12, 14),
-#                       Qt.AlignLeft | Qt.AlignVCenter,
-#                       p.fontMetrics().elidedText(txt, Qt.ElideRight,
-#                                                  int(W - 14)))
-#            ly += 15
-#        self._line_key(p, left, top, right)
+#            rows.append((s["label"], s["color"], txt))
+#        if self._legend_on():
+#            self._legend(p, left, top, right, rows,
+#                         keys=self._line_key_rows())
 #
-#    def _line_key(self, p: QPainter, left, top, right) -> None:
+#    def _line_key_rows(self):
 #        """What each line in the profile means — three of them look alike."""
-#        rows = [("profile — mean at each position",
+#        return [("profile — mean at each position",
 #                 QColor(theme.INK2), Qt.SolidLine),
 #                ("trend — least squares fit",
 #                 QColor(theme.AMBER), Qt.DashLine),
 #                ("group mean — where flat would sit",
 #                 QColor(theme.INK3), Qt.DashLine)]
-#        p.setFont(self._font())
-#        fm = p.fontMetrics()
-#        wid = max(fm.horizontalAdvance(t) for t, _c, _st in rows) + 42
-#        hgt = 6 + 13 * len(rows)
-#        x = max(left + 4, right - wid - 4)
-#        box = QRectF(x, top + 4, wid, hgt)
-#        bg = QColor(theme.CARD)
-#        bg.setAlpha(225)
-#        p.setPen(QPen(QColor(theme.LINE), 1))
-#        p.setBrush(bg)
-#        p.drawRect(box)
-#        y = box.top() + 3
-#        for text, color, style in rows:
-#            pen = QPen(color, 1.8)
-#            pen.setStyle(style)
-#            p.setPen(pen)
-#            p.drawLine(QPointF(box.left() + 6, y + 6.5),
-#                       QPointF(box.left() + 30, y + 6.5))
-#            p.setPen(self._axis_ink())
-#            p.drawText(QRectF(box.left() + 36, y, wid - 40, 13),
-#                       Qt.AlignLeft | Qt.AlignVCenter, text)
-#            y += 13
 #
 #    # -- spatial heat map (ROI layout coloured by the metric) ---------- #
 #    def _paint_map(self, p: QPainter) -> None:
@@ -5069,24 +5060,37 @@ if __name__ == "__main__":
 #            p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
 #                       _fmt_span(lo + span * t / (nx - 1.0), span))
 #        p.setPen(self._axis_ink())
-#        p.setFont(self._font(weight=700))
+#        p.setFont(self._label_font())
 #        p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
 #                   str(self._st("xlabel", self._xlabel or "value")))
 #        self._ytitle(p, self._st("ylabel", "share of group (%)" if pct
 #                                 else "count (ROIs)"))
-#        self._legend(p, left, top, right,
-#                     [(s["label"], s["color"], f"n={s['values'].size}")
-#                      for s in self._series])
+#        if self._legend_on():
+#            self._legend(p, left, top, right,
+#                         [(s["label"], s["color"], f"n={s['values'].size}")
+#                          for s in self._series])
 #
-#    def _legend(self, p: QPainter, left, top, right, rows) -> None:
-#        """Keyed legend, boxed at the top right of the plot area."""
-#        if not rows:
+#    def _legend_on(self) -> bool:
+#        """Legends are opt-in: on a figure with two series it is furniture,
+#        and it sits on top of the data."""
+#        return bool(self._opts.get("legend", False))
+#
+#    def _legend(self, p: QPainter, left, top, right, rows, keys=()) -> None:
+#        """Keyed legend, boxed at the top right of the plot area.
+#
+#        ``rows`` are ``(label, colour, extra)`` swatch entries; ``keys`` are
+#        ``(text, colour, pen style)`` line samples, drawn above them.
+#        """
+#        if not rows and not keys:
 #            return
 #        p.setFont(self._font(weight=700))
 #        fm = p.fontMetrics()
 #        texts = [f"{lab}  {extra}" if extra else lab for lab, _c, extra in rows]
-#        wid = max(fm.horizontalAdvance(t) for t in texts) + 26
-#        hgt = 6 + 13 * len(rows)
+#        widest = max([fm.horizontalAdvance(t) for t in texts] +
+#                     [fm.horizontalAdvance(t) + 16 for t, _c, _s in keys])
+#        line_h = fm.height() + 3
+#        wid = widest + 26
+#        hgt = 6 + line_h * (len(rows) + len(keys))
 #        x = max(left + 4, right - wid - 4)
 #        box = QRectF(x, top + 4, wid, hgt)
 #        bg = QColor(theme.CARD)
@@ -5095,14 +5099,24 @@ if __name__ == "__main__":
 #        p.setBrush(bg)
 #        p.drawRect(box)
 #        y = box.top() + 3
+#        for text, color, style in keys:
+#            pen = QPen(QColor(color), 1.8)
+#            pen.setStyle(style)
+#            p.setPen(pen)
+#            p.drawLine(QPointF(box.left() + 6, y + line_h / 2),
+#                       QPointF(box.left() + 24, y + line_h / 2))
+#            p.setPen(self._axis_ink())
+#            p.drawText(QRectF(box.left() + 30, y, wid - 34, line_h),
+#                       Qt.AlignLeft | Qt.AlignVCenter, text)
+#            y += line_h
 #        for (lab, color, _extra), txt in zip(rows, texts):
 #            p.setPen(Qt.NoPen)
 #            p.setBrush(QColor(color))
-#            p.drawRect(QRectF(box.left() + 6, y + 3, 9, 7))
+#            p.drawRect(QRectF(box.left() + 6, y + line_h / 2 - 4, 9, 8))
 #            p.setPen(self._axis_ink())
-#            p.drawText(QRectF(box.left() + 20, y, wid - 24, 13),
+#            p.drawText(QRectF(box.left() + 20, y, wid - 24, line_h),
 #                       Qt.AlignLeft | Qt.AlignVCenter, txt)
-#            y += 13
+#            y += line_h
 #
 #
 #def _nice_step(span: float, target: int = 4) -> float:
@@ -5679,18 +5693,42 @@ if __name__ == "__main__":
 #        self.line_spin.setSingleStep(0.2)
 #        self.line_spin.setSuffix(" px")
 #        self.line_spin.setValue(float(style.get("line_width") or 2.2))
-#        for sp in (self.font_spin, self.point_spin, self.line_spin):
+#        self.label_spin = QDoubleSpinBox()
+#        self.label_spin.setRange(5, 24)
+#        self.label_spin.setDecimals(1)
+#        self.label_spin.setSingleStep(0.5)
+#        self.label_spin.setSuffix(" pt")
+#        self.label_spin.setValue(float(style.get("label_pt")
+#                                       or style.get("font_pt") or 8))
+#        self.tick_bold_chk = QCheckBox("bold")
+#        self.tick_bold_chk.setChecked(bool(style.get("tick_bold", False)))
+#        self.label_bold_chk = QCheckBox("bold")
+#        self.label_bold_chk.setChecked(bool(style.get("label_bold", True)))
+#        for sp in (self.font_spin, self.label_spin, self.point_spin,
+#                   self.line_spin):
 #            sp.setMinimumHeight(28)
-#            sp.setFixedWidth(88)
+#            sp.setFixedWidth(84)
 #        mrow.addWidget(ml)
-#        mrow.addWidget(QLabel("axis text"))
+#        mrow.addWidget(QLabel("ticks"))
 #        mrow.addWidget(self.font_spin)
-#        mrow.addWidget(QLabel("point"))
-#        mrow.addWidget(self.point_spin)
-#        mrow.addWidget(QLabel("line"))
-#        mrow.addWidget(self.line_spin)
+#        mrow.addWidget(self.tick_bold_chk)
+#        mrow.addWidget(QLabel("axis names"))
+#        mrow.addWidget(self.label_spin)
+#        mrow.addWidget(self.label_bold_chk)
 #        mrow.addStretch(1)
 #        root.addLayout(mrow)
+#        mrow2 = QHBoxLayout()
+#        mrow2.setSpacing(6)
+#        ml2 = QLabel("marks")
+#        ml2.setObjectName("Hint")
+#        ml2.setMinimumWidth(96)
+#        mrow2.addWidget(ml2)
+#        mrow2.addWidget(QLabel("point"))
+#        mrow2.addWidget(self.point_spin)
+#        mrow2.addWidget(QLabel("line"))
+#        mrow2.addWidget(self.line_spin)
+#        mrow2.addStretch(1)
+#        root.addLayout(mrow2)
 #
 #        crow = QHBoxLayout()
 #        crow.setSpacing(6)
@@ -5774,6 +5812,9 @@ if __name__ == "__main__":
 #        self.v_auto.setChecked(True)
 #        self.h_auto.setChecked(True)
 #        self.font_spin.setValue(8.0)
+#        self.label_spin.setValue(8.0)
+#        self.tick_bold_chk.setChecked(False)
+#        self.label_bold_chk.setChecked(True)
 #        self.point_spin.setValue(3.2)
 #        self.line_spin.setValue(2.2)
 #        for state in self._colors.values():
@@ -5792,6 +5833,9 @@ if __name__ == "__main__":
 #        out["xticks"] = int(self.xt_spin.value())
 #        out["yticks"] = int(self.yt_spin.value())
 #        out["font_pt"] = round(float(self.font_spin.value()), 1)
+#        out["label_pt"] = round(float(self.label_spin.value()), 1)
+#        out["tick_bold"] = bool(self.tick_bold_chk.isChecked())
+#        out["label_bold"] = bool(self.label_bold_chk.isChecked())
 #        out["point_size"] = round(float(self.point_spin.value()), 1)
 #        out["line_width"] = round(float(self.line_spin.value()), 1)
 #        for key, state in self._colors.items():
@@ -6271,6 +6315,14 @@ if __name__ == "__main__":
 #        self.pct_chk.toggled.connect(self._on_chart_opts)
 #        self.pct_chk.setVisible(False)
 #        head.addWidget(self.pct_chk)
+#        self.legend_chk = QCheckBox("legend")
+#        self.legend_chk.setToolTip(
+#            "Show the key in the plot's top-right corner — the groups with "
+#            "their n, and for a profile what each line means. Off by default: "
+#            "on a figure with two series it is furniture, and it sits on top "
+#            "of the data.")
+#        self.legend_chk.toggled.connect(self._on_chart_opts)
+#        head.addWidget(self.legend_chk)
 #        self.ownscale_chk = QCheckBox("own scale")
 #        self.ownscale_chk.setToolTip(
 #            "Give every group its own value range, printed under the lane. "
@@ -6385,6 +6437,7 @@ if __name__ == "__main__":
 #            chk.setEnabled(t == "box")
 #            chk.setVisible(t not in ("position", "map"))
 #        self.ownscale_chk.setVisible(t == "box")
+#        self.legend_chk.setVisible(t in ("box", "hist", "position"))
 #        for w in (self.bins_spin, self.pct_chk):
 #            w.setVisible(t == "hist")
 #        self.axis_box.setVisible(t == "position")
@@ -6699,6 +6752,7 @@ if __name__ == "__main__":
 #        opts = {"points": self.points_chk.isChecked(),
 #                "whiskers": self.whiskers_chk.isChecked(),
 #                "own_scale": self.ownscale_chk.isChecked(),
+#                "legend": self.legend_chk.isChecked(),
 #                "bins": int(self.bins_spin.value()),
 #                "hist_pct": self.pct_chk.isChecked(),
 #                "cells": self.cells_chk.isChecked(),
@@ -7519,7 +7573,7 @@ if __name__ == "__main__":
 #    assert list(s.pos_x) == [6.0, 34.0]
 #
 #
-#F d52074de444df8727fe6cc282318c05882845523 1248 tests/test_ui_smoke.py
+#F fc41765a7ede20406f19a247fc8c61027050c3cc 1303 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -8458,7 +8512,9 @@ if __name__ == "__main__":
 #
 #    dlg._reset()                                 # Reset clears every override
 #    assert dlg.result_style() == {"xticks": 5, "yticks": 5, "font_pt": 8.0,
-#                                  "point_size": 3.2, "line_width": 2.2}
+#                                  "label_pt": 8.0, "tick_bold": False,
+#                                  "label_bold": True, "point_size": 3.2,
+#                                  "line_width": 2.2}
 #
 #
 #def test_heat_scale_locks_the_image_overlay(app, tmp_path):
@@ -8539,6 +8595,16 @@ if __name__ == "__main__":
 #    back = dlg.result_style()
 #    assert back["font_pt"] == 8.0 and "point_color" not in back
 #
+#    # the tick values take their own size and weight, the axis names another
+#    ap.set_chart_style({"font_pt": 7.0, "tick_bold": True, "label_pt": 14.0,
+#                        "label_bold": False})
+#    app.processEvents()
+#    c = [x for x in ap._chart_widgets if x._ctype == "box"][-1]
+#    assert c._font().bold() and c._font().pointSizeF() == pytest.approx(7.0)
+#    assert not c._label_font().bold()
+#    assert c._label_font().pointSizeF() == pytest.approx(14.0, abs=0.5)
+#    c.grab()
+#
 #
 #def test_right_drag_pans_while_placing_a_grid(app):
 #    """Reaching the far corner is exactly when panning matters."""
@@ -8563,6 +8629,49 @@ if __name__ == "__main__":
 #    assert iv._offset.y() == pytest.approx(before.y() + 40.0)
 #    assert iv._grid_stage == 0        # panning placed no grid anchor
 #    assert win._rois == []
+#
+#
+#def test_legend_is_opt_in_and_nothing_else_sits_under_the_axis(app):
+#    """The key is furniture: off by default, and it holds the numbers that
+#    used to crowd the axis."""
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#
+#    for ctype in ("box", "hist"):
+#        ap._pick_ctype(ctype)
+#        app.processEvents()
+#        assert not ap.legend_chk.isHidden() and not ap.legend_chk.isChecked()
+#        c = [x for x in ap._chart_widgets if x._ctype == ctype][-1]
+#        assert c._opts["legend"] is False and not c._legend_on()
+#        c.grab()
+#    ap.legend_chk.setChecked(True)
+#    app.processEvents()
+#    c = [x for x in ap._chart_widgets if x._ctype == "hist"][-1]
+#    assert c._legend_on()
+#    c.grab()
+#
+#    ap._pick_ctype("map")                 # a map has no legend to offer
+#    assert ap.legend_chk.isHidden()
+#
+#    # the profile's per-group numbers ride in the key now, not below the axis
+#    win.on_cmp_mode("within")
+#    win.on_within_group(win._groups[0].gid)
+#    win.render_analysis_sync()
+#    ap._pick_ctype("position")
+#    app.processEvents()
+#    prof = [x for x in ap._chart_widgets if x._ctype == "position"][-1]
+#    assert len(prof._line_key_rows()) == 3
+#    prof.grab()
+#    ap.legend_chk.setChecked(False)
+#    app.processEvents()
+#    [x for x in ap._chart_widgets if x._ctype == "position"][-1].grab()
 #
 #
 #def test_export_chart_image_writes_png_and_svg(app, tmp_path):
