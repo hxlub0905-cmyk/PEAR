@@ -23,6 +23,7 @@ from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
                                 compute_analysis, distribute_rects,
                                 group_outliers, group_rois,
                                 groups_from_json, groups_to_json, heat_cells,
+                                rois_from_points, rois_to_points,
                                 heat_color, load_image, roi_center, roi_metric,
                                 roi_patch, rois_from_json, rois_to_json,
                                 snapshot, summarize, uniformity)
@@ -260,6 +261,8 @@ class MainWindow(QMainWindow):
         self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
         self.rail.roi_order_changed.connect(self.on_roi_order)
         self.rail.roi_align.connect(self.align_rois)
+        self.rail.roi_import.connect(self.import_rois)
+        self.rail.roi_export.connect(self.export_rois)
         self.stage_bar.show_changed.connect(self.on_show_metric)
         self.stage_bar.values_changed.connect(self.on_show_values)
         self.stage_bar.heatmap_changed.connect(self.on_heatmap)
@@ -857,6 +860,105 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # export
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # ROI interchange
+    # ------------------------------------------------------------------ #
+    _ROI_FILTER = "ROI list (*.json)"
+
+    def import_rois(self, path: Optional[str] = None,
+                    mode: str = "") -> Optional[int]:
+        """Read a flat ROI list. Returns how many ROIs landed, or None.
+
+        The file says where the boxes go and what colour they are; PEAR turns
+        each colour into a group. Sizes come from the file when it carries
+        them and from the size fields when it does not.
+        """
+        if self._image is None:
+            return None
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Import ROIs", "", self._ROI_FILTER)
+            if not path:
+                return None
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                items = json.load(fh)
+            w, h = self.rail.roi_size()
+            shape = self._image.shape[:2]
+            groups, rois, clamped = rois_from_points(
+                items, w, h, bounds=(shape[1], shape[0]),
+                start_rid=self._next_rid)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Import ROIs",
+                                f"Could not read that file:\n{exc}")
+            return None
+        if not rois:
+            QMessageBox.warning(self, "Import ROIs", "That file has no ROIs.")
+            return None
+        if not mode:
+            mode = "replace"
+            if self._rois:
+                box = QMessageBox(self)
+                box.setWindowTitle("Import ROIs")
+                box.setText(f"{len(rois)} ROIs in {os.path.basename(path)}.")
+                box.setInformativeText("Replace the ROIs already placed, or "
+                                       "add these to them?")
+                replace = box.addButton("Replace", QMessageBox.AcceptRole)
+                add = box.addButton("Add", QMessageBox.ActionRole)
+                box.addButton(QMessageBox.Cancel)
+                box.exec()
+                if box.clickedButton() is None or box.clickedButton() not in (
+                        replace, add):
+                    return None
+                mode = "replace" if box.clickedButton() is replace else "add"
+        if mode == "replace":
+            self._groups, self._rois = [], []
+            self._selected_rids = set()
+        # a colour already on the board keeps its group; the rest come in new
+        by_color = {g.color: g.gid for g in self._groups}
+        used = {g.gid for g in self._groups}
+        remap = {}
+        for g in groups:
+            gid = by_color.get(g.color)
+            if gid is None:
+                gid = next((c for c in (chr(ord("A") + i) for i in range(26))
+                            if c not in used), f"G{len(used)}")
+                used.add(gid)
+                by_color[g.color] = gid
+                self._groups.append(Group(gid=gid, name=f"Group {gid}",
+                                          color=g.color))
+            remap[g.gid] = gid
+        for r in rois:
+            r.gid = remap[r.gid]
+        self._rois.extend(rois)
+        self._next_rid = max((r.rid for r in self._rois), default=0) + 1
+        self._active_gid = self._groups[0].gid if self._groups else None
+        self._active_rid = None
+        note = f"Imported {len(rois)} ROIs from {os.path.basename(path)}"
+        if clamped:
+            note += f" · {clamped} moved to fit the image"
+        self.statusBar().showMessage(note, 5000)
+        self._refresh()
+        return len(rois)
+
+    def export_rois(self, path: Optional[str] = None) -> Optional[str]:
+        """Write every ROI as that same flat list."""
+        if not self._rois:
+            return None
+        if not path:
+            base = os.path.splitext(os.path.basename(self._image_path or
+                                                     "rois"))[0]
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export ROIs", f"{base}_rois.json", self._ROI_FILTER)
+            if not path:
+                return None
+        items = rois_to_points(self._groups, self._rois)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(items, fh, indent=2, ensure_ascii=False)
+        self.statusBar().showMessage(
+            f"{len(items)} ROIs written to {path}", 4000)
+        return path
+
     _IMAGE_FILTER = "PNG image (*.png);;SVG vector (*.svg)"
 
     def _ask_image_path(self, parent, title: str, default: str) -> Optional[str]:

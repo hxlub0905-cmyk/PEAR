@@ -574,6 +574,67 @@ def test_box_chart_can_give_each_group_its_own_scale(app):
     assert ap.ownscale_chk.isHidden()
 
 
+def test_import_and_export_rois(app, tmp_path):
+    """A ROI layout worked out elsewhere drops straight in, and comes back."""
+    import json
+    from pear.core.analysis import group_rois
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    src = tmp_path / "rois.json"
+    src.write_text(json.dumps(
+        [{"color": "#00ffff", "x": 32, "y": 68, "target": True},
+         {"color": "#00ffff", "x": 66, "y": 271, "target": False},
+         {"color": "#ff8800", "x": 100, "y": 68, "target": False}]),
+        encoding="utf-8")
+
+    assert win.import_rois(str(src), mode="replace") == 3
+    assert len(win._rois) == 3
+    colors = sorted(g.color for g in win._groups)
+    assert colors == ["#00ffff", "#ff8800"]          # a group per colour
+    cyan = [g for g in win._groups if g.color == "#00ffff"][0]
+    assert len(group_rois(win._rois, cyan.gid)) == 2
+    w, h = win.rail.roi_size()
+    assert win._rois[0].rect == (32, 68, w, h)       # size comes from the rail
+    assert win.image_view._rois == win._rois         # and it is on the canvas
+
+    # adding keeps what is there and reuses the group that already has that
+    # colour, rather than making a second cyan group
+    assert win.import_rois(str(src), mode="add") == 3
+    assert len(win._rois) == 6 and len(win._groups) == 2
+    assert len({r.rid for r in win._rois}) == 6      # rids stay unique
+
+    out = tmp_path / "out.json"
+    assert win.export_rois(str(out)) == str(out)
+    items = json.loads(out.read_text(encoding="utf-8"))
+    assert len(items) == 6
+    assert set(items[0]) == {"color", "x", "y", "w", "h", "target"}
+    assert items[0]["x"] == 32 and items[0]["color"] == "#00ffff"
+
+    win2 = MainWindow()
+    win2.set_image(make_field(), "f.png")
+    assert win2.import_rois(str(out), mode="replace") == 6
+    assert [r.rect for r in win2._rois] == [r.rect for r in win._rois]
+
+
+def test_import_rois_reports_a_bad_file(app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    seen = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *a, **k: seen.append(a[-1]))
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert win.import_rois(str(bad), mode="replace") is None
+    empty = tmp_path / "empty.json"
+    empty.write_text("[]", encoding="utf-8")
+    assert win.import_rois(str(empty), mode="replace") is None
+    assert len(seen) == 2 and win._rois == []
+    assert win.export_rois(str(tmp_path / "none.json")) is None
+
+
 def test_align_buttons_tidy_the_selection_then_the_group(app):
     from pear.core.analysis import group_rois
     from pear.ui.main_window import MainWindow

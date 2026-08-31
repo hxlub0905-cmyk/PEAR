@@ -30,6 +30,22 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
   - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
     duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
     group. **Right-drag pans** the image at any time, grid placement included.
+  - **Import ROIs… / Export ROIs…** — the ROI set travels on its own as a
+    flat JSON list, so a layout worked out in another tool drops straight in:
+
+    ```json
+    [ { "color": "#00ffff", "x": 32, "y": 68, "w": 30, "h": 24,
+        "target": false } ]
+    ```
+
+    `x` / `y` are the box's **top-left corner**; **each colour becomes a
+    group**. `w` / `h` are optional on the way in — a list that only says
+    where the boxes go takes the size from the **size** fields above — and
+    always written on the way out, so a round trip does not silently resize
+    anything. `target` is accepted and written for compatibility with the
+    tool the format comes from; PEAR has no target role. Boxes that fall
+    outside the image are moved inside it and the status bar says how many.
+    Importing over existing ROIs asks whether to replace them or add to them.
   - **align** — pull the selection (or the whole active group, with nothing
     selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
     Bottom*) or even out its spacing (*Even across / Even down*).
@@ -254,7 +270,7 @@ pytest                              # headless core + offscreen UI smoke
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics,
   grid interpolation, outlier detection, heat colormap, heat-map cell edges,
   jitter tolerance (field tiling and profile grouping alike), per-ROI field
-  cells, ROI alignment / spacing,
+  cells, ROI alignment / spacing, the flat ROI interchange list,
   attribute separability / ranking, pixel histogram, ROI positions / linear
   trend / uniformity, project (de)serialize, between/within comparison,
   snapshot isolation.
@@ -262,7 +278,7 @@ pytest                              # headless core + offscreen UI smoke
   byte, survives CRLF, catches tampering, and is not stale; the batch files
   stay flat enough to run with LF endings.
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
-  select, ROI re-indexing, heatmap/outliers, hover sync, keyboard
+  select, ROI import / export, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
   save/open, CSV export, image export of every view (field at native
   resolution, each results section, the ROI inspector),
@@ -308,7 +324,7 @@ git add -A && python tools/make_text_bundle.py && git add -A
 ## Scope (V1)
 
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-grid / box-select / align), GLV metrics, value heatmap + outlier
+grid / box-select / align / import), GLV metrics, value heatmap + outlier
 flagging with per-overlay toggles and a field fill, attribute ranking +
 group×metric heatmap, image export of every view (PNG / SVG),
 per-ROI pixel inspector,

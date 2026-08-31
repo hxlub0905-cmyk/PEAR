@@ -564,6 +564,84 @@ def snapshot(groups: List[Group], rois: List[ROI]):
 
 
 # --------------------------------------------------------------------------- #
+# ROI interchange — the flat list other tools speak
+# --------------------------------------------------------------------------- #
+def rois_to_points(groups: List[Group], rois: List[ROI]) -> List[dict]:
+    """The ROI set as a flat list of ``{color, x, y, w, h, target}``.
+
+    One dict per ROI, positioned by its **top-left corner**, carrying the
+    colour of the group it belongs to — that colour is what a receiving tool
+    has instead of PEAR's groups, and what :func:`rois_from_points` groups by
+    on the way back.
+
+    ``w``/``h`` are PEAR's addition to the format: without them a round trip
+    silently resizes every box to whatever the size fields happen to say.
+    ``target`` is written as ``false`` and ignored on the way in — PEAR has no
+    target role — but it is kept so a file passes through unchanged in shape.
+    """
+    color = {g.gid: g.color for g in groups}
+    out = []
+    for r in rois:
+        x, y, w, h = r.rect
+        out.append({"color": color.get(r.gid, GROUP_PALETTE[0]),
+                    "x": int(x), "y": int(y), "w": int(w), "h": int(h),
+                    "target": False})
+    return out
+
+
+def rois_from_points(items, default_w: int, default_h: int, bounds=None,
+                     start_rid: int = 1):
+    """``(groups, rois, clamped)`` from the flat list.
+
+    Each distinct colour becomes a group, in the order the colours first
+    appear. Entries carry ``w``/``h`` when they came from PEAR and take the
+    given defaults when they did not — a list that only says where the boxes
+    go needs to be told how big they are.
+
+    ``bounds = (width, height)`` keeps every box inside the image; the count
+    of boxes that had to move is returned rather than hidden, because a file
+    written against a different image is a thing worth being told about.
+    """
+    if not isinstance(items, list):
+        raise ValueError("expected a list of ROI objects")
+    groups: List[Group] = []
+    by_color: Dict[str, str] = {}
+    rois: List[ROI] = []
+    rid = int(start_rid)
+    clamped = 0
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            raise ValueError(f"entry {i} is not an object")
+        try:
+            x = int(round(float(it["x"])))
+            y = int(round(float(it["y"])))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"entry {i} has no numeric x / y") from None
+        w = int(round(float(it.get("w") or default_w)))
+        h = int(round(float(it.get("h") or default_h)))
+        w, h = max(1, w), max(1, h)
+        color = str(it.get("color") or GROUP_PALETTE[0])
+        gid = by_color.get(color)
+        if gid is None:
+            letter = (chr(ord("A") + len(groups)) if len(groups) < 26
+                      else f"G{len(groups)}")
+            gid = letter
+            by_color[color] = gid
+            groups.append(Group(gid=gid, name=f"Group {letter}", color=color))
+        if bounds:
+            bw, bh = int(bounds[0]), int(bounds[1])
+            w, h = min(w, bw), min(h, bh)
+            nx = int(np.clip(x, 0, max(0, bw - w)))
+            ny = int(np.clip(y, 0, max(0, bh - h)))
+            if (nx, ny) != (x, y):
+                clamped += 1
+            x, y = nx, ny
+        rois.append(ROI(rid=rid, gid=gid, rect=(x, y, w, h), label=""))
+        rid += 1
+    return groups, rois, clamped
+
+
+# --------------------------------------------------------------------------- #
 # Project (de)serialization — plain JSON-friendly dicts
 # --------------------------------------------------------------------------- #
 def groups_to_json(groups: List[Group]) -> List[dict]:

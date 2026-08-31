@@ -289,7 +289,7 @@ if __name__ == "__main__":
 #if exist "%~dp0.venv\Scripts\pythonw.exe" exit /b
 #start "PEAR" pythonw -m pear
 #
-#F 9394f530ec35927fed7730cd424b177c0f283b08 319 README.md
+#F edbb73188ae5e5edb5edb377a3a1354c3fcc288b 335 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -322,6 +322,22 @@ if __name__ == "__main__":
 #  - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
 #    duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
 #    group. **Right-drag pans** the image at any time, grid placement included.
+#  - **Import ROIs… / Export ROIs…** — the ROI set travels on its own as a
+#    flat JSON list, so a layout worked out in another tool drops straight in:
+#
+#    ```json
+#    [ { "color": "#00ffff", "x": 32, "y": 68, "w": 30, "h": 24,
+#        "target": false } ]
+#    ```
+#
+#    `x` / `y` are the box's **top-left corner**; **each colour becomes a
+#    group**. `w` / `h` are optional on the way in — a list that only says
+#    where the boxes go takes the size from the **size** fields above — and
+#    always written on the way out, so a round trip does not silently resize
+#    anything. `target` is accepted and written for compatibility with the
+#    tool the format comes from; PEAR has no target role. Boxes that fall
+#    outside the image are moved inside it and the status bar says how many.
+#    Importing over existing ROIs asks whether to replace them or add to them.
 #  - **align** — pull the selection (or the whole active group, with nothing
 #    selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
 #    Bottom*) or even out its spacing (*Even across / Even down*).
@@ -546,7 +562,7 @@ if __name__ == "__main__":
 #- `tests/test_core.py` — headless (no Qt): ROI patch/metrics,
 #  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
 #  jitter tolerance (field tiling and profile grouping alike), per-ROI field
-#  cells, ROI alignment / spacing,
+#  cells, ROI alignment / spacing, the flat ROI interchange list,
 #  attribute separability / ranking, pixel histogram, ROI positions / linear
 #  trend / uniformity, project (de)serialize, between/within comparison,
 #  snapshot isolation.
@@ -554,7 +570,7 @@ if __name__ == "__main__":
 #  byte, survives CRLF, catches tampering, and is not stale; the batch files
 #  stay flat enough to run with LF endings.
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
-#  select, ROI re-indexing, heatmap/outliers, hover sync, keyboard
+#  select, ROI import / export, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
 #  save/open, CSV export, image export of every view (field at native
 #  resolution, each results section, the ROI inspector),
@@ -600,7 +616,7 @@ if __name__ == "__main__":
 ### Scope (V1)
 #
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-#grid / box-select / align), GLV metrics, value heatmap + outlier
+#grid / box-select / align / import), GLV metrics, value heatmap + outlier
 #flagging with per-overlay toggles and a field fill, attribute ranking +
 #group×metric heatmap, image export of every view (PNG / SVG),
 #per-ROI pixel inspector,
@@ -965,7 +981,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F 42d43a082ead351a3dd04223168bdcd36511c96d 687 pear/core/analysis.py
+#F f3d748c1a385cb81b8061277732b74eb1cee2735 765 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -1529,6 +1545,84 @@ if __name__ == "__main__":
 #    gs = [Group(g.gid, g.name, g.color) for g in groups]
 #    rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
 #    return gs, rs
+#
+#
+## --------------------------------------------------------------------------- #
+## ROI interchange — the flat list other tools speak
+## --------------------------------------------------------------------------- #
+#def rois_to_points(groups: List[Group], rois: List[ROI]) -> List[dict]:
+#    """The ROI set as a flat list of ``{color, x, y, w, h, target}``.
+#
+#    One dict per ROI, positioned by its **top-left corner**, carrying the
+#    colour of the group it belongs to — that colour is what a receiving tool
+#    has instead of PEAR's groups, and what :func:`rois_from_points` groups by
+#    on the way back.
+#
+#    ``w``/``h`` are PEAR's addition to the format: without them a round trip
+#    silently resizes every box to whatever the size fields happen to say.
+#    ``target`` is written as ``false`` and ignored on the way in — PEAR has no
+#    target role — but it is kept so a file passes through unchanged in shape.
+#    """
+#    color = {g.gid: g.color for g in groups}
+#    out = []
+#    for r in rois:
+#        x, y, w, h = r.rect
+#        out.append({"color": color.get(r.gid, GROUP_PALETTE[0]),
+#                    "x": int(x), "y": int(y), "w": int(w), "h": int(h),
+#                    "target": False})
+#    return out
+#
+#
+#def rois_from_points(items, default_w: int, default_h: int, bounds=None,
+#                     start_rid: int = 1):
+#    """``(groups, rois, clamped)`` from the flat list.
+#
+#    Each distinct colour becomes a group, in the order the colours first
+#    appear. Entries carry ``w``/``h`` when they came from PEAR and take the
+#    given defaults when they did not — a list that only says where the boxes
+#    go needs to be told how big they are.
+#
+#    ``bounds = (width, height)`` keeps every box inside the image; the count
+#    of boxes that had to move is returned rather than hidden, because a file
+#    written against a different image is a thing worth being told about.
+#    """
+#    if not isinstance(items, list):
+#        raise ValueError("expected a list of ROI objects")
+#    groups: List[Group] = []
+#    by_color: Dict[str, str] = {}
+#    rois: List[ROI] = []
+#    rid = int(start_rid)
+#    clamped = 0
+#    for i, it in enumerate(items):
+#        if not isinstance(it, dict):
+#            raise ValueError(f"entry {i} is not an object")
+#        try:
+#            x = int(round(float(it["x"])))
+#            y = int(round(float(it["y"])))
+#        except (KeyError, TypeError, ValueError):
+#            raise ValueError(f"entry {i} has no numeric x / y") from None
+#        w = int(round(float(it.get("w") or default_w)))
+#        h = int(round(float(it.get("h") or default_h)))
+#        w, h = max(1, w), max(1, h)
+#        color = str(it.get("color") or GROUP_PALETTE[0])
+#        gid = by_color.get(color)
+#        if gid is None:
+#            letter = (chr(ord("A") + len(groups)) if len(groups) < 26
+#                      else f"G{len(groups)}")
+#            gid = letter
+#            by_color[color] = gid
+#            groups.append(Group(gid=gid, name=f"Group {letter}", color=color))
+#        if bounds:
+#            bw, bh = int(bounds[0]), int(bounds[1])
+#            w, h = min(w, bw), min(h, bh)
+#            nx = int(np.clip(x, 0, max(0, bw - w)))
+#            ny = int(np.clip(y, 0, max(0, bh - h)))
+#            if (nx, ny) != (x, y):
+#                clamped += 1
+#            x, y = nx, ny
+#        rois.append(ROI(rid=rid, gid=gid, rect=(x, y, w, h), label=""))
+#        rid += 1
+#    return groups, rois, clamped
 #
 #
 ## --------------------------------------------------------------------------- #
@@ -2690,7 +2784,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F 1fea4ebfeee774ba5d3724e05580a42ed13df571 956 pear/ui/main_window.py
+#F 3f51d07c9b3b8c5b8916a3a3f08f64d9af2a35f1 1058 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2716,6 +2810,7 @@ if __name__ == "__main__":
 #                                compute_analysis, distribute_rects,
 #                                group_outliers, group_rois,
 #                                groups_from_json, groups_to_json, heat_cells,
+#                                rois_from_points, rois_to_points,
 #                                heat_color, load_image, roi_center, roi_metric,
 #                                roi_patch, rois_from_json, rois_to_json,
 #                                snapshot, summarize, uniformity)
@@ -2953,6 +3048,8 @@ if __name__ == "__main__":
 #        self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
 #        self.rail.roi_order_changed.connect(self.on_roi_order)
 #        self.rail.roi_align.connect(self.align_rois)
+#        self.rail.roi_import.connect(self.import_rois)
+#        self.rail.roi_export.connect(self.export_rois)
 #        self.stage_bar.show_changed.connect(self.on_show_metric)
 #        self.stage_bar.values_changed.connect(self.on_show_values)
 #        self.stage_bar.heatmap_changed.connect(self.on_heatmap)
@@ -3550,6 +3647,105 @@ if __name__ == "__main__":
 #    # ------------------------------------------------------------------ #
 #    # export
 #    # ------------------------------------------------------------------ #
+#    # ------------------------------------------------------------------ #
+#    # ROI interchange
+#    # ------------------------------------------------------------------ #
+#    _ROI_FILTER = "ROI list (*.json)"
+#
+#    def import_rois(self, path: Optional[str] = None,
+#                    mode: str = "") -> Optional[int]:
+#        """Read a flat ROI list. Returns how many ROIs landed, or None.
+#
+#        The file says where the boxes go and what colour they are; PEAR turns
+#        each colour into a group. Sizes come from the file when it carries
+#        them and from the size fields when it does not.
+#        """
+#        if self._image is None:
+#            return None
+#        if not path:
+#            path, _ = QFileDialog.getOpenFileName(
+#                self, "Import ROIs", "", self._ROI_FILTER)
+#            if not path:
+#                return None
+#        try:
+#            with open(path, encoding="utf-8-sig") as fh:
+#                items = json.load(fh)
+#            w, h = self.rail.roi_size()
+#            shape = self._image.shape[:2]
+#            groups, rois, clamped = rois_from_points(
+#                items, w, h, bounds=(shape[1], shape[0]),
+#                start_rid=self._next_rid)
+#        except (OSError, ValueError, json.JSONDecodeError) as exc:
+#            QMessageBox.warning(self, "Import ROIs",
+#                                f"Could not read that file:\n{exc}")
+#            return None
+#        if not rois:
+#            QMessageBox.warning(self, "Import ROIs", "That file has no ROIs.")
+#            return None
+#        if not mode:
+#            mode = "replace"
+#            if self._rois:
+#                box = QMessageBox(self)
+#                box.setWindowTitle("Import ROIs")
+#                box.setText(f"{len(rois)} ROIs in {os.path.basename(path)}.")
+#                box.setInformativeText("Replace the ROIs already placed, or "
+#                                       "add these to them?")
+#                replace = box.addButton("Replace", QMessageBox.AcceptRole)
+#                add = box.addButton("Add", QMessageBox.ActionRole)
+#                box.addButton(QMessageBox.Cancel)
+#                box.exec()
+#                if box.clickedButton() is None or box.clickedButton() not in (
+#                        replace, add):
+#                    return None
+#                mode = "replace" if box.clickedButton() is replace else "add"
+#        if mode == "replace":
+#            self._groups, self._rois = [], []
+#            self._selected_rids = set()
+#        # a colour already on the board keeps its group; the rest come in new
+#        by_color = {g.color: g.gid for g in self._groups}
+#        used = {g.gid for g in self._groups}
+#        remap = {}
+#        for g in groups:
+#            gid = by_color.get(g.color)
+#            if gid is None:
+#                gid = next((c for c in (chr(ord("A") + i) for i in range(26))
+#                            if c not in used), f"G{len(used)}")
+#                used.add(gid)
+#                by_color[g.color] = gid
+#                self._groups.append(Group(gid=gid, name=f"Group {gid}",
+#                                          color=g.color))
+#            remap[g.gid] = gid
+#        for r in rois:
+#            r.gid = remap[r.gid]
+#        self._rois.extend(rois)
+#        self._next_rid = max((r.rid for r in self._rois), default=0) + 1
+#        self._active_gid = self._groups[0].gid if self._groups else None
+#        self._active_rid = None
+#        note = f"Imported {len(rois)} ROIs from {os.path.basename(path)}"
+#        if clamped:
+#            note += f" · {clamped} moved to fit the image"
+#        self.statusBar().showMessage(note, 5000)
+#        self._refresh()
+#        return len(rois)
+#
+#    def export_rois(self, path: Optional[str] = None) -> Optional[str]:
+#        """Write every ROI as that same flat list."""
+#        if not self._rois:
+#            return None
+#        if not path:
+#            base = os.path.splitext(os.path.basename(self._image_path or
+#                                                     "rois"))[0]
+#            path, _ = QFileDialog.getSaveFileName(
+#                self, "Export ROIs", f"{base}_rois.json", self._ROI_FILTER)
+#            if not path:
+#                return None
+#        items = rois_to_points(self._groups, self._rois)
+#        with open(path, "w", encoding="utf-8") as fh:
+#            json.dump(items, fh, indent=2, ensure_ascii=False)
+#        self.statusBar().showMessage(
+#            f"{len(items)} ROIs written to {path}", 4000)
+#        return path
+#
 #    _IMAGE_FILTER = "PNG image (*.png);;SVG vector (*.svg)"
 #
 #    def _ask_image_path(self, parent, title: str, default: str) -> Optional[str]:
@@ -3844,7 +4040,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 4749eabc52a5b5d83b65207b79eda0b6d7d89050 2696 pear/ui/widgets.py
+#F 579b86498c53066d67170bf98545adcc77e8edc9 2711 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -5467,6 +5663,8 @@ if __name__ == "__main__":
 #    metric_ids_changed = Signal(list)       # every metric on offer (incl. Q*n)
 #    roi_order_changed = Signal(str)         # "placed" | "asc" | "desc"
 #    roi_align = Signal(str)                 # align/distribute the selection
+#    roi_import = Signal()                   # read a flat ROI list
+#    roi_export = Signal()                   # write one
 #    open_analysis = Signal()
 #
 #    def __init__(self, parent=None):
@@ -5607,6 +5805,19 @@ if __name__ == "__main__":
 #        self.roi_scroll.setWidget(roi_list_host)
 #        self.roi_scroll.setFixedHeight(6)        # grows with content up to a cap
 #        rlay.addWidget(self.roi_scroll)
+#        # The ROI set travels on its own — a flat {color, x, y, w, h} list, so
+#        # a layout worked out somewhere else can be dropped straight in.
+#        self.roi_import_btn = QPushButton("Import ROIs…")
+#        self.roi_import_btn.setToolTip(
+#            "Read a JSON list of ROIs — one object per box with a colour and "
+#            "a top-left x / y. Each colour becomes a group; boxes without a "
+#            "w / h take the size set above.")
+#        self.roi_import_btn.clicked.connect(self.roi_import)
+#        self.roi_export_btn = QPushButton("Export ROIs…")
+#        self.roi_export_btn.setToolTip(
+#            "Write every ROI as that same JSON list.")
+#        self.roi_export_btn.clicked.connect(self.roi_export)
+#        rlay.addLayout(_button_row(self.roi_import_btn, self.roi_export_btn))
 #        self.roi_hint = QLabel(
 #            "• Click → drop a size-W×H ROI · drag → custom size\n"
 #            "• Grid → two corners, set row×col, Add grid\n"
@@ -5639,8 +5850,8 @@ if __name__ == "__main__":
 #    # -- render --------------------------------------------------------- #
 #    def set_ready(self, has_image: bool) -> None:
 #        for w in (self.grp_add_btn, self.grid_btn, self.roi_w, self.roi_h,
-#                  self.clear_btn, self.analysis_btn,
-#                  *self.align_btns.values()):
+#                  self.clear_btn, self.analysis_btn, self.roi_import_btn,
+#                  self.roi_export_btn, *self.align_btns.values()):
 #            w.setEnabled(has_image)
 #
 #    def set_grid_ready(self, on: bool) -> None:
@@ -6760,7 +6971,7 @@ if __name__ == "__main__":
 #        inst.venv_python("/x").endswith("python.exe")
 #    assert icon.SIZES[0] == 16 and icon.SIZES[-1] == 256
 #
-#F eb90e90443060f6ea509a30158643a2823581c09 337 tests/test_core.py
+#F a49ee94bd20d2a8713b762de1a48fed5fc3ede4e 385 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -6777,6 +6988,7 @@ if __name__ == "__main__":
 #from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
 #                                cell_edges, cohens_d, distribute_rects,
 #                                heat_cells, jitter_tolerance,
+#                                rois_from_points, rois_to_points,
 #                                compute_analysis, grid_between, group_outliers,
 #                                group_rois, group_values,
 #                                groups_from_json, groups_to_json, heat_color,
@@ -6927,6 +7139,53 @@ if __name__ == "__main__":
 #    assert len(res.ranking) == 2
 #    etas = [r[1] for r in res.ranking if r[1] is not None]
 #    assert etas == sorted(etas, reverse=True)
+#
+#
+#def test_roi_points_import_groups_by_colour():
+#    """The flat list other tools speak: a colour per box, no groups."""
+#    items = [{"color": "#00ffff", "x": 32, "y": 68, "target": True},
+#             {"color": "#00ffff", "x": 66, "y": 271, "target": False},
+#             {"color": "#ff8800", "x": 100, "y": 68, "target": False}]
+#    groups, rois, clamped = rois_from_points(items, 28, 24)
+#    assert [(g.gid, g.color) for g in groups] == [("A", "#00ffff"),
+#                                                  ("B", "#ff8800")]
+#    assert [r.gid for r in rois] == ["A", "A", "B"]
+#    assert rois[0].rect == (32, 68, 28, 24)      # x/y is the top-left corner
+#    assert [r.rid for r in rois] == [1, 2, 3] and clamped == 0
+#    # a file with its own sizes keeps them; ids continue from where asked
+#    sized = rois_from_points([{"color": "#00ffff", "x": 5, "y": 6,
+#                               "w": 40, "h": 12}], 28, 24, start_rid=7)[1]
+#    assert sized[0].rect == (5, 6, 40, 12) and sized[0].rid == 7
+#
+#
+#def test_roi_points_clamp_to_the_image_and_report_it():
+#    """A list written against a different image must say so, not drift off."""
+#    items = [{"color": "#00ffff", "x": 10, "y": 10},
+#             {"color": "#00ffff", "x": 900, "y": 900}]
+#    _g, rois, clamped = rois_from_points(items, 28, 24, bounds=(768, 468))
+#    assert clamped == 1
+#    for x, y, w, h in (r.rect for r in rois):
+#        assert 0 <= x and x + w <= 768 and 0 <= y and y + h <= 468
+#
+#
+#def test_roi_points_round_trip_and_reject_rubbish():
+#    groups, rois, _c = rois_from_points(
+#        [{"color": "#00ffff", "x": 1, "y": 2, "w": 9, "h": 8},
+#         {"color": "#ff8800", "x": 3, "y": 4, "w": 5, "h": 6}], 28, 24)
+#    out = rois_to_points(groups, rois)
+#    assert out == [{"color": "#00ffff", "x": 1, "y": 2, "w": 9, "h": 8,
+#                    "target": False},
+#                   {"color": "#ff8800", "x": 3, "y": 4, "w": 5, "h": 6,
+#                    "target": False}]
+#    again = rois_from_points(out, 1, 1)[1]
+#    assert [r.rect for r in again] == [r.rect for r in rois]
+#
+#    with pytest.raises(ValueError):
+#        rois_from_points({"x": 1}, 10, 10)               # not a list
+#    with pytest.raises(ValueError):
+#        rois_from_points([{"color": "#fff"}], 10, 10)    # no position
+#    with pytest.raises(ValueError):
+#        rois_from_points([{"x": "left", "y": 3}], 10, 10)
 #
 #
 #def test_project_model_roundtrip():
@@ -7098,7 +7357,7 @@ if __name__ == "__main__":
 #    assert list(s.pos_x) == [6.0, 34.0]
 #
 #
-#F 2bf477dd28529cb170b13d13061beadc7b40e786 1144 tests/test_ui_smoke.py
+#F 9aafaca40d1c43099bca425870a8798a06ea66e6 1205 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7673,6 +7932,67 @@ if __name__ == "__main__":
 #        c.grab()                       # exercises the per-lane painter
 #    ap._pick_ctype("map")              # only the box plot offers it
 #    assert ap.ownscale_chk.isHidden()
+#
+#
+#def test_import_and_export_rois(app, tmp_path):
+#    """A ROI layout worked out elsewhere drops straight in, and comes back."""
+#    import json
+#    from pear.core.analysis import group_rois
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    src = tmp_path / "rois.json"
+#    src.write_text(json.dumps(
+#        [{"color": "#00ffff", "x": 32, "y": 68, "target": True},
+#         {"color": "#00ffff", "x": 66, "y": 271, "target": False},
+#         {"color": "#ff8800", "x": 100, "y": 68, "target": False}]),
+#        encoding="utf-8")
+#
+#    assert win.import_rois(str(src), mode="replace") == 3
+#    assert len(win._rois) == 3
+#    colors = sorted(g.color for g in win._groups)
+#    assert colors == ["#00ffff", "#ff8800"]          # a group per colour
+#    cyan = [g for g in win._groups if g.color == "#00ffff"][0]
+#    assert len(group_rois(win._rois, cyan.gid)) == 2
+#    w, h = win.rail.roi_size()
+#    assert win._rois[0].rect == (32, 68, w, h)       # size comes from the rail
+#    assert win.image_view._rois == win._rois         # and it is on the canvas
+#
+#    # adding keeps what is there and reuses the group that already has that
+#    # colour, rather than making a second cyan group
+#    assert win.import_rois(str(src), mode="add") == 3
+#    assert len(win._rois) == 6 and len(win._groups) == 2
+#    assert len({r.rid for r in win._rois}) == 6      # rids stay unique
+#
+#    out = tmp_path / "out.json"
+#    assert win.export_rois(str(out)) == str(out)
+#    items = json.loads(out.read_text(encoding="utf-8"))
+#    assert len(items) == 6
+#    assert set(items[0]) == {"color", "x", "y", "w", "h", "target"}
+#    assert items[0]["x"] == 32 and items[0]["color"] == "#00ffff"
+#
+#    win2 = MainWindow()
+#    win2.set_image(make_field(), "f.png")
+#    assert win2.import_rois(str(out), mode="replace") == 6
+#    assert [r.rect for r in win2._rois] == [r.rect for r in win._rois]
+#
+#
+#def test_import_rois_reports_a_bad_file(app, tmp_path, monkeypatch):
+#    from PySide6.QtWidgets import QMessageBox
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    seen = []
+#    monkeypatch.setattr(QMessageBox, "warning",
+#                        lambda *a, **k: seen.append(a[-1]))
+#    bad = tmp_path / "bad.json"
+#    bad.write_text("{not json", encoding="utf-8")
+#    assert win.import_rois(str(bad), mode="replace") is None
+#    empty = tmp_path / "empty.json"
+#    empty.write_text("[]", encoding="utf-8")
+#    assert win.import_rois(str(empty), mode="replace") is None
+#    assert len(seen) == 2 and win._rois == []
+#    assert win.export_rois(str(tmp_path / "none.json")) is None
 #
 #
 #def test_align_buttons_tidy_the_selection_then_the_group(app):

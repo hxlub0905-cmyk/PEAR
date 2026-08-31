@@ -1620,6 +1620,8 @@ class RailPanel(QWidget):
     metric_ids_changed = Signal(list)       # every metric on offer (incl. Q*n)
     roi_order_changed = Signal(str)         # "placed" | "asc" | "desc"
     roi_align = Signal(str)                 # align/distribute the selection
+    roi_import = Signal()                   # read a flat ROI list
+    roi_export = Signal()                   # write one
     open_analysis = Signal()
 
     def __init__(self, parent=None):
@@ -1760,6 +1762,19 @@ class RailPanel(QWidget):
         self.roi_scroll.setWidget(roi_list_host)
         self.roi_scroll.setFixedHeight(6)        # grows with content up to a cap
         rlay.addWidget(self.roi_scroll)
+        # The ROI set travels on its own — a flat {color, x, y, w, h} list, so
+        # a layout worked out somewhere else can be dropped straight in.
+        self.roi_import_btn = QPushButton("Import ROIs…")
+        self.roi_import_btn.setToolTip(
+            "Read a JSON list of ROIs — one object per box with a colour and "
+            "a top-left x / y. Each colour becomes a group; boxes without a "
+            "w / h take the size set above.")
+        self.roi_import_btn.clicked.connect(self.roi_import)
+        self.roi_export_btn = QPushButton("Export ROIs…")
+        self.roi_export_btn.setToolTip(
+            "Write every ROI as that same JSON list.")
+        self.roi_export_btn.clicked.connect(self.roi_export)
+        rlay.addLayout(_button_row(self.roi_import_btn, self.roi_export_btn))
         self.roi_hint = QLabel(
             "• Click → drop a size-W×H ROI · drag → custom size\n"
             "• Grid → two corners, set row×col, Add grid\n"
@@ -1792,8 +1807,8 @@ class RailPanel(QWidget):
     # -- render --------------------------------------------------------- #
     def set_ready(self, has_image: bool) -> None:
         for w in (self.grp_add_btn, self.grid_btn, self.roi_w, self.roi_h,
-                  self.clear_btn, self.analysis_btn,
-                  *self.align_btns.values()):
+                  self.clear_btn, self.analysis_btn, self.roi_import_btn,
+                  self.roi_export_btn, *self.align_btns.values()):
             w.setEnabled(has_image)
 
     def set_grid_ready(self, on: bool) -> None:

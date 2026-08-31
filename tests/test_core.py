@@ -14,6 +14,7 @@ from examples.make_sample import CELL_H, CELL_W, make_field
 from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
                                 cell_edges, cohens_d, distribute_rects,
                                 heat_cells, jitter_tolerance,
+                                rois_from_points, rois_to_points,
                                 compute_analysis, grid_between, group_outliers,
                                 group_rois, group_values,
                                 groups_from_json, groups_to_json, heat_color,
@@ -164,6 +165,53 @@ def test_compute_analysis_ranking_and_heat():
     assert len(res.ranking) == 2
     etas = [r[1] for r in res.ranking if r[1] is not None]
     assert etas == sorted(etas, reverse=True)
+
+
+def test_roi_points_import_groups_by_colour():
+    """The flat list other tools speak: a colour per box, no groups."""
+    items = [{"color": "#00ffff", "x": 32, "y": 68, "target": True},
+             {"color": "#00ffff", "x": 66, "y": 271, "target": False},
+             {"color": "#ff8800", "x": 100, "y": 68, "target": False}]
+    groups, rois, clamped = rois_from_points(items, 28, 24)
+    assert [(g.gid, g.color) for g in groups] == [("A", "#00ffff"),
+                                                  ("B", "#ff8800")]
+    assert [r.gid for r in rois] == ["A", "A", "B"]
+    assert rois[0].rect == (32, 68, 28, 24)      # x/y is the top-left corner
+    assert [r.rid for r in rois] == [1, 2, 3] and clamped == 0
+    # a file with its own sizes keeps them; ids continue from where asked
+    sized = rois_from_points([{"color": "#00ffff", "x": 5, "y": 6,
+                               "w": 40, "h": 12}], 28, 24, start_rid=7)[1]
+    assert sized[0].rect == (5, 6, 40, 12) and sized[0].rid == 7
+
+
+def test_roi_points_clamp_to_the_image_and_report_it():
+    """A list written against a different image must say so, not drift off."""
+    items = [{"color": "#00ffff", "x": 10, "y": 10},
+             {"color": "#00ffff", "x": 900, "y": 900}]
+    _g, rois, clamped = rois_from_points(items, 28, 24, bounds=(768, 468))
+    assert clamped == 1
+    for x, y, w, h in (r.rect for r in rois):
+        assert 0 <= x and x + w <= 768 and 0 <= y and y + h <= 468
+
+
+def test_roi_points_round_trip_and_reject_rubbish():
+    groups, rois, _c = rois_from_points(
+        [{"color": "#00ffff", "x": 1, "y": 2, "w": 9, "h": 8},
+         {"color": "#ff8800", "x": 3, "y": 4, "w": 5, "h": 6}], 28, 24)
+    out = rois_to_points(groups, rois)
+    assert out == [{"color": "#00ffff", "x": 1, "y": 2, "w": 9, "h": 8,
+                    "target": False},
+                   {"color": "#ff8800", "x": 3, "y": 4, "w": 5, "h": 6,
+                    "target": False}]
+    again = rois_from_points(out, 1, 1)[1]
+    assert [r.rect for r in again] == [r.rect for r in rois]
+
+    with pytest.raises(ValueError):
+        rois_from_points({"x": 1}, 10, 10)               # not a list
+    with pytest.raises(ValueError):
+        rois_from_points([{"color": "#fff"}], 10, 10)    # no position
+    with pytest.raises(ValueError):
+        rois_from_points([{"x": "left", "y": 3}], 10, 10)
 
 
 def test_project_model_roundtrip():
