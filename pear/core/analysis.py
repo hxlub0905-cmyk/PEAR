@@ -236,6 +236,89 @@ def summarize(values: np.ndarray) -> Dict[str, float]:
 
 
 # --------------------------------------------------------------------------- #
+# Position profile — GLV against where the ROI sits on the image
+# --------------------------------------------------------------------------- #
+def roi_center(rect: Rect) -> Tuple[float, float]:
+    """Centre of an ROI rectangle, in image pixels."""
+    x, y, w, h = rect
+    return (x + w / 2.0, y + h / 2.0)
+
+
+def group_positions(rois: List[ROI], axis: str = "x") -> np.ndarray:
+    """Each ROI's centre coordinate along ``axis`` ("x" or "y"), in pixels.
+
+    Ordering matches :func:`group_values`, so a value and its position share
+    an index.
+    """
+    i = 1 if str(axis).lower() == "y" else 0
+    return np.asarray([roi_center(r.rect)[i] for r in rois], dtype=np.float64)
+
+
+def linear_trend(x, y) -> Optional[Tuple[float, float]]:
+    """Least-squares ``(slope, intercept)`` of y on x, or None if degenerate.
+
+    The slope is the tilt of a GLV-vs-position profile: 0 means flat.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+    if x.size < 2 or float(x.std()) < 1e-12:
+        return None
+    sx, sy = float(x.mean()), float(y.mean())
+    dx = x - sx
+    denom = float((dx * dx).sum())
+    if denom < 1e-12:
+        return None
+    slope = float((dx * (y - sy)).sum() / denom)
+    return slope, float(sy - slope * sx)
+
+
+def uniformity(values) -> Dict[str, float]:
+    """How flat a metric is across ROIs — the numbers, no verdict.
+
+    ``range`` is peak-to-peak (0 for a perfectly flat profile); ``range_pct``
+    and ``cv_pct`` express spread as a percentage of the mean, which is how
+    grey-level uniformity is usually quoted.
+    """
+    v = np.asarray(values, dtype=np.float64)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return {"n": 0, "mean": 0.0, "range": 0.0, "range_pct": 0.0,
+                "std": 0.0, "cv_pct": 0.0}
+    mean = float(v.mean())
+    rng = float(v.max() - v.min())
+    sd = float(v.std())
+    den = abs(mean)
+    return {"n": int(v.size), "mean": mean, "range": rng,
+            "range_pct": (rng / den * 100.0) if den > 1e-12 else 0.0,
+            "std": sd,
+            "cv_pct": (sd / den * 100.0) if den > 1e-12 else 0.0}
+
+
+def profile_by_position(positions, values, decimals: int = 0):
+    """Collapse ROIs that share a position into one mean value.
+
+    A grid of ROIs puts several boxes at the same X; averaging them gives the
+    single profile line you read flatness off. Returns ``(pos, mean)`` sorted
+    by position.
+    """
+    px = np.asarray(positions, dtype=np.float64)
+    v = np.asarray(values, dtype=np.float64)
+    m = np.isfinite(px) & np.isfinite(v)
+    px, v = px[m], v[m]
+    if px.size == 0:
+        return np.empty(0), np.empty(0)
+    keys = np.round(px, decimals)
+    uniq = np.unique(keys)
+    means = np.asarray([float(v[keys == k].mean()) for k in uniq],
+                       dtype=np.float64)
+    centers = np.asarray([float(px[keys == k].mean()) for k in uniq],
+                         dtype=np.float64)
+    return centers, means
+
+
+# --------------------------------------------------------------------------- #
 # Multi-add helpers
 # --------------------------------------------------------------------------- #
 def grid_between(tl_center: Tuple[float, float], br_center: Tuple[float, float],
@@ -270,6 +353,10 @@ class Series:
     label: str
     color: str
     values: np.ndarray
+    # Centre of each ROI, index-aligned with ``values``. None for metrics that
+    # are not per-ROI (SNR is one value for the whole group).
+    pos_x: Optional[np.ndarray] = None
+    pos_y: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -332,6 +419,22 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
         return AnalysisResult(empty="Load an image and add ROIs to some groups.")
 
     cache: Dict[tuple, np.ndarray] = {}
+    pcache: Dict[str, tuple] = {}
+
+    def positions(g: Group) -> tuple:
+        """(x, y) centres of the group's ROIs, index-aligned with vals()."""
+        if g.gid not in pcache:
+            grois = group_rois(rois, g.gid)
+            pcache[g.gid] = (group_positions(grois, "x"),
+                             group_positions(grois, "y"))
+        return pcache[g.gid]
+
+    def series_of(g: Group, mid: str) -> Series:
+        v = vals(g, mid)
+        if mid == SNR_ID:                 # one value per group, no position
+            return Series(g.name, g.color, v)
+        px, py = positions(g)
+        return Series(g.name, g.color, v, px, py)
 
     def vals(g: Group, mid: str) -> np.ndarray:
         key = (g.gid, mid)
@@ -352,8 +455,8 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
                 empty="Add ROIs to two or more groups to compare.")
         res = AnalysisResult(subtitle=f"{len(used)} groups")
         for mid in metrics:
-            res.charts.append(Chart(metric_label(mid), [
-                Series(g.name, g.color, vals(g, mid)) for g in used]))
+            res.charts.append(Chart(metric_label(mid),
+                                    [series_of(g, mid) for g in used]))
         res.table_headers = ["Group", "ROIs"] + [metric_label(m) for m in metrics]
         for g in used:
             n = len(group_rois(rois, g.gid))
@@ -385,8 +488,7 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
     res = AnalysisResult(
         subtitle=f"{g.name} · {len(group_rois(rois, g.gid))} ROIs")
     for mid in metrics:
-        res.charts.append(Chart(metric_label(mid),
-                                [Series(g.name, g.color, vals(g, mid))]))
+        res.charts.append(Chart(metric_label(mid), [series_of(g, mid)]))
     res.table_headers = ["", "ROIs"] + [metric_label(m) for m in metrics]
     res.table_rows.append((g.name, g.color,
                            [str(len(group_rois(rois, g.gid)))]

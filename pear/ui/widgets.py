@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QFrame,
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
                                QWidget)
 
-from pear.core.analysis import Group, heat_color, pixel_hist
+from pear.core.analysis import (Group, heat_color, linear_trend,
+                               pixel_hist, profile_by_position,
+                               uniformity)
 from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
                                   metric_label)
 from pear.ui import theme
@@ -73,7 +75,9 @@ def _clear(layout) -> None:
 # Distribution chart (box + jittered strip)
 # --------------------------------------------------------------------------- #
 class DistributionChart(QWidget):
-    """Vertical box-and-strip plot, or an overlaid histogram (toggle)."""
+    """Vertical box-and-strip plot, an overlaid histogram, a position
+    profile (the metric against where each ROI sits on the image), or a
+    spatial heat map of the ROIs."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,21 +85,40 @@ class DistributionChart(QWidget):
         self._series: List[dict] = []
         self._ctype = "box"
         self._opts = {"points": True, "whiskers": True}
+        self._axis = "x"
+        self._trend = True
         self.setMinimumHeight(212)
 
     def set_data(self, title: str, series: List[dict], ctype: str = "box",
-                 opts=None) -> None:
+                 opts=None, axis: str = "x", trend: bool = True) -> None:
         self._title = title
         self._ctype = ctype
         self._opts = {"points": True, "whiskers": True, **(opts or {})}
+        self._axis = "y" if str(axis).lower() == "y" else "x"
+        self._trend = bool(trend)
         clean = []
         for s in series:
             v = np.asarray(s["values"], dtype=np.float64)
-            v = v[np.isfinite(v)]
-            if v.size:
-                clean.append({"label": s["label"], "color": s["color"], "values": v})
+            keep = np.isfinite(v)
+            if not keep.any():
+                continue
+            item = {"label": s["label"], "color": s["color"], "values": v[keep]}
+            # positions are index-aligned with values, so they take the same mask
+            for key in ("pos_x", "pos_y"):
+                arr = s.get(key)
+                if arr is None:
+                    continue
+                arr = np.asarray(arr, dtype=np.float64)
+                if arr.size == v.size:
+                    item[key] = arr[keep]
+            clean.append(item)
         self._series = clean
-        self.setMinimumHeight(212)
+        if ctype == "position":
+            self.setMinimumHeight(230 + 15 * len(clean))
+        elif ctype == "map":
+            self.setMinimumHeight(300)
+        else:
+            self.setMinimumHeight(212)
         self.update()
 
     def paintEvent(self, _e) -> None:
@@ -113,6 +136,10 @@ class DistributionChart(QWidget):
             return
         if self._ctype == "hist":
             self._paint_hist(p)
+        elif self._ctype == "position":
+            self._paint_position(p)
+        elif self._ctype == "map":
+            self._paint_map(p)
         else:
             self._paint_box(p)
         p.end()
@@ -206,6 +233,258 @@ class DistributionChart(QWidget):
             p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
                        Qt.AlignHCenter | Qt.AlignVCenter, lab)
 
+    # -- position profile (metric vs. where the ROI sits) -------------- #
+    def _paint_position(self, p: QPainter) -> None:
+        """Metric on Y against ROI centre position on X.
+
+        A uniform field reads as a flat line; a tilt or a bow is the
+        non-uniformity. Every ROI is a dot, ROIs sharing a position collapse
+        into the profile line, and the dashed line is the least-squares fit.
+        """
+        key = "pos_y" if self._axis == "y" else "pos_x"
+        series = [s for s in self._series
+                  if s.get(key) is not None and s[key].size]
+        if not series:
+            p.setPen(QColor(theme.INK3))
+            p.setFont(theme.mono_font(9))
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "no per-ROI position for this metric")
+            return
+
+        allv = np.concatenate([s["values"] for s in series])
+        allx = np.concatenate([s[key] for s in series])
+        lo, hi = float(allv.min()), float(allv.max())
+        if hi - lo < 1e-9:
+            lo, hi = lo - 0.5, hi + 0.5
+        pad = (hi - lo) * 0.12
+        lo, hi = lo - pad, hi + pad
+        xlo, xhi = float(allx.min()), float(allx.max())
+        if xhi - xlo < 1e-9:
+            xlo, xhi = xlo - 1.0, xhi + 1.0
+        xpad = (xhi - xlo) * 0.04
+        xlo, xhi = xlo - xpad, xhi + xpad
+
+        # value labels can need many decimals on a near-flat profile, so size
+        # the gutter from the widest one rather than a fixed guess
+        p.setFont(theme.mono_font(8))
+        fm = p.fontMetrics()
+        ticks = [_fmt_span(hi - (hi - lo) * t / 4.0, hi - lo) for t in range(5)]
+        top = 34
+        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ticks) + 26,
+                           46, 120))
+        legend_h = 15 * len(series)
+        bottom = max(top + 40, self.height() - (32 + legend_h))
+        right = self.width() - 12
+        H = max(10, bottom - top)
+        W = max(10, right - left)
+
+        def X(v):
+            return left + (v - xlo) / (xhi - xlo) * W
+
+        def Y(v):
+            return bottom - (v - lo) / (hi - lo) * H
+
+        # grid + value axis
+        for t, lab in enumerate(ticks):
+            gy = top + H * t / 4.0
+            p.setPen(QPen(QColor(theme.LINE2), 1))
+            p.drawLine(left, int(gy), right, int(gy))
+            p.setPen(QColor(theme.INK3))
+            p.drawText(QRectF(18, gy - 6, left - 24, 12),
+                       Qt.AlignRight | Qt.AlignVCenter, lab)
+        self._ytitle(p, "value")
+
+        # position axis
+        p.setPen(QPen(QColor(theme.LINE2), 1))
+        p.drawLine(left, bottom, right, bottom)
+        p.setPen(QColor(theme.INK3))
+        for t in range(5):
+            gx = left + W * t / 4.0
+            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+                       f"{xlo + (xhi - xlo) * t / 4.0:.0f}")
+        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
+                   f"ROI centre {self._axis.upper()} (px)")
+
+        ly = bottom + 30
+        for s in series:
+            col = QColor(s["color"])
+            px_, v = s[key], s["values"]
+
+            # Drawn back to front: the two reference lines first, then the
+            # data on top of them. The other way round the amber trend hides
+            # the profile it is meant to be compared against.
+            fit = linear_trend(px_, v)
+
+            # group mean — where a perfectly flat profile would sit
+            mean = float(v.mean())
+            ref = QColor(col)
+            ref.setAlpha(70)
+            pen = QPen(ref, 1)
+            pen.setStyle(Qt.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(left, int(Y(mean)), right, int(Y(mean)))
+
+            # least-squares tilt — the brand accent, so it never reads as data
+            if self._trend and fit is not None:
+                slope, inter = fit
+                pen = QPen(QColor(theme.AMBER), 1.6)
+                pen.setStyle(Qt.DashLine)
+                p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                y0 = min(hi, max(lo, slope * xlo + inter))
+                y1 = min(hi, max(lo, slope * xhi + inter))
+                p.drawLine(QPointF(X(xlo), Y(y0)), QPointF(X(xhi), Y(y1)))
+
+            # every ROI as a dot
+            dot = QColor(col)
+            dot.setAlpha(130)
+            p.setPen(Qt.NoPen)
+            p.setBrush(dot)
+            for a, b in zip(px_, v):
+                p.drawEllipse(QPointF(X(a), Y(b)), 3.0, 3.0)
+
+            # profile line through the mean of the ROIs at each position.
+            # Deliberately a darker shade than the dots: same colour at the
+            # same weight and the line disappears into its own scatter.
+            cx, cy = profile_by_position(px_, v)
+            if cx.size >= 2:
+                p.setPen(QPen(col.darker(190), 2.2))
+                p.setBrush(Qt.NoBrush)
+                pts = [QPointF(X(a), Y(b)) for a, b in zip(cx, cy)]
+                for a, b in zip(pts, pts[1:]):
+                    p.drawLine(a, b)
+
+            # legend row: the flatness numbers, no verdict
+            u = uniformity(v)
+            txt = (f"{s['label']} · n={u['n']}"
+                   f" · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
+                   f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
+                   f" · CV {_pct(u['cv_pct'])}")
+            if fit is not None:
+                txt += f" · slope {fit[0] * 100:+.3g}/100px"
+            p.setBrush(col)
+            p.setPen(Qt.NoPen)
+            p.drawRect(int(left), int(ly) + 2, 8, 8)
+            p.setPen(QColor(theme.INK2))
+            p.setFont(theme.mono_font(8))
+            p.drawText(QRectF(left + 12, ly - 2, W - 12, 14),
+                       Qt.AlignLeft | Qt.AlignVCenter,
+                       p.fontMetrics().elidedText(txt, Qt.ElideRight,
+                                                  int(W - 14)))
+            ly += 15
+
+    # -- spatial heat map (ROI layout coloured by the metric) ---------- #
+    def _paint_map(self, p: QPainter) -> None:
+        """Every ROI drawn where it sits, coloured by its metric value.
+
+        Y runs downward to match the image. A uniform field is one flat
+        colour; a gradient or a hot corner is the non-uniformity.
+        """
+        series = [s for s in self._series
+                  if s.get("pos_x") is not None and s.get("pos_y") is not None
+                  and s["pos_x"].size]
+        if not series:
+            p.setPen(QColor(theme.INK3))
+            p.setFont(theme.mono_font(9))
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "no per-ROI position for this metric")
+            return
+
+        allv = np.concatenate([s["values"] for s in series])
+        allx = np.concatenate([s["pos_x"] for s in series])
+        ally = np.concatenate([s["pos_y"] for s in series])
+        lo, hi = float(allv.min()), float(allv.max())
+        flat = (hi - lo) < 1e-9
+
+        def span(a):
+            v0, v1 = float(a.min()), float(a.max())
+            if v1 - v0 < 1e-9:
+                v0, v1 = v0 - 1.0, v1 + 1.0
+            pad = (v1 - v0) * 0.08
+            return v0 - pad, v1 + pad
+
+        xlo, xhi = span(allx)
+        ylo, yhi = span(ally)
+
+        top, left = 34, 52
+        cbar_w = 54
+        bottom = max(top + 40, self.height() - 46)
+        right = self.width() - 12 - cbar_w
+        H = max(10, bottom - top)
+        W = max(10, right - left)
+
+        def X(v):
+            return left + (v - xlo) / (xhi - xlo) * W
+
+        def Y(v):                       # image Y grows downward
+            return top + (v - ylo) / (yhi - ylo) * H
+
+        p.setPen(QPen(QColor(theme.LINE2), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(int(left), int(top), int(W), int(H))
+        p.setFont(theme.mono_font(8))
+        p.setPen(QColor(theme.INK3))
+        for t in range(3):              # X ticks
+            gx = left + W * t / 2.0
+            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
+                       f"{xlo + (xhi - xlo) * t / 2.0:.0f}")
+        for t in range(3):              # Y ticks (top = small y, like the image)
+            gy = top + H * t / 2.0
+            p.drawText(QRectF(6, gy - 6, left - 10, 12),
+                       Qt.AlignRight | Qt.AlignVCenter,
+                       f"{ylo + (yhi - ylo) * t / 2.0:.0f}")
+        p.drawText(QRectF(left, bottom + 15, W, 12), Qt.AlignHCenter,
+                   "ROI centre X (px)")
+        self._ytitle(p, "ROI centre Y (px)")
+
+        # A scatter, not a tiling: one dot per ROI at its own (x, y), coloured
+        # by the metric. Size follows the tightest neighbour spacing only so
+        # that dense layouts stay readable — dots never grow into blocks.
+        rad = 7.0
+        if allx.size > 1:
+            for arr, sc in ((allx, W / (xhi - xlo)), (ally, H / (yhi - ylo))):
+                u = np.unique(np.round(arr, 0))
+                if u.size > 1:
+                    rad = min(rad, float(np.min(np.diff(u))) * sc * 0.34)
+        rad = float(np.clip(rad, 2.5, 9.0))
+
+        ring = len(series) > 1        # only needed to tell groups apart
+        for s in series:
+            edge = QColor(s["color"])
+            for cx, cy, v in zip(s["pos_x"], s["pos_y"], s["values"]):
+                t = 0.5 if flat else (float(v) - lo) / (hi - lo)
+                p.setBrush(QColor(heat_color(t)))
+                p.setPen(QPen(edge, 1.2) if ring
+                         else QPen(QColor(theme.LINE), 0.8))
+                p.drawEllipse(QPointF(X(cx), Y(cy)), rad, rad)
+
+        # colour bar
+        bx = right + 16
+        bw, bh = 12, H
+        for i in range(int(bh)):
+            t = 1.0 - i / max(1.0, bh - 1)
+            p.setPen(QColor(heat_color(t)))
+            p.drawLine(int(bx), int(top + i), int(bx + bw), int(top + i))
+        p.setPen(QPen(QColor(theme.LINE2), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(int(bx), int(top), bw, int(bh))
+        p.setPen(QColor(theme.INK3))
+        p.setFont(theme.mono_font(8))
+        p.drawText(QRectF(bx + bw + 2, top - 2, cbar_w - bw - 4, 12),
+                   Qt.AlignLeft, _fmt_span(hi, hi - lo))
+        p.drawText(QRectF(bx + bw + 2, top + bh - 10, cbar_w - bw - 4, 12),
+                   Qt.AlignLeft, _fmt_span(lo, hi - lo))
+
+        u = uniformity(allv)
+        p.setPen(QColor(theme.INK2))
+        p.setFont(theme.mono_font(8))
+        p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
+                   Qt.AlignLeft | Qt.AlignVCenter,
+                   f"n={u['n']} · mean {_fmt_span(u['mean'], u['range'] or 1.0)}"
+                   f" · range {_fmt(u['range'])} ({_pct(u['range_pct'])})"
+                   f" · CV {_pct(u['cv_pct'])}")
+
     # -- overlaid histogram ------------------------------------------- #
     def _paint_hist(self, p: QPainter) -> None:
         lo, hi = self._range()
@@ -275,6 +554,25 @@ def _fmt(v: float) -> str:
     if a >= 1000 or (0 < a < 0.01):
         return f"{v:.2e}"
     return f"{v:.3g}"
+
+
+def _fmt_span(v: float, span: float) -> str:
+    """Label with enough decimals to tell neighbouring ticks apart.
+
+    A near-flat profile spans a fraction of a grey level, where ``_fmt``'s
+    3 significant digits would print every tick the same.
+    """
+    step = float(span) / 4.0
+    if not np.isfinite(step) or step <= 0:
+        return _fmt(v)
+    if abs(v) >= 1e5 or (0 < abs(v) < 1e-3):
+        return f"{v:.2e}"
+    dec = int(np.clip(np.ceil(-np.log10(step)) + 1, 0, 6))
+    return f"{v:.{dec}f}"
+
+
+def _pct(v: float) -> str:
+    return f"{v:.2f}%" if abs(v) < 1.0 else f"{v:.1f}%"
 
 
 def _is_dark(hexcol) -> bool:
@@ -800,12 +1098,21 @@ class AnalysisPanel(QWidget):
         head.addSpacing(10)
         self.box_btn = QPushButton("◫ Box")
         self.hist_btn = QPushButton("▭ Histogram")
-        for b, t in ((self.box_btn, "box"), (self.hist_btn, "hist")):
+        self.pos_btn = QPushButton("↗ Position")
+        self.map_btn = QPushButton("▦ Heat map")
+        for b, t in ((self.box_btn, "box"), (self.hist_btn, "hist"),
+                     (self.pos_btn, "position"), (self.map_btn, "map")):
             b.setCheckable(True)
             b.setFixedHeight(28)
-            b.setToolTip("Switch every chart between box-and-strip and histogram.")
             b.clicked.connect(lambda _=False, tt=t: self._pick_ctype(tt))
             head.addWidget(b)
+        self.box_btn.setToolTip("Distribution as a box-and-strip plot.")
+        self.hist_btn.setToolTip("Distribution as an overlaid histogram.")
+        self.pos_btn.setToolTip(
+            "Metric against ROI position — a uniform field reads flat.")
+        self.map_btn.setToolTip(
+            "Spatial heat map: each ROI drawn where it sits, coloured by the "
+            "metric.")
         self.box_btn.setChecked(True)
         head.addSpacing(8)
         self.points_chk = QCheckBox("points")
@@ -814,6 +1121,19 @@ class AnalysisPanel(QWidget):
             chk.setChecked(True)
             chk.toggled.connect(self._on_chart_opts)
             head.addWidget(chk)
+        self.axis_box = QComboBox()
+        self.axis_box.addItem("X position", "x")
+        self.axis_box.addItem("Y position", "y")
+        self.axis_box.setToolTip("Plot against the ROI centre's X or Y coordinate.")
+        self.axis_box.currentIndexChanged.connect(self._on_axis)
+        self.axis_box.setVisible(False)
+        head.addWidget(self.axis_box)
+        self.trend_chk = QCheckBox("trend")
+        self.trend_chk.setChecked(True)
+        self.trend_chk.setToolTip("Overlay the least-squares tilt of the profile.")
+        self.trend_chk.toggled.connect(self._on_chart_opts)
+        self.trend_chk.setVisible(False)
+        head.addWidget(self.trend_chk)
         self.selector_lbl = QLabel("")
         self.selector_lbl.setObjectName("Hint")
         head.addWidget(self.selector_lbl)
@@ -844,6 +1164,7 @@ class AnalysisPanel(QWidget):
 
         self._mode = "between"
         self._chart_type = "box"
+        self._pos_axis = "x"
         self._last_result = None
         self._suppress = False
 
@@ -857,14 +1178,38 @@ class AnalysisPanel(QWidget):
         self._chart_type = t
         self.box_btn.setChecked(t == "box")
         self.hist_btn.setChecked(t == "hist")
-        self.points_chk.setEnabled(t == "box")
-        self.whiskers_chk.setEnabled(t == "box")
+        self.pos_btn.setChecked(t == "position")
+        self.map_btn.setChecked(t == "map")
+        for chk in (self.points_chk, self.whiskers_chk):
+            chk.setEnabled(t == "box")
+            chk.setVisible(t not in ("position", "map"))
+        self.axis_box.setVisible(t == "position")
+        self.trend_chk.setVisible(t == "position")
         if self._last_result is not None:
             self._render_body(self._last_result)   # re-render, no recompute
+
+    def _on_axis(self, _i: int) -> None:
+        if self._suppress:
+            return
+        self._pos_axis = str(self.axis_box.currentData() or "x")
+        if self._last_result is not None:
+            self._render_body(self._last_result)   # positions are already there
 
     def _on_chart_opts(self, _=False) -> None:
         if self._last_result is not None:
             self._render_body(self._last_result)
+
+    def chart_state(self) -> tuple:
+        """(chart type, position axis) — persisted with the project."""
+        return self._chart_type, self._pos_axis
+
+    def set_chart_state(self, ctype, axis) -> None:
+        self._suppress = True
+        self._pos_axis = "y" if str(axis).lower() == "y" else "x"
+        self.axis_box.setCurrentIndex(1 if self._pos_axis == "y" else 0)
+        self._suppress = False
+        self._pick_ctype(ctype if ctype in ("box", "hist", "position", "map")
+                         else "box")
 
     def _selector_changed(self, _i: int) -> None:
         if self._suppress:
@@ -905,7 +1250,9 @@ class AnalysisPanel(QWidget):
             self._empty(result.empty)
             return
         charts = [(c.title, [{"label": s.label, "color": s.color,
-                              "values": s.values} for s in c.series])
+                              "values": s.values,
+                              "pos_x": s.pos_x, "pos_y": s.pos_y}
+                             for s in c.series])
                   for c in result.charts]
         self._chart_grid(charts)
         if result.ranking:
@@ -1013,10 +1360,15 @@ class AnalysisPanel(QWidget):
         grid.setSpacing(10)
         opts = {"points": self.points_chk.isChecked(),
                 "whiskers": self.whiskers_chk.isChecked()}
+        wide = self._chart_type in ("position", "map")   # these need the width
         for i, (title, series) in enumerate(charts):
             chart = DistributionChart()
-            chart.set_data(title, series, self._chart_type, opts)
-            grid.addWidget(chart, i // 2, i % 2)
+            chart.set_data(title, series, self._chart_type, opts,
+                           axis=self._pos_axis, trend=self.trend_chk.isChecked())
+            if wide:
+                grid.addWidget(chart, i, 0, 1, 2)
+            else:
+                grid.addWidget(chart, i // 2, i % 2)
         self.body_lay.addWidget(grid_host)
 
     def _table(self, headers, rows) -> None:

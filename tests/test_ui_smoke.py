@@ -410,3 +410,94 @@ def test_export_includes_snr_with_target(app, tmp_path):
     assert win.export_csv(str(out)) == str(out)
     text = out.read_text(encoding="utf-8-sig")
     assert "role" in text and "SNR" in text
+
+
+def _grid_group(win, rows=3, cols=4):
+    """A group whose ROIs tile the field, so positions vary on both axes."""
+    from pear.core.analysis import grid_between
+    win.add_group()
+    for r in grid_between((14, 12), (110, 70), rows, cols, 8, 8):
+        win.on_roi_created(r)
+    return win._active_gid
+
+
+def test_position_profile_and_heatmap_render(app):
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    ap = win.analysis
+
+    for ctype in ("position", "map"):
+        ap._pick_ctype(ctype)
+        app.processEvents()
+        charts = [c for c in ap.body.findChildren(DistributionChart)
+                  if c._ctype == ctype]
+        assert charts, f"no {ctype} chart rendered"
+        c = charts[0]
+        assert c._series and c._series[0]["pos_x"].size == len(win._rois)
+        assert c._series[0]["pos_y"].size == len(win._rois)
+        c.grab()                       # exercises the painter
+    # the axis toggle is render-only: no recompute, positions are already there
+    ap._pick_ctype("position")
+    ap.axis_box.setCurrentIndex(1)
+    app.processEvents()
+    assert ap.chart_state() == ("position", "y")
+    for c in ap.body.findChildren(DistributionChart):
+        c.grab()
+
+
+def test_position_chart_without_positions_is_safe(app):
+    """SNR has no per-ROI position — the chart says so instead of crashing."""
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import DistributionChart
+    from pear.core.analysis import group_rois
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    gid = _grid_group(win, 2, 2)
+    win.set_target_roi(group_rois(win._rois, gid)[0].rid)
+    win.set_metrics(["snr"])
+    win.on_cmp_mode("within")
+    win.on_within_group(gid)
+    win.render_analysis_sync()
+    win.analysis._pick_ctype("position")
+    app.processEvents()
+    for c in win.analysis.body.findChildren(DistributionChart):
+        assert all("pos_x" not in s for s in c._series)
+        c.grab()                       # draws the "no position" hint
+
+
+def test_chart_state_round_trips_through_a_project(app, tmp_path):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _grid_group(win, 2, 3)
+    win.analysis.set_chart_state("map", "y")
+    out = tmp_path / "p.pear.json"
+    win.save_project(str(out))
+
+    win2 = MainWindow()
+    win2.set_image(make_field(), "f.png")
+    assert win2.analysis.chart_state() == ("box", "x")
+    import json
+    win2._restore_project(json.loads(out.read_text(encoding="utf-8")))
+    assert win2.analysis.chart_state() == ("map", "y")
+
+
+def test_csv_carries_the_roi_centre(app, tmp_path):
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.add_group()
+    win.on_roi_created((10, 20, 10, 10))
+    win.set_metrics(["glv_mean"])
+    out = tmp_path / "c.csv"
+    assert win.export_csv(str(out)) == str(out)
+    text = out.read_text(encoding="utf-8-sig")
+    assert "center_x" in text and "center_y" in text
+    assert "15,25" in text.replace(", ", ",")     # centre of (10,20,10,10)

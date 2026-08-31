@@ -6,6 +6,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,9 +15,10 @@ from pear.core.analysis import (ROI, Group, attribute_separability, cohens_d,
                                 compute_analysis, grid_between, group_outliers,
                                 group_rois, group_snr, group_values,
                                 groups_from_json, groups_to_json, heat_color,
-                                pixel_hist, roi_metric, roi_patch,
-                                rois_from_json, rois_to_json, snapshot,
-                                summarize)
+                                group_positions, linear_trend, pixel_hist,
+                                profile_by_position, roi_center, roi_metric,
+                                roi_patch, rois_from_json, rois_to_json,
+                                snapshot, summarize, uniformity)
 from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
 
 
@@ -180,3 +182,67 @@ def test_snapshot_isolates_from_mutation():
     groups[0].target_rid = 999
     assert rs[0].rect != (0, 0, 1, 1) and gs[0].name == "Bright"
     assert gs[0].target_rid == 1              # snapshot copies the SNR target
+
+
+def test_roi_center_and_group_positions():
+    rois = [ROI(1, "g", (10, 20, 10, 10)), ROI(2, "g", (30, 20, 10, 10))]
+    assert roi_center(rois[0].rect) == (15.0, 25.0)
+    assert list(group_positions(rois, "x")) == [15.0, 35.0]
+    assert list(group_positions(rois, "y")) == [25.0, 25.0]
+    # anything but "y" means the X axis
+    assert list(group_positions(rois, "X")) == [15.0, 35.0]
+
+
+def test_linear_trend_recovers_a_known_slope():
+    x = np.arange(10, dtype=np.float64)
+    fit = linear_trend(x, 3.0 * x + 7.0)
+    assert fit is not None
+    slope, intercept = fit
+    assert slope == pytest.approx(3.0)
+    assert intercept == pytest.approx(7.0)
+    # a flat profile is slope 0 — the uniform case the tool is built to show
+    flat = linear_trend(x, np.full(10, 5.0))
+    assert flat is not None and flat[0] == pytest.approx(0.0)
+    # degenerate inputs report nothing rather than a bogus tilt
+    assert linear_trend([1.0], [2.0]) is None
+    assert linear_trend([4.0, 4.0, 4.0], [1.0, 2.0, 3.0]) is None
+
+
+def test_uniformity_range_and_cv():
+    u = uniformity([100.0, 110.0, 90.0])
+    assert u["n"] == 3
+    assert u["mean"] == pytest.approx(100.0)
+    assert u["range"] == pytest.approx(20.0)
+    assert u["range_pct"] == pytest.approx(20.0)
+    assert u["cv_pct"] == pytest.approx(np.std([100, 110, 90]) / 100 * 100)
+    # perfectly flat -> zero spread, and no divide-by-zero on an empty set
+    assert uniformity([7.0, 7.0, 7.0])["range"] == 0.0
+    assert uniformity([])["n"] == 0
+    assert uniformity([0.0, 0.0])["range_pct"] == 0.0
+
+
+def test_profile_by_position_averages_shared_positions():
+    # a grid puts several ROIs at the same X; they collapse to one point
+    pos = np.array([10.0, 10.0, 20.0, 20.0])
+    val = np.array([4.0, 6.0, 10.0, 20.0])
+    cx, cy = profile_by_position(pos, val)
+    assert list(cx) == [10.0, 20.0]
+    assert list(cy) == [5.0, 15.0]
+    assert profile_by_position([], [])[0].size == 0
+
+
+def test_compute_analysis_carries_roi_positions():
+    img = make_field()
+    groups = [Group("g1", "A", "#f00"), Group("g2", "B", "#00f")]
+    rois = [ROI(1, "g1", (2, 2, 8, 8)), ROI(2, "g1", (30, 2, 8, 8)),
+            ROI(3, "g2", (2, 30, 8, 8)), ROI(4, "g2", (30, 30, 8, 8))]
+    res = compute_analysis(img, groups, rois, ["glv_mean"], "between", None)
+    s = res.charts[0].series[0]
+    assert s.pos_x is not None and s.pos_y is not None
+    assert s.pos_x.size == s.values.size == 2
+    assert list(s.pos_x) == [6.0, 34.0]
+    # SNR is one value for the whole group, so it carries no ROI positions
+    for g in groups:
+        g.target_rid = group_rois(rois, g.gid)[0].rid
+    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
+    assert snr_res.charts[0].series[0].pos_x is None

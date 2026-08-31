@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
 from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
                                 group_outliers, group_rois, group_snr,
                                 groups_from_json, groups_to_json, heat_color,
-                                load_image, roi_metric, roi_patch,
+                                load_image, roi_center, roi_metric, roi_patch,
                                 rois_from_json, rois_to_json, snapshot,
                                 summarize)
 from pear.core.attributes import SNR_ID, metric_label
@@ -637,6 +637,8 @@ class MainWindow(QMainWindow):
             "cmp_mode": self._cmp_mode,
             "within_gid": self._within_gid,
             "active_gid": self._active_gid,
+            "chart_type": self.analysis.chart_state()[0],
+            "pos_axis": self.analysis.chart_state()[1],
         }
 
     def save_project(self, path: str) -> str:
@@ -680,6 +682,8 @@ class MainWindow(QMainWindow):
         self._selected_rids = set()
         self.rail.set_metric_state(self._metrics, self._show_metric,
                                    self._heatmap, self._flag_outliers)
+        self.analysis.set_chart_state(data.get("chart_type", "box"),
+                                      data.get("pos_axis", "x"))
         self._refresh()
 
     # ------------------------------------------------------------------ #
@@ -701,7 +705,8 @@ class MainWindow(QMainWindow):
             w = csv.writer(fh)
             w.writerow(["PEAR group & ROI analysis"])
             w.writerow([])
-            header = ["group", "roi", "role", "x", "y", "w", "h"] + \
+            header = ["group", "roi", "role", "x", "y", "w", "h",
+                      "center_x", "center_y"] + \
                      [metric_label(m) for m in self._metrics]
             w.writerow(header)
             for g in self._groups:
@@ -711,7 +716,9 @@ class MainWindow(QMainWindow):
                     x, y, wid, hei = roi.rect
                     role = ("T" if roi.rid == g.target_rid
                             else ("R" if g.target_rid is not None else ""))
-                    row = [g.name, roi.label, role, x, y, wid, hei]
+                    cx, cy = roi_center(roi.rect)
+                    row = [g.name, roi.label, role, x, y, wid, hei,
+                           f"{cx:g}", f"{cy:g}"]
                     for mid in self._metrics:
                         if mid == SNR_ID:
                             # SNR is per group; report it on the target row only

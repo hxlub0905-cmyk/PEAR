@@ -44,12 +44,33 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
   group, overlaid.
 - **Within a group** — the distribution across one group's ROIs.
 
-Charts render as **vertical box-and-strip** plots (toggle **whiskers** / strip
-**points**) or an overlaid **histogram**, with labelled axes. Between-group mode
+Charts render four ways, switched by one toggle: **vertical box-and-strip**
+plots (toggle **whiskers** / strip **points**), an overlaid **histogram**, a
+**position profile**, or a **heat map**. Between-group mode
 also gives an **attribute-ranking** table — which metric best separates the
 groups, scored by η² (variance explained) and Cohen's d — and a **group ×
 metric heatmap** for an at-a-glance overview, plus a summary table. **CSV
 export** carries every ROI's metrics and a per-group summary.
+
+## Uniformity — is the GLV flat across the field?
+
+Two views answer "are all these ROIs measuring the same thing?" — the question
+you ask when every box sits on the same layer (all on EPI, say) and you expect
+one number everywhere.
+
+- **Position profile** — the metric on Y against the ROI's **centre X or Y** on
+  X (switchable). Every ROI is a dot; ROIs sharing a position collapse into the
+  profile line; a dashed **least-squares trend** shows the tilt and a faint
+  dashed line marks the group mean. **A uniform field reads as a flat line.**
+- **Heat map** — a scatter of the ROIs at their own **(x, y)**, each dot
+  coloured by the metric, with a colour bar. **A uniform field is one flat
+  colour**; a gradient or a hot corner is the non-uniformity, and you can see
+  *where* it is.
+
+Both print the numbers rather than a verdict: **range** (peak-to-peak),
+**range %** and **CV %** of the mean, and the trend **slope per 100 px**. CSV
+export carries each ROI's `center_x` / `center_y`, so the same profile replots
+anywhere.
 
 **Double-click any ROI** for a **pixel inspector** in its own window: a
 false-colour view of the patch, its grey-level histogram, and horizontal /
@@ -59,7 +80,8 @@ vertical intensity profiles.
 
 - Fully **offline** — no network, no telemetry, all computation local.
 - **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-  metrics, and view state; reopen to pick up where you left off.
+  metrics, and view state (including the chart type and position axis);
+  reopen to pick up where you left off.
 - Open one 8-bit grayscale image (TIFF/PNG/JPG/BMP); 16-bit/RGB inputs are
   normalized to 8-bit grayscale on load (CJK-path safe IO).
 - Hover an ROI on the canvas or in the list — the other side highlights in sync.
@@ -97,12 +119,14 @@ pytest                              # headless core + offscreen UI smoke
 
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
   grid interpolation, outlier detection, heat colormap, attribute separability /
-  ranking, pixel histogram, project (de)serialize, between/within comparison,
-  snapshot isolation.
+  ranking, pixel histogram, ROI positions / linear trend / uniformity, project
+  (de)serialize, between/within comparison, snapshot isolation.
+- `tests/test_bundle.py` — the single-file text bundle round-trips byte for
+  byte, survives CRLF, catches tampering, and is not stale.
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
   select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
-  save/open, CSV export.
+  save/open, CSV export, position profile + heat map.
 
 ## Repository layout
 
@@ -115,6 +139,20 @@ pear/
     ui/            # all Qt (theme, image_view, widgets, main_window)
   tests/
   examples/        # make_sample.py
+  tools/           # make_text_bundle.py — pack the repo into one text file
+  bundle/          # pear_bundle.py — that pack (regenerate after every change)
+  docs/            # NO-GIT-SETUP.md — install where downloads are blocked
+```
+
+## Offline install (no git, downloads blocked)
+
+Where the machine cannot download anything but can copy from GitHub, the whole
+repo travels as **one plain-text `.py`** that unpacks itself — see
+[`docs/NO-GIT-SETUP.md`](docs/NO-GIT-SETUP.md). Regenerate it after every
+change, or the other machine silently gets old code:
+
+```bash
+git add -A && python tools/make_text_bundle.py && git add -A
 ```
 
 ## Scope (V1)
@@ -122,7 +160,7 @@ pear/
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
 grid / box-select), GLV + within-group SNR metrics, value heatmap + outlier
 flagging, attribute ranking + group×metric heatmap, per-ROI pixel inspector,
-between-group and within-group distribution comparison (box or histogram) in a
-separate window, project save/open, CSV export.
+between-group and within-group comparison in a separate window (box, histogram,
+position profile, or spatial heat map), project save/open, CSV export.
 
 Out of scope: defect detection/decision, classification, ML; batch processing.
