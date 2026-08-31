@@ -16,16 +16,17 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
                                 compute_analysis, distribute_rects,
-                                group_outliers, group_rois, group_snr,
+                                group_outliers, group_rois,
                                 groups_from_json, groups_to_json, heat_cells,
                                 heat_color, load_image, roi_center, roi_metric,
                                 roi_patch, rois_from_json, rois_to_json,
                                 snapshot, summarize, uniformity)
-from pear.core.attributes import SNR_ID, metric_label
+from pear.core.attributes import metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
 from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
@@ -57,7 +58,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PEAR — group & ROI analysis")
-        self.resize(1180, 820)
+        self.resize(1320, 860)
 
         self._image: Optional[np.ndarray] = None
         self._groups: List[Group] = []
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         self._heat_range = None           # locked heat colours, or None = auto
         self._roi_order = "placed"        # ROI list order: placed | asc | desc
         self._values: dict = {}           # rid -> shown metric, one pass per refresh
+        self._value_cache: dict = {}      # (rid, rect, metric) -> value
         self._outlier_rids: set = set()
         self._image_path: Optional[str] = None
         self._cmp_mode = "between"
@@ -140,11 +142,20 @@ class MainWindow(QMainWindow):
         # The overlay controls sit on the stage, not at the bottom of the rail:
         # every one of them changes what the image looks like.
         self.stage_bar = StageBar()
+        # In a narrow window the bar's controls would otherwise overlap each
+        # other; it scrolls sideways instead, and never grows the window.
+        bar_scroll = QScrollArea()
+        bar_scroll.setWidget(self.stage_bar)
+        bar_scroll.setWidgetResizable(True)
+        bar_scroll.setFrameShape(QScrollArea.NoFrame)
+        bar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        bar_scroll.setFixedHeight(self.stage_bar.sizeHint().height() + 2)
+        bar_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         stage = QWidget()
         slay = QVBoxLayout(stage)
         slay.setContentsMargins(0, 0, 0, 0)
         slay.setSpacing(0)
-        slay.addWidget(self.stage_bar)
+        slay.addWidget(bar_scroll)
         slay.addWidget(self.image_view, 1)
         self.setCentralWidget(stage)
         self.rail = RailPanel()
@@ -158,8 +169,12 @@ class MainWindow(QMainWindow):
         self.rail_dock.setWidget(scroll)
         self.rail_dock.setFeatures(QDockWidget.DockWidgetMovable |
                                    QDockWidget.DockWidgetFloatable)
+        # The stage will happily take the whole window and leave the rail too
+        # narrow to show its own labels. The rail's width is a floor; the image
+        # gets what is left.
+        self.rail_dock.setMinimumWidth(390)
         self.addDockWidget(Qt.RightDockWidgetArea, self.rail_dock)
-        self.resizeDocks([self.rail_dock], [400], Qt.Horizontal)
+        self.resizeDocks([self.rail_dock], [410], Qt.Horizontal)
 
     def _build_status(self) -> None:
         bar = self.statusBar()
@@ -239,7 +254,6 @@ class MainWindow(QMainWindow):
         self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
         self.rail.roi_size_changed.connect(self.image_view.set_roi_size)
         self.rail.roi_pick.connect(self.select_roi)
-        self.rail.roi_set_target.connect(self.set_target_roi)
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.roi_hovered.connect(self.image_view.set_hover)
         self.rail.metrics_changed.connect(self.set_metrics)
@@ -304,6 +318,7 @@ class MainWindow(QMainWindow):
         self._selected_rids = set()
         self._outlier_rids = set()
         self._within_gid = None
+        self._value_cache = {}    # a new image invalidates every measurement
         self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
         self.image_view.set_image(img)
         self.add_group()          # start with one group so adding ROIs works
@@ -403,16 +418,6 @@ class MainWindow(QMainWindow):
             self._active_gid = roi.gid
         self._refresh()
 
-    def set_target_roi(self, rid: int) -> None:
-        """Tag an ROI as its group's SNR target (toggle off if already target)."""
-        roi = self._roi(rid)
-        if roi is None:
-            return
-        g = self._group(roi.gid)
-        if g is not None:
-            g.target_rid = None if g.target_rid == rid else rid
-            self._refresh()
-
     def on_marquee_selected(self, rids) -> None:
         self._selected_rids = set(rids or [])
         self._refresh()
@@ -447,7 +452,6 @@ class MainWindow(QMainWindow):
         if self._active_rid == rid:
             self._active_rid = None
         self._selected_rids.discard(rid)
-        self._drop_targets({rid})
         self._refresh()
 
     def delete_rois(self, rids) -> None:
@@ -458,22 +462,9 @@ class MainWindow(QMainWindow):
         if self._active_rid in rid_set:
             self._active_rid = None
         self._selected_rids -= rid_set
-        self._drop_targets(rid_set)
         self.statusBar().showMessage(f"Deleted {len(rid_set)} ROIs.", 3000)
         self._refresh()
 
-    def _drop_targets(self, rid_set: set) -> None:
-        for g in self._groups:
-            if g.target_rid in rid_set:
-                g.target_rid = None
-
-    def _target_of_active(self) -> Optional[int]:
-        g = self._group(self._active_gid)
-        return g.target_rid if g is not None else None
-
-    # ------------------------------------------------------------------ #
-    # metrics / comparison
-    # ------------------------------------------------------------------ #
     def set_metrics(self, metrics: List[str]) -> None:
         self._metrics = list(metrics)
         self._render_analysis()
@@ -550,7 +541,7 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _is_glv_show(self) -> bool:
-        return bool(self._show_metric) and self._show_metric != SNR_ID
+        return bool(self._show_metric)
 
     def _update_heatmap(self) -> None:
         # Boxes and field are two ways to paint the same values: either one on
@@ -586,16 +577,21 @@ class MainWindow(QMainWindow):
         """
         vals: dict = {}
         if self._image is not None and self._show_metric:
-            if self._show_metric == SNR_ID:
-                # SNR is a per-group value; it belongs to the target (T) ROI.
-                for g in self._groups:
-                    v = group_snr(self._image, group_rois(self._rois, g.gid),
-                                  g.target_rid)
-                    if v is not None and g.target_rid is not None:
-                        vals[g.target_rid] = float(v)
-            else:
-                for r in self._rois:
-                    vals[r.rid] = roi_metric(self._image, r, self._show_metric)
+            # Nudging one ROI used to re-measure every other one. The patch
+            # only changes when its rect does, so the answer is cached against
+            # it — this is most of the "sticky" feeling on a field with a few
+            # hundred boxes.
+            for r in self._rois:
+                key = (r.rid, tuple(r.rect), self._show_metric)
+                v = self._value_cache.get(key)
+                if v is None:
+                    v = roi_metric(self._image, r, self._show_metric)
+                    self._value_cache[key] = v
+                vals[r.rid] = v
+            if len(self._value_cache) > 20000:          # a session's worth
+                self._value_cache = dict(
+                    ((r.rid, tuple(r.rect), self._show_metric), vals[r.rid])
+                    for r in self._rois)
         self._values = vals
 
     def _update_roi_values(self) -> None:
@@ -629,7 +625,7 @@ class MainWindow(QMainWindow):
         def key(r):
             v = self._values.get(r.rid)
             if v is None or not np.isfinite(v):
-                return (1, 0.0)      # no value (SNR reference) — keep it last
+                return (1, 0.0)      # unmeasurable — keep it last
             return (0, -v if rev else v)
 
         return sorted(rois, key=key)
@@ -693,8 +689,8 @@ class MainWindow(QMainWindow):
         self.rail.set_groups(self._groups, self._active_gid, counts)
         self.rail.set_rois(
             self._ordered_rois(group_rois(self._rois, self._active_gid)),
-            self._active_rid, self._target_of_active(),
-            self._selected_rids, self._outlier_rids, self._values)
+            self._active_rid, self._selected_rids, self._outlier_rids,
+            self._values)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
         self.image_view.set_selection(self._selected_rids)
@@ -931,27 +927,18 @@ class MainWindow(QMainWindow):
             w = csv.writer(fh)
             w.writerow(["PEAR group & ROI analysis"])
             w.writerow([])
-            header = ["group", "roi", "role", "x", "y", "w", "h",
+            header = ["group", "roi", "x", "y", "w", "h",
                       "center_x", "center_y"] + \
                      [metric_label(m) for m in self._metrics]
             w.writerow(header)
             for g in self._groups:
-                grois = group_rois(self._rois, g.gid)
-                gsnr = group_snr(self._image, grois, g.target_rid)
-                for roi in grois:
+                for roi in group_rois(self._rois, g.gid):
                     x, y, wid, hei = roi.rect
-                    role = ("T" if roi.rid == g.target_rid
-                            else ("R" if g.target_rid is not None else ""))
                     cx, cy = roi_center(roi.rect)
-                    row = [g.name, roi.label, role, x, y, wid, hei,
+                    row = [g.name, roi.label, x, y, wid, hei,
                            f"{cx:g}", f"{cy:g}"]
                     for mid in self._metrics:
-                        if mid == SNR_ID:
-                            # SNR is per group; report it on the target row only
-                            row.append(f"{gsnr:.6g}" if (roi.rid == g.target_rid
-                                       and gsnr is not None) else "")
-                        else:
-                            row.append(f"{roi_metric(self._image, roi, mid):.6g}")
+                        row.append(f"{roi_metric(self._image, roi, mid):.6g}")
                     w.writerow(row)
             w.writerow([])
             w.writerow(["summary"])
@@ -962,11 +949,7 @@ class MainWindow(QMainWindow):
                     continue
                 line = [g.name, len(grois)]
                 for mid in self._metrics:
-                    if mid == SNR_ID:
-                        s = group_snr(self._image, grois, g.target_rid)
-                        line.append(f"{s:.6g}" if s is not None else "")
-                    else:
-                        vals = np.array([roi_metric(self._image, r, mid)
-                                         for r in grois])
-                        line.append(f"{summarize(vals)['mean']:.6g}")
+                    vals = np.array([roi_metric(self._image, r, mid)
+                                     for r in grois])
+                    line.append(f"{summarize(vals)['mean']:.6g}")
                 w.writerow(line)

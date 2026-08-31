@@ -15,19 +15,18 @@ from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
                                 cell_edges, cohens_d, distribute_rects,
                                 heat_cells, jitter_tolerance,
                                 compute_analysis, grid_between, group_outliers,
-                                group_rois, group_snr, group_values,
+                                group_rois, group_values,
                                 groups_from_json, groups_to_json, heat_color,
                                 group_positions, linear_trend, pixel_hist,
                                 profile_by_position, roi_center, roi_metric,
                                 roi_patch, rois_from_json, rois_to_json,
                                 snapshot, summarize, uniformity)
-from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
+from pear.core.attributes import glv_value, metric_label, quantile_of
 
 
 def _bright_dark(img):
     """Group 'bright' on feature centers, 'dark' on background corners.
 
-    Each group's first ROI is tagged the SNR target (rids 1 and 5).
     """
     rid = 1
     rois = []
@@ -37,8 +36,8 @@ def _bright_dark(img):
     for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)]:
         rois.append(ROI(rid, "dark", (c * CELL_W + 3, r * CELL_H + 3, 10, 8)))
         rid += 1
-    groups = [Group("bright", "Bright", "#F59E0B", target_rid=1),
-              Group("dark", "Dark", "#2563EB", target_rid=5)]
+    groups = [Group("bright", "Bright", "#0D9488"),
+              Group("dark", "Dark", "#2563EB")]
     return groups, rois
 
 
@@ -50,21 +49,6 @@ def test_roi_patch_and_metrics():
     assert abs(glv_value(p, "glv_mean")
                - roi_metric(img, ROI(1, "g", (22, 18, 20, 16)), "glv_mean")) < 1e-9
     assert quantile_of("glv_q90") == 90 and metric_label("glv_q90") == "GLV Q90"
-
-
-def test_group_snr_within_target_vs_reference():
-    img = make_field()
-    # target on a bright feature, references on dark background
-    tgt = ROI(1, "g", (22, 18, 20, 16))
-    refs = [ROI(2, "g", (3, 3, 10, 8)), ROI(3, "g", (CELL_W + 3, 3, 10, 8))]
-    rois = [tgt] + refs
-    snr = group_snr(img, rois, target_rid=1)
-    assert snr is not None and snr > 0                    # bright over dark
-    assert group_snr(img, rois, target_rid=None) is None  # no target
-    assert group_snr(img, [tgt], target_rid=1) is None     # no reference
-    flat = np.full((60, 60), 100, np.uint8)                # reference has no spread
-    assert group_snr(flat, [ROI(1, "g", (20, 20, 10, 10)),
-                            ROI(2, "g", (0, 0, 10, 10))], 1) is None
 
 
 def test_group_values_distributions_separate():
@@ -105,13 +89,13 @@ def test_grid_between_interpolates_anchor_centers():
 def test_compute_analysis_between_and_within():
     img = make_field()
     groups, rois = _bright_dark(img)
-    res = compute_analysis(img, groups, rois, ["glv_mean", SNR_ID], "between", None)
+    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std"],
+                           "between", None)
     assert res.empty is None
     assert len(res.charts) == 2 and len(res.charts[0].series) == 2
     assert len(res.table_rows) == 2
-    # SNR is one value per group (targets are set in _bright_dark)
-    snr_chart = res.charts[1]
-    assert all(s.values.size == 1 for s in snr_chart.series)
+    second = res.charts[1]
+    assert all(s.values.size == 4 for s in second.series)
     within = compute_analysis(img, groups, rois, ["glv_mean"], "within", "bright")
     assert within.empty is None and len(within.charts[0].series) == 1
 
@@ -170,14 +154,14 @@ def test_pixel_hist_shape_and_counts():
 def test_compute_analysis_ranking_and_heat():
     img = make_field()
     groups, rois = _bright_dark(img)
-    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std", SNR_ID],
+    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std"],
                            "between", None)
-    # heatmap: 2 groups × 3 metrics
+    # heatmap: 2 groups × 2 metrics
     assert res.heat is not None
-    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 3
-    # ranking excludes SNR and is sorted by η² desc
+    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 2
+    # ranking is sorted by η² desc
     labels = [r[0] for r in res.ranking]
-    assert "SNR" not in labels and len(res.ranking) == 2
+    assert len(res.ranking) == 2
     etas = [r[1] for r in res.ranking if r[1] is not None]
     assert etas == sorted(etas, reverse=True)
 
@@ -186,8 +170,8 @@ def test_project_model_roundtrip():
     groups, rois = _bright_dark(make_field())
     g2 = groups_from_json(groups_to_json(groups))
     r2 = rois_from_json(rois_to_json(rois))
-    assert [ (g.gid, g.name, g.color, g.target_rid) for g in g2 ] == \
-           [ (g.gid, g.name, g.color, g.target_rid) for g in groups ]
+    assert [(g.gid, g.name, g.color) for g in g2] == \
+           [(g.gid, g.name, g.color) for g in groups]
     assert r2[0].rect == rois[0].rect and r2[0].rid == rois[0].rid
     assert isinstance(r2[0].rect, tuple)
 
@@ -197,9 +181,7 @@ def test_snapshot_isolates_from_mutation():
     gs, rs = snapshot(groups, rois)
     rois[0].rect = (0, 0, 1, 1)
     groups[0].name = "changed"
-    groups[0].target_rid = 999
     assert rs[0].rect != (0, 0, 1, 1) and gs[0].name == "Bright"
-    assert gs[0].target_rid == 1              # snapshot copies the SNR target
 
 
 def test_roi_center_and_group_positions():
@@ -351,8 +333,4 @@ def test_compute_analysis_carries_roi_positions():
     assert s.pos_x is not None and s.pos_y is not None
     assert s.pos_x.size == s.values.size == 2
     assert list(s.pos_x) == [6.0, 34.0]
-    # SNR is one value for the whole group, so it carries no ROI positions
-    for g in groups:
-        g.target_rid = group_rois(rois, g.gid)[0].rid
-    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
-    assert snr_res.charts[0].series[0].pos_x is None
+

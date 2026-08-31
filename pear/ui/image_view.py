@@ -65,7 +65,7 @@ class ImageView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(420, 320)
+        self.setMinimumSize(320, 240)   # the rail's width wins
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -361,7 +361,6 @@ class ImageView(QWidget):
             p.drawRect(QRectF(tl, br))
 
     def _paint_rois(self, p: QPainter) -> None:
-        targets = {g.gid: g.target_rid for g in self._groups}
         for roi in self._rois:
             active_grp = roi.gid == self._active_gid
             selected = roi.rid == self._active_rid
@@ -393,8 +392,6 @@ class ImageView(QWidget):
                 self._paint_selection_ring(p, r)
             if roi.rid in self._outliers:
                 self._paint_outlier(p, r)
-            if targets.get(roi.gid) == roi.rid:
-                self._paint_badge(p, r, "T", QColor(17, 24, 39))
             val = self._roi_values.get(roi.rid)
             if val is not None:
                 self._paint_value(p, r, val, roi.rid == self._hover_rid)
@@ -704,14 +701,17 @@ class ImageView(QWidget):
         pos = QPointF(e.position())
         self._cursor_img = self._to_image(pos)
         self._emit_cursor(pos)
-        if self._grid_mode:
-            if self._grid_stage == 1:
-                self.update()
-            return
+        # Panning outranks the mode: the right button drags the picture around
+        # whether or not a grid is being placed, and grid placement is exactly
+        # when you need to reach the far corner.
         if self._interact == "pan":
             self._offset = self._pan_at_press + (pos - self._drag_start)
             self._fitted = False        # panned away from the fit
             self.update()
+            return
+        if self._grid_mode:
+            if self._grid_stage == 1:
+                self.update()
             return
         if self._interact == "marquee" and self._marquee is not None:
             self._marquee.setBottomRight(self._to_image(pos))

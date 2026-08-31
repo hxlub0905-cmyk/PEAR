@@ -22,8 +22,7 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog,
 from pear.core.analysis import (Group, cell_edges, heat_color,
                                linear_trend, pixel_hist,
                                profile_by_position, uniformity)
-from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
-                                  metric_label)
+from pear.core.attributes import GLV_STATS, metric_formula, metric_label
 from pear.ui import theme
 
 
@@ -114,14 +113,20 @@ def _clear(layout) -> None:
     ``deleteLater`` only schedules the removal: until the event loop runs, a
     widget taken out of a layout keeps its parent and its last geometry, so a
     rebuilt list paints its stale rows over whatever sits under them (the
-    Groups card's own title and Add button, for one). Unparenting first ends
-    that on the spot.
+    Groups card's own title and Add button, for one). Hiding ends that on the
+    spot.
+
+    It has to be ``hide()`` and not ``setParent(None)``: these lists are
+    rebuilt *from* the rows' own signals — click a ROI row and the refresh it
+    triggers clears the list that row is in — and a widget reparented to None
+    becomes a top-level window while its own event is still on the stack. That
+    is a blank window flashing up per click, and then a crash.
     """
     while layout.count():
         it = layout.takeAt(0)
         w = it.widget()
         if w is not None:
-            w.setParent(None)
+            w.hide()
             w.deleteLater()
 
 
@@ -214,6 +219,26 @@ class DistributionChart(QWidget):
         v = self._style.get(key)
         return default if v is None or v == "" else v
 
+    def _font(self, delta: int = 0, weight=None):
+        """Axis text at the size the user asked for (8 pt by default)."""
+        size = self._st("font_pt", 8)
+        try:
+            size = float(size)
+        except (TypeError, ValueError):
+            size = 8.0
+        size = float(np.clip(size + delta, 5.0, 24.0))
+        return (theme.mono_font(size, weight=weight) if weight
+                else theme.mono_font(size))
+
+    def _axis_ink(self) -> "QColor":
+        """Tick and axis-name ink. Dark by default — a chart that ends up in a
+        report is read on paper and on a projector, where a light grey tick
+        label is simply not there."""
+        return QColor(self._st("axis_ink", theme.INK))
+
+    def _mark_color(self, key: str, series_color) -> "QColor":
+        return QColor(self._st(key, series_color))
+
     def _nticks(self, key: str, default: int) -> int:
         try:
             return int(np.clip(int(self._st(key, default)), 2, 12))
@@ -234,8 +259,8 @@ class DistributionChart(QWidget):
         p.drawText(QRectF(8, 5, self.width() - 16, 19),
                    Qt.AlignHCenter | Qt.AlignVCenter, self.title_text())
         if not self._series:
-            p.setPen(QColor(theme.INK3))
-            p.setFont(theme.mono_font(9))
+            p.setPen(self._axis_ink())
+            p.setFont(self._font(1))
             p.drawText(self.rect(), Qt.AlignCenter, "no data")
             p.end()
             return
@@ -255,7 +280,7 @@ class DistributionChart(QWidget):
         """A boxed plot area with inward tick marks — the plain conventions a
         figure in a report follows, so the chart reads the same on a slide as
         it does on screen."""
-        p.setPen(QPen(QColor(theme.INK3), 1.2))
+        p.setPen(QPen(self._axis_ink(), 1.2))
         p.setBrush(Qt.NoBrush)
         p.drawRect(QRectF(left, top, right - left, bottom - top))
         for gx in xticks:
@@ -265,13 +290,26 @@ class DistributionChart(QWidget):
             p.drawLine(QPointF(left, gy), QPointF(left + 4, gy))
             p.drawLine(QPointF(right, gy), QPointF(right - 4, gy))
 
-    def _marker(self, p: QPainter, x, y, color, rad=3.2) -> None:
+    def _marker(self, p: QPainter, x, y, color, rad=None) -> None:
         """One observation. Open — white centre, coloured rim — so a scatter
         never merges into the lines drawn in the same colour beside it."""
+        if rad is None:
+            try:
+                rad = float(np.clip(float(self._st("point_size", 3.2)),
+                                    0.5, 20.0))
+            except (TypeError, ValueError):
+                rad = 3.2
+        col = self._mark_color("point_color", color)
         p.setBrush(QColor(255, 255, 255, 230))
-        pen = QPen(QColor(color), 1.3)
-        p.setPen(pen)
+        p.setPen(QPen(col, max(0.6, rad * 0.4)))
         p.drawEllipse(QPointF(x, y), rad, rad)
+
+    def _line_w(self, default: float) -> float:
+        try:
+            return float(np.clip(float(self._st("line_width", default)),
+                                 0.3, 12.0))
+        except (TypeError, ValueError):
+            return default
 
     def _range(self):
         vmin, vmax = self._st("vmin"), self._st("vmax")
@@ -287,8 +325,8 @@ class DistributionChart(QWidget):
 
     def _ytitle(self, p: QPainter, text: str) -> None:
         p.save()
-        p.setFont(theme.mono_font(8))
-        p.setPen(QColor(theme.INK3))
+        p.setFont(self._font())
+        p.setPen(self._axis_ink())
         tw = p.fontMetrics().horizontalAdvance(text)
         p.translate(11, self.height() / 2.0)
         p.rotate(-90)
@@ -322,7 +360,7 @@ class DistributionChart(QWidget):
             pad = (hi - lo) * 0.08
             return lo - pad, hi + pad
 
-        p.setFont(theme.mono_font(8))
+        p.setFont(self._font())
         ny = self._nticks("yticks", 5)
         gridys = [top + H * t / (ny - 1.0) for t in range(ny)]
         for t, gy in enumerate(gridys):
@@ -330,7 +368,7 @@ class DistributionChart(QWidget):
             p.drawLine(left, int(gy), right, int(gy))
             if own:                     # one label per lane instead, below
                 continue
-            p.setPen(QColor(theme.INK3))
+            p.setPen(self._axis_ink())
             p.drawText(QRectF(16, gy - 6, left - 20, 12),
                        Qt.AlignRight | Qt.AlignVCenter,
                        _fmt(ghi - (ghi - glo) * t / (ny - 1.0)))
@@ -339,8 +377,8 @@ class DistributionChart(QWidget):
                                  if own else "value"))
         xlab = self._st("xlabel", "")
         if xlab:
-            p.setPen(QColor(theme.INK2))
-            p.setFont(theme.mono_font(8, weight=700))
+            p.setPen(self._axis_ink())
+            p.setFont(self._font(weight=700))
             p.drawText(QRectF(left, self.height() - 16, W, 13),
                        Qt.AlignHCenter, str(xlab))
 
@@ -376,17 +414,18 @@ class DistributionChart(QWidget):
                     jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
                     self._marker(p, cx + jitter, Y(val), col)
             # median
-            p.setPen(QPen(col, 2.4))
+            p.setPen(QPen(self._mark_color("line_color", col),
+                          self._line_w(2.2)))
             p.drawLine(int(cx - bw / 2), int(Y(med)), int(cx + bw / 2), int(Y(med)))
             # mean value, placed just above the column's own data
             p.setPen(col)
-            p.setFont(theme.mono_font(8, weight=700))
+            p.setFont(self._font(weight=700))
             my = max(top - 15, Y(vmax) - 16)
             p.drawText(QRectF(cx - lane / 2, my, lane, 13),
                        Qt.AlignHCenter | Qt.AlignVCenter, _fmt(float(v.mean())))
             # label below the column
-            p.setPen(QColor(theme.INK2))
-            p.setFont(theme.mono_font(8))
+            p.setPen(self._axis_ink())
+            p.setFont(self._font())
             lab = p.fontMetrics().elidedText(
                 f"{s['label']} · n={v.size}", Qt.ElideRight, int(lane))
             p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
@@ -396,7 +435,7 @@ class DistributionChart(QWidget):
             # this lane's own range, so a stretched lane still says what it
             # spans and is never mistaken for the one beside it
             span = hi - lo
-            p.setPen(QColor(theme.INK3))
+            p.setPen(self._axis_ink())
             p.drawText(QRectF(cx - lane / 2, bottom + 18, lane, 13),
                        Qt.AlignHCenter | Qt.AlignVCenter,
                        f"{_fmt_span(vmin, span)} … {_fmt_span(vmax, span)}")
@@ -413,8 +452,8 @@ class DistributionChart(QWidget):
         series = [s for s in self._series
                   if s.get(key) is not None and s[key].size]
         if not series:
-            p.setPen(QColor(theme.INK3))
-            p.setFont(theme.mono_font(9))
+            p.setPen(self._axis_ink())
+            p.setFont(self._font(1))
             p.drawText(self.rect(), Qt.AlignCenter,
                        "no per-ROI position for this metric")
             return
@@ -434,7 +473,7 @@ class DistributionChart(QWidget):
 
         # value labels can need many decimals on a near-flat profile, so size
         # the gutter from the widest one rather than a fixed guess
-        p.setFont(theme.mono_font(8))
+        p.setFont(self._font())
         fm = p.fontMetrics()
         ny = self._nticks("yticks", 5)
         ticks = [_fmt_span(hi - (hi - lo) * t / (ny - 1.0), hi - lo)
@@ -459,7 +498,7 @@ class DistributionChart(QWidget):
         for gy, lab in zip(gridys, ticks):
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
-            p.setPen(QColor(theme.INK3))
+            p.setPen(self._axis_ink())
             p.drawText(QRectF(18, gy - 6, left - 24, 12),
                        Qt.AlignRight | Qt.AlignVCenter, lab)
         self._ytitle(p, self._st("ylabel", "value"))
@@ -468,7 +507,7 @@ class DistributionChart(QWidget):
         nx = self._nticks("xticks", 5)
         xs = [left + W * t / (nx - 1.0) for t in range(nx)]
         self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
-        p.setPen(QColor(theme.INK3))
+        p.setPen(self._axis_ink())
         for t, gx in enumerate(xs):
             p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
                        f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
@@ -499,7 +538,7 @@ class DistributionChart(QWidget):
             # least-squares tilt — the brand accent, so it never reads as data
             if self._trend and fit is not None:
                 slope, inter = fit
-                pen = QPen(QColor(theme.AMBER), 1.6)
+                pen = QPen(QColor(theme.AMBER), self._line_w(2.2) * 0.75)
                 pen.setStyle(Qt.DashLine)
                 p.setPen(pen)
                 p.setBrush(Qt.NoBrush)
@@ -517,7 +556,8 @@ class DistributionChart(QWidget):
             # same weight and the line disappears into its own scatter.
             cx, cy = profile_by_position(px_, v)
             if cx.size >= 2:
-                p.setPen(QPen(col.darker(190), 2.2))
+                p.setPen(QPen(self._mark_color("line_color", col.darker(190)),
+                              self._line_w(2.2)))
                 p.setBrush(Qt.NoBrush)
                 pts = [QPointF(X(a), Y(b)) for a, b in zip(cx, cy)]
                 for a, b in zip(pts, pts[1:]):
@@ -534,8 +574,8 @@ class DistributionChart(QWidget):
             p.setBrush(col)
             p.setPen(Qt.NoPen)
             p.drawRect(int(left), int(ly) + 2, 8, 8)
-            p.setPen(QColor(theme.INK2))
-            p.setFont(theme.mono_font(8))
+            p.setPen(self._axis_ink())
+            p.setFont(self._font())
             p.drawText(QRectF(left + 12, ly - 2, W - 12, 14),
                        Qt.AlignLeft | Qt.AlignVCenter,
                        p.fontMetrics().elidedText(txt, Qt.ElideRight,
@@ -551,7 +591,7 @@ class DistributionChart(QWidget):
                  QColor(theme.AMBER), Qt.DashLine),
                 ("group mean — where flat would sit",
                  QColor(theme.INK3), Qt.DashLine)]
-        p.setFont(theme.mono_font(8))
+        p.setFont(self._font())
         fm = p.fontMetrics()
         wid = max(fm.horizontalAdvance(t) for t, _c, _st in rows) + 42
         hgt = 6 + 13 * len(rows)
@@ -569,7 +609,7 @@ class DistributionChart(QWidget):
             p.setPen(pen)
             p.drawLine(QPointF(box.left() + 6, y + 6.5),
                        QPointF(box.left() + 30, y + 6.5))
-            p.setPen(QColor(theme.INK2))
+            p.setPen(self._axis_ink())
             p.drawText(QRectF(box.left() + 36, y, wid - 40, 13),
                        Qt.AlignLeft | Qt.AlignVCenter, text)
             y += 13
@@ -588,8 +628,8 @@ class DistributionChart(QWidget):
                   if s.get("pos_x") is not None and s.get("pos_y") is not None
                   and s["pos_x"].size]
         if not series:
-            p.setPen(QColor(theme.INK3))
-            p.setFont(theme.mono_font(9))
+            p.setPen(self._axis_ink())
+            p.setFont(self._font(1))
             p.drawText(self.rect(), Qt.AlignCenter,
                        "no per-ROI position for this metric")
             return
@@ -657,8 +697,8 @@ class DistributionChart(QWidget):
         p.setPen(QPen(QColor(theme.LINE2), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRect(int(left), int(top), int(W), int(H))
-        p.setFont(theme.mono_font(8))
-        p.setPen(QColor(theme.INK3))
+        p.setFont(self._font())
+        p.setPen(self._axis_ink())
         nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
         grid_mode = cells and equal and xc.size > 0 and yc.size > 0
         if grid_mode:
@@ -696,7 +736,7 @@ class DistributionChart(QWidget):
             # One filled cell per ROI, spanning to the boundary it shares with
             # its neighbour: the difference against the cell next door is the
             # point of the view, and touching blocks show it where dots cannot.
-            p.setFont(theme.mono_font(8, weight=700))
+            p.setFont(self._font(weight=700))
             fm = p.fontMetrics()
             for s in series:
                 edge = QColor(s["color"])
@@ -754,8 +794,8 @@ class DistributionChart(QWidget):
         p.setPen(QPen(QColor(theme.LINE2), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRect(int(bx), int(top), bw, int(bh))
-        p.setPen(QColor(theme.INK3))
-        p.setFont(theme.mono_font(8))
+        p.setPen(self._axis_ink())
+        p.setFont(self._font())
         p.drawText(QRectF(bx + bw + 2, top - 2, cbar_w - bw - 4, 12),
                    Qt.AlignLeft, _fmt_span(hi, hi - lo))
         p.drawText(QRectF(bx + bw + 2, top + bh - 10, cbar_w - bw - 4, 12),
@@ -772,8 +812,8 @@ class DistributionChart(QWidget):
             txt += f" · cell {cw:.0f}×{ch:.0f} px"
         if cells and equal:
             txt += " · equal cells"
-        p.setPen(QColor(theme.INK2))
-        p.setFont(theme.mono_font(8))
+        p.setPen(self._axis_ink())
+        p.setFont(self._font())
         p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
                    Qt.AlignLeft | Qt.AlignVCenter, txt)
 
@@ -789,7 +829,7 @@ class DistributionChart(QWidget):
         axis still labels each slot with the position it stands for.
         """
         cw, ch = W / float(xc.size), H / float(yc.size)
-        p.setFont(theme.mono_font(8, weight=700))
+        p.setFont(self._font(weight=700))
         fm = p.fontMetrics()
         for s in series:
             edge = QColor(s["color"])
@@ -847,7 +887,7 @@ class DistributionChart(QWidget):
         # 0 · 7.5 · 15 · 22.5 rounded to "8" and "22" in the label
         yticks = [step * k for k in range(int(round(ymax / step)) + 1)]
 
-        p.setFont(theme.mono_font(8))
+        p.setFont(self._font())
         fm = p.fontMetrics()
         ylabs = [(f"{v:.0f}%" if pct else f"{v:.0f}") for v in yticks]
         left = int(np.clip(max(fm.horizontalAdvance(t) for t in ylabs) + 26,
@@ -869,7 +909,7 @@ class DistributionChart(QWidget):
             gy = Y(v)
             p.setPen(QPen(QColor(theme.LINE2), 1))
             p.drawLine(left, int(gy), right, int(gy))
-            p.setPen(QColor(theme.INK3))
+            p.setPen(self._axis_ink())
             p.drawText(QRectF(8, gy - 6, left - 12, 12),
                        Qt.AlignRight | Qt.AlignVCenter, lab)
         # bars, back to front so a thin group is never buried
@@ -881,7 +921,8 @@ class DistributionChart(QWidget):
             fill = QColor(col)
             fill.setAlpha(70 if len(self._series) > 1 else 120)
             p.setBrush(fill)
-            p.setPen(QPen(col, 1.4))
+            p.setPen(QPen(self._mark_color("line_color", col),
+                          self._line_w(1.4)))
             for k in range(nbins):
                 if b[k] <= 0:
                     continue
@@ -893,13 +934,13 @@ class DistributionChart(QWidget):
         xs = [left + W * t / (nx - 1.0) for t in range(nx)]
         self._frame(p, left, top, right, bottom, xticks=xs,
                     yticks=[Y(v) for v in yticks])
-        p.setFont(theme.mono_font(8))
-        p.setPen(QColor(theme.INK3))
+        p.setFont(self._font())
+        p.setPen(self._axis_ink())
         for t, gx in enumerate(xs):
             p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
                        _fmt_span(lo + span * t / (nx - 1.0), span))
-        p.setPen(QColor(theme.INK2))
-        p.setFont(theme.mono_font(8, weight=700))
+        p.setPen(self._axis_ink())
+        p.setFont(self._font(weight=700))
         p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
                    str(self._st("xlabel", self._xlabel or "value")))
         self._ytitle(p, self._st("ylabel", "share of group (%)" if pct
@@ -912,7 +953,7 @@ class DistributionChart(QWidget):
         """Keyed legend, boxed at the top right of the plot area."""
         if not rows:
             return
-        p.setFont(theme.mono_font(8, weight=700))
+        p.setFont(self._font(weight=700))
         fm = p.fontMetrics()
         texts = [f"{lab}  {extra}" if extra else lab for lab, _c, extra in rows]
         wid = max(fm.horizontalAdvance(t) for t in texts) + 26
@@ -929,7 +970,7 @@ class DistributionChart(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(color))
             p.drawRect(QRectF(box.left() + 6, y + 3, 9, 7))
-            p.setPen(QColor(theme.INK2))
+            p.setPen(self._axis_ink())
             p.drawText(QRectF(box.left() + 20, y, wid - 24, 13),
                        Qt.AlignLeft | Qt.AlignVCenter, txt)
             y += 13
@@ -1056,7 +1097,7 @@ class MetricPicker(QWidget):
         return list(self._selected)
 
     def ids(self) -> List[str]:
-        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
+        return list(GLV_STATS.keys()) + self._custom
 
     def set_state(self, metrics, extra_ids=()) -> None:
         """Restore the picker (used when opening a project).
@@ -1155,7 +1196,7 @@ class StageBar(QWidget):
             "as one surface. The measured box stays outlined on top. Works on "
             "its own — boxes and field are two ways to paint the same values.")
         self.cells_chk.toggled.connect(self._on_cells)
-        self.outliers_chk = QCheckBox("flag outliers")
+        self.outliers_chk = QCheckBox("outliers")
         self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
                                      "within their group.")
         self.outliers_chk.toggled.connect(self.outliers_changed)
@@ -1192,7 +1233,7 @@ class StageBar(QWidget):
             "stage.")
         self.image_btn.clicked.connect(self.export_image_requested)
         lay.addWidget(self.image_btn)
-        self.set_metrics(list(GLV_STATS.keys()) + [SNR_ID])
+        self.set_metrics(list(GLV_STATS.keys()))
         self._gate()
 
     # -- state -------------------------------------------------------- #
@@ -1405,6 +1446,67 @@ class ChartSettingsDialog(QDialog):
         tip.setWordWrap(True)
         root.addWidget(tip)
 
+        head = QLabel("Text and marks")
+        head.setObjectName("SectionTitle")
+        head.setFont(theme.display_font(12, weight=700))
+        root.addWidget(head)
+        mrow = QHBoxLayout()
+        mrow.setSpacing(6)
+        ml = QLabel("size")
+        ml.setObjectName("Hint")
+        ml.setMinimumWidth(96)
+        self.font_spin = QDoubleSpinBox()
+        self.font_spin.setRange(5, 24)
+        self.font_spin.setDecimals(1)
+        self.font_spin.setSingleStep(0.5)
+        self.font_spin.setSuffix(" pt")
+        self.font_spin.setValue(float(style.get("font_pt") or 8))
+        self.point_spin = QDoubleSpinBox()
+        self.point_spin.setRange(0.5, 20)
+        self.point_spin.setDecimals(1)
+        self.point_spin.setSingleStep(0.5)
+        self.point_spin.setSuffix(" px")
+        self.point_spin.setValue(float(style.get("point_size") or 3.2))
+        self.line_spin = QDoubleSpinBox()
+        self.line_spin.setRange(0.3, 12)
+        self.line_spin.setDecimals(1)
+        self.line_spin.setSingleStep(0.2)
+        self.line_spin.setSuffix(" px")
+        self.line_spin.setValue(float(style.get("line_width") or 2.2))
+        for sp in (self.font_spin, self.point_spin, self.line_spin):
+            sp.setMinimumHeight(28)
+            sp.setFixedWidth(88)
+        mrow.addWidget(ml)
+        mrow.addWidget(QLabel("axis text"))
+        mrow.addWidget(self.font_spin)
+        mrow.addWidget(QLabel("point"))
+        mrow.addWidget(self.point_spin)
+        mrow.addWidget(QLabel("line"))
+        mrow.addWidget(self.line_spin)
+        mrow.addStretch(1)
+        root.addLayout(mrow)
+
+        crow = QHBoxLayout()
+        crow.setSpacing(6)
+        cl = QLabel("colour")
+        cl.setObjectName("Hint")
+        cl.setMinimumWidth(96)
+        crow.addWidget(cl)
+        self._colors = {}
+        for key, label, default in (("axis_ink", "axis", theme.INK),
+                                    ("point_color", "points", ""),
+                                    ("line_color", "lines", "")):
+            crow.addWidget(QLabel(label))
+            crow.addLayout(self._color_pick(key, style.get(key) or "", default))
+        crow.addStretch(1)
+        root.addLayout(crow)
+        note = QLabel("Points and lines follow their group's colour until you "
+                      "pick one here. Axis text is dark by default — light "
+                      "grey ticks vanish on a projector.")
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
         head = QLabel("Scales")
         head.setObjectName("SectionTitle")
         head.setFont(theme.display_font(12, weight=700))
@@ -1428,6 +1530,36 @@ class ChartSettingsDialog(QDialog):
         reset.clicked.connect(self._reset)
         root.addWidget(buttons)
 
+    def _color_pick(self, key: str, current: str, default: str):
+        """A swatch plus an *auto* box — auto hands the choice back."""
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        state = {"color": current or default}
+        self._colors[key] = state
+        btn = QPushButton()
+        btn.setFixedSize(22, 22)
+
+        def paint():
+            btn.setStyleSheet(f"background:{state['color']}; "
+                              "border:1px solid rgba(0,0,0,.25); "
+                              "border-radius:4px;")
+        paint()
+
+        def choose():
+            c = QColorDialog.getColor(QColor(state["color"]), self)
+            if c.isValid():
+                state["color"] = c.name()
+                state["auto"] = False
+                auto.setChecked(False)
+                paint()
+        btn.clicked.connect(choose)
+        auto = QCheckBox("auto")
+        auto.setChecked(not current)
+        state["box"] = auto
+        row.addWidget(btn)
+        row.addWidget(auto)
+        return row
+
     def _reset(self) -> None:
         for ed in list(self._title_edits.values()) + [self.x_edit, self.y_edit]:
             ed.clear()
@@ -1435,6 +1567,11 @@ class ChartSettingsDialog(QDialog):
         self.yt_spin.setValue(5)
         self.v_auto.setChecked(True)
         self.h_auto.setChecked(True)
+        self.font_spin.setValue(8.0)
+        self.point_spin.setValue(3.2)
+        self.line_spin.setValue(2.2)
+        for state in self._colors.values():
+            state["box"].setChecked(True)
 
     def result_style(self) -> dict:
         """The overrides, with anything left at its default omitted."""
@@ -1448,6 +1585,12 @@ class ChartSettingsDialog(QDialog):
                 out[key] = ed.text().strip()
         out["xticks"] = int(self.xt_spin.value())
         out["yticks"] = int(self.yt_spin.value())
+        out["font_pt"] = round(float(self.font_spin.value()), 1)
+        out["point_size"] = round(float(self.point_spin.value()), 1)
+        out["line_width"] = round(float(self.line_spin.value()), 1)
+        for key, state in self._colors.items():
+            if not state["box"].isChecked():
+                out[key] = state["color"]
         if not self.v_auto.isChecked() and self.v_hi.value() > self.v_lo.value():
             out["vmin"], out["vmax"] = self.v_lo.value(), self.v_hi.value()
         if not self.h_auto.isChecked() and self.h_hi.value() > self.h_lo.value():
@@ -1471,7 +1614,6 @@ class RailPanel(QWidget):
     grid_shape_changed = Signal(int, int)
     roi_size_changed = Signal(int, int)     # ROI W × H for click / grid
     roi_pick = Signal(int)                  # select an ROI from the list
-    roi_set_target = Signal(int)            # tag an ROI as its group's SNR target
     roi_del = Signal(int)
     roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
     metrics_changed = Signal(list)
@@ -1622,8 +1764,7 @@ class RailPanel(QWidget):
             "• Click → drop a size-W×H ROI · drag → custom size\n"
             "• Grid → two corners, set row×col, Add grid\n"
             "• Shift+drag → box-select · Del removes them\n"
-            "• Double-click an ROI → pixel inspector\n"
-            "• T → pick the group’s SNR target (rest are reference)")
+            "• Double-click an ROI → pixel inspector")
         self.roi_hint.setObjectName("Hint")
         self.roi_hint.setWordWrap(True)
         rlay.addWidget(self.roi_hint)
@@ -1633,7 +1774,7 @@ class RailPanel(QWidget):
         root.addWidget(roi)
 
         # Metrics
-        met = _card("Metrics", "GLV + SNR")
+        met = _card("Metrics", "grey-level statistics")
         self.metrics = MetricPicker()
         self.metrics.changed.connect(self.metrics_changed)
         self.metrics.ids_changed.connect(self.metric_ids_changed)
@@ -1660,22 +1801,33 @@ class RailPanel(QWidget):
 
     def set_groups(self, groups: List[Group], active_gid, counts: dict) -> None:
         self._active_gid = active_gid
+        sig = (tuple((g.gid, g.name, g.color) for g in groups), active_gid,
+               tuple(sorted(counts.items())))
+        if sig == getattr(self, "_grp_sig", None):
+            return          # a refresh that changes nothing costs nothing
+        self._grp_sig = sig
         _clear(self.grp_host)
         for g in groups:
             self.grp_host.addWidget(
                 self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 
-    def set_rois(self, active_group_rois, active_rid, target_rid=None,
+    def set_rois(self, active_group_rois, active_rid,
                  selected_rids=None, outlier_rids=None, values=None) -> None:
         selected = set(selected_rids or [])
         outliers = set(outlier_rids or [])
         values = values or {}
+        sig = (tuple((r.rid, tuple(r.rect), r.label) for r in active_group_rois),
+               active_rid, tuple(sorted(selected)), tuple(sorted(outliers)),
+               tuple(sorted((k, round(float(v), 6))
+                            for k, v in values.items())))
+        if sig == getattr(self, "_roi_sig", None):
+            return          # rebuilding a hundred rows for nothing is the jank
+        self._roi_sig = sig
         _clear(self.roi_host)
         self._roi_rows = {}
         for r in active_group_rois:
-            row = self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
-                                r.rid in selected, r.rid in outliers,
-                                values.get(r.rid))
+            row = self._roi_row(r, r.rid == active_rid, r.rid in selected,
+                                r.rid in outliers, values.get(r.rid))
             self._roi_rows[r.rid] = row
             self.roi_host.addWidget(row)
         # size the list to its content, capped so it never buries the buttons
@@ -1711,9 +1863,8 @@ class RailPanel(QWidget):
         row.clicked = lambda: self.group_pick.emit(g.gid)
         return row
 
-    def _roi_row(self, r, active: bool, is_target: bool,
-                 selected: bool, outlier: bool = False,
-                 value=None) -> QWidget:
+    def _roi_row(self, r, active: bool, selected: bool,
+                 outlier: bool = False, value=None) -> QWidget:
         row = _ItemRow(active, compact=True, boxed=False, selected=selected)
         row.add_name(r.label or f"ROI {r.rid}", None,
                      color=(theme.WARNING if outlier else None))
@@ -1722,7 +1873,6 @@ class RailPanel(QWidget):
                          "Outlier of the shown metric within this group")
         if value is not None:
             row.add_count(_fmt(float(value)))
-        row.add_target_toggle(is_target, lambda: self.roi_set_target.emit(r.rid))
         row.add_delete(lambda: self.roi_del.emit(r.rid))
         row.clicked = lambda: self.roi_pick.emit(r.rid)
         row.on_hover = lambda on, rid=r.rid: self.roi_hovered.emit(rid if on else -1)
@@ -1791,23 +1941,6 @@ class _ItemRow(QFrame):
         f.setToolTip(tooltip)
         f.setStyleSheet(f"color:{color}; font-weight:800;")
         self.lay.addWidget(f)
-
-    def add_target_toggle(self, is_target: bool, on_toggle):
-        b = QPushButton("T")
-        b.setCheckable(True)
-        b.setChecked(is_target)
-        b.setFixedSize(22, 20)
-        b.setToolTip("SNR target (T). The group’s other ROIs are the "
-                     "reference (R). Click to toggle.")
-        if is_target:
-            b.setStyleSheet(f"background:{theme.AMBER}; color:#FFFFFF; "
-                            "border:none; border-radius:5px; font-weight:700;")
-        else:
-            b.setStyleSheet(f"background:transparent; color:{theme.INK3}; "
-                            f"border:1px solid {theme.LINE}; border-radius:5px; "
-                            "font-weight:700;")
-        b.clicked.connect(lambda: on_toggle())
-        self.lay.addWidget(b)
 
     def add_name(self, name, on_rename, color=None):
         if on_rename is None:

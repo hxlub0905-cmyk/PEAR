@@ -8,6 +8,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import pytest
 
 from examples.make_sample import CELL_H, CELL_W, make_field
@@ -101,7 +102,7 @@ def test_between_analysis_and_export(app, tmp_path):
     win = MainWindow()
     win.set_image(make_field(), "f.png")
     _two_groups(win)
-    win.set_metrics(["glv_mean", "snr"])
+    win.set_metrics(["glv_mean", "glv_std"])
     win.on_cmp_mode("between")
     win.render_analysis_sync()
     from pear.ui.widgets import DistributionChart
@@ -210,38 +211,6 @@ def test_roi_labels_reindex_after_delete(app):
     mid_rid = group_rois(win._rois, gid)[1].rid
     win.delete_roi(mid_rid)
     assert [r.label for r in group_rois(win._rois, gid)] == ["ROI 1", "ROI 2"]
-
-
-def test_set_target_roi_toggles_and_snr(app):
-    from pear.core.analysis import group_rois, group_snr
-    from pear.ui.main_window import MainWindow
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    win.on_roi_created((22, 18, 20, 16))        # bright feature
-    win.on_roi_created((3, 3, 10, 8))           # dark background
-    win.on_roi_created((CELL_W + 3, 3, 10, 8))  # dark background
-    gid = win._active_gid
-    tgt = group_rois(win._rois, gid)[0].rid
-    win.set_target_roi(tgt)
-    assert win._group(gid).target_rid == tgt
-    snr = group_snr(win._image, group_rois(win._rois, gid), tgt)
-    assert snr is not None and snr > 0
-    win.set_target_roi(tgt)                      # toggles back off
-    assert win._group(gid).target_rid is None
-
-
-def test_show_snr_labels_target_only(app):
-    from pear.core.analysis import group_rois
-    from pear.ui.main_window import MainWindow
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    win.on_roi_created((22, 18, 20, 16))
-    win.on_roi_created((3, 3, 10, 8))
-    gid = win._active_gid
-    tgt = group_rois(win._rois, gid)[0].rid
-    win.set_target_roi(tgt)
-    win.on_show_metric("snr")
-    assert list(win.image_view._roi_values.keys()) == [tgt]
 
 
 def test_marquee_select_and_batch_delete(app):
@@ -385,8 +354,7 @@ def test_project_save_open_roundtrip(app, tmp_path):
     win.rename_group(win._active_gid, "round holes")
     win.on_roi_created((22, 18, 20, 16))
     win.on_roi_created((3, 3, 10, 8))
-    win.set_target_roi(group_rois(win._rois, win._active_gid)[0].rid)
-    win.set_metrics(["glv_mean", "snr"])
+    win.set_metrics(["glv_mean", "glv_std"])
     proj = tmp_path / "p.pear.json"
     assert win.save_project(str(proj)) == str(proj)
 
@@ -395,24 +363,8 @@ def test_project_save_open_roundtrip(app, tmp_path):
     assert win2._image is not None
     assert win2._group("A").name == "round holes"
     a_rois = group_rois(win2._rois, "A")
-    assert len(a_rois) == 2 and win2._group("A").target_rid == a_rois[0].rid
-    assert win2._metrics == ["glv_mean", "snr"]
-
-
-def test_export_includes_snr_with_target(app, tmp_path):
-    from pear.core.analysis import group_rois
-    from pear.ui.main_window import MainWindow
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    win.on_roi_created((22, 18, 20, 16))
-    win.on_roi_created((3, 3, 10, 8))
-    gid = win._active_gid
-    win.set_target_roi(group_rois(win._rois, gid)[0].rid)
-    win.set_metrics(["glv_mean", "snr"])
-    out = tmp_path / "snr.csv"
-    assert win.export_csv(str(out)) == str(out)
-    text = out.read_text(encoding="utf-8-sig")
-    assert "role" in text and "SNR" in text
+    assert len(a_rois) == 2
+    assert win2._metrics == ["glv_mean", "glv_std"]
 
 
 def _grid_group(win, rows=3, cols=4):
@@ -458,8 +410,11 @@ def test_position_profile_and_heatmap_render(app):
 def test_rebuilt_lists_leave_no_stale_rows(app):
     """A rebuilt list must not keep painting its old rows over the card.
 
-    ``deleteLater`` alone leaves them parented until the event loop runs, and
-    they cover the Groups card's title and Add button while they linger.
+    ``deleteLater`` alone leaves them visible until the event loop runs, and
+    they cover the Groups card's title and Add button while they linger. They
+    must be *hidden*, not reparented: these lists are rebuilt from their own
+    rows' signals, and a widget reparented to None mid-event becomes a stray
+    top-level window and then a crash.
     """
     from pear.core.analysis import group_rois
     from pear.ui.main_window import MainWindow
@@ -472,9 +427,25 @@ def test_rebuilt_lists_leave_no_stale_rows(app):
     for _ in range(3):
         win._refresh()                       # no processEvents in between
     grp_card = win.rail.grp_add_btn.parentWidget()
-    assert len(grp_card.findChildren(_ItemRow)) == len(win._groups)
+
+    def live(host):
+        return [r for r in host.findChildren(_ItemRow) if not r.isHidden()]
+
+    assert len(live(grp_card)) == len(win._groups)
     roi_rows = len(group_rois(win._rois, win._active_gid))
-    assert len(win.rail.roi_host.parentWidget().findChildren(_ItemRow)) == roi_rows
+    assert len(live(win.rail.roi_host.parentWidget())) == roi_rows
+    # nothing was turned into a window on the way out
+    assert all(r.parentWidget() is not None
+               for r in grp_card.findChildren(_ItemRow))
+
+    # a row's own click rebuilds the list it lives in — the path that used to
+    # flash a blank window per click and then take the app down
+    rid = group_rois(win._rois, win._active_gid)[0].rid
+    for _ in range(5):
+        win.select_roi(rid)
+        win.rail.set_hovered_roi(rid)
+    app.processEvents()
+    assert len(live(win.rail.roi_host.parentWidget())) == roi_rows
 
 
 def test_value_labels_only_where_they_fit(app):
@@ -860,7 +831,8 @@ def test_chart_settings_rename_relabel_and_lock_the_scales(app, tmp_path):
     assert win2.analysis.chart_style()["vmax"] == 200.0
 
     dlg._reset()                                 # Reset clears every override
-    assert dlg.result_style() == {"xticks": 5, "yticks": 5}
+    assert dlg.result_style() == {"xticks": 5, "yticks": 5, "font_pt": 8.0,
+                                  "point_size": 3.2, "line_width": 2.2}
 
 
 def test_heat_scale_locks_the_image_overlay(app, tmp_path):
@@ -895,6 +867,76 @@ def test_heat_scale_locks_the_image_overlay(app, tmp_path):
 
     win.on_heat_range(None)                            # back to auto
     assert win.image_view._heat == auto
+
+
+def test_chart_text_and_marks_are_adjustable(app):
+    """Axis ink, text size, point size and line width all come from the style."""
+    from PySide6.QtGui import QColor
+    from pear.ui import theme
+    from pear.ui.main_window import MainWindow
+    from pear.ui.widgets import ChartSettingsDialog, DistributionChart
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    _two_groups(win)
+    win.set_metrics(["glv_mean"])
+    win.on_cmp_mode("between")
+    win.render_analysis_sync()
+    ap = win.analysis
+    ap._pick_ctype("box")
+    app.processEvents()
+    c = [x for x in ap._chart_widgets if x._ctype == "box"][-1]
+    # dark by default: a light grey tick label is not there on a projector
+    assert c._axis_ink() == QColor(theme.INK)
+    assert c._font().pointSizeF() == pytest.approx(8.0, abs=0.5)
+
+    dlg = ChartSettingsDialog(None, ["GLV mean"], {})
+    dlg.font_spin.setValue(12.0)
+    dlg.point_spin.setValue(6.0)
+    dlg.line_spin.setValue(4.0)
+    state = dlg._colors["point_color"]
+    state["color"] = "#123456"
+    state["box"].setChecked(False)
+    style = dlg.result_style()
+    assert style["font_pt"] == 12.0 and style["point_size"] == 6.0
+    assert style["line_width"] == 4.0 and style["point_color"] == "#123456"
+
+    ap.set_chart_style(style)
+    app.processEvents()
+    c = [x for x in ap._chart_widgets if x._ctype == "box"][-1]
+    assert c._font().pointSizeF() == pytest.approx(12.0, abs=0.5)
+    assert c._line_w(2.2) == 4.0
+    assert c._mark_color("point_color", "#FF0000") == QColor("#123456")
+    assert c._mark_color("line_color", "#FF0000") == QColor("#FF0000")  # auto
+    c.grab()                                   # the painter reads all of it
+
+    dlg._reset()
+    back = dlg.result_style()
+    assert back["font_pt"] == 8.0 and "point_color" not in back
+
+
+def test_right_drag_pans_while_placing_a_grid(app):
+    """Reaching the far corner is exactly when panning matters."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from pear.ui.main_window import MainWindow
+    win = MainWindow()
+    win.set_image(make_field(), "f.png")
+    win.set_grid_mode(True)
+    iv = win.image_view
+    before = QPointF(iv._offset)
+    start, end = QPointF(120.0, 90.0), QPointF(180.0, 130.0)
+    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, start,
+                                   Qt.RightButton, Qt.RightButton,
+                                   Qt.NoModifier))
+    iv.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, end,
+                                  Qt.NoButton, Qt.RightButton, Qt.NoModifier))
+    iv.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease, end,
+                                     Qt.RightButton, Qt.NoButton,
+                                     Qt.NoModifier))
+    assert iv._offset.x() == pytest.approx(before.x() + 60.0)
+    assert iv._offset.y() == pytest.approx(before.y() + 40.0)
+    assert iv._grid_stage == 0        # panning placed no grid anchor
+    assert win._rois == []
 
 
 def test_export_chart_image_writes_png_and_svg(app, tmp_path):
@@ -1019,23 +1061,22 @@ def test_stage_and_inspector_export_images(app, tmp_path):
 
 
 def test_position_chart_without_positions_is_safe(app):
-    """SNR has no per-ROI position — the chart says so instead of crashing."""
-    from pear.ui.main_window import MainWindow
+    """A series with no per-ROI position says so instead of crashing.
+
+    Nothing in the app produces one today, but the guard is what keeps a
+    future per-group metric from taking the window down.
+    """
     from pear.ui.widgets import DistributionChart
-    from pear.core.analysis import group_rois
-    win = MainWindow()
-    win.set_image(make_field(), "f.png")
-    gid = _grid_group(win, 2, 2)
-    win.set_target_roi(group_rois(win._rois, gid)[0].rid)
-    win.set_metrics(["snr"])
-    win.on_cmp_mode("within")
-    win.on_within_group(gid)
-    win.render_analysis_sync()
-    win.analysis._pick_ctype("position")
-    app.processEvents()
-    for c in win.analysis.body.findChildren(DistributionChart):
-        assert all("pos_x" not in s for s in c._series)
-        c.grab()                       # draws the "no position" hint
+    chart = DistributionChart()
+    chart.resize(420, 300)
+    chart.set_data("GLV mean", [{"label": "A", "color": "#2563EB",
+                                 "values": np.array([1.0, 2.0, 3.0])}],
+                   "position")
+    assert all("pos_x" not in s for s in chart._series)
+    chart.grab()                       # draws the "no position" hint
+    chart.set_data("GLV mean", [{"label": "A", "color": "#2563EB",
+                                 "values": np.array([1.0, 2.0])}], "map")
+    chart.grab()
 
 
 def test_chart_state_round_trips_through_a_project(app, tmp_path):

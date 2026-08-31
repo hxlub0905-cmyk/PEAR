@@ -289,7 +289,7 @@ if __name__ == "__main__":
 #if exist "%~dp0.venv\Scripts\pythonw.exe" exit /b
 #start "PEAR" pythonw -m pear
 #
-#F 2386ae5b5e1a1aa502ff05fcb539c1c22eae8197 319 README.md
+#F 9394f530ec35927fed7730cd424b177c0f283b08 319 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -300,7 +300,7 @@ if __name__ == "__main__":
 #Sort the features you care about into **groups** (say, *round holes* vs
 #*square holes*), drop a **measurement box (ROI)** on each instance, and
 #**compare the distribution** of a grey-level statistic (GLV) or the
-#signal-to-noise ratio (SNR) between the groups — or within one group. The
+#value between the groups — or within one group. The
 #numbers are what feed the inspection recipe.
 #
 ### The "no verdict" principle
@@ -321,17 +321,15 @@ if __name__ == "__main__":
 #    list); **Delete** removes the selection.
 #  - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
 #    duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
-#    group.
+#    group. **Right-drag pans** the image at any time, grid placement included.
 #  - **align** — pull the selection (or the whole active group, with nothing
 #    selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
 #    Bottom*) or even out its spacing (*Even across / Even down*).
 #  - The ROI list carries each ROI's shown metric and sorts by it (**order**:
 #    as placed / value ↑ / value ↓), so the odd one out is one glance away.
 #- **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
-#  Q75, std, min, max, plus any custom **Q*n***) and **SNR**. SNR is a
-#  *within-group* measurement: tag one ROI as the **target (T)** and the rest
-#  become the **reference (R)**, giving the e-beam definition
-#  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs.
+#  Q75, std, min, max, plus any custom **Q*n***). Any one of them can be shown
+#  live on the ROIs.
 #- **ROI overlay** — one strip sits above the image, where what it changes is:
 #  pick the metric under **show on ROIs**, then switch each reading of it on
 #  its own.
@@ -390,8 +388,11 @@ if __name__ == "__main__":
 #
 #**Chart settings…** makes each figure yours: **rename** it (the title sits
 #centred above the plot, and the export menu follows the new name), give the
-#**axes your own names**, set the **tick counts**, and **lock the value axis or
-#the heat colours to a fixed range** — auto scaling is right while you are
+#**axes your own names**, set the **tick counts**, set the **axis text size and
+#its colour** (dark by default — a light grey tick label is not there on a
+#projector), set the **point size, line width and their colours** (points and
+#lines follow their group's colour until you pick one), and **lock the value
+#axis or the heat colours to a fixed range** — auto scaling is right while you are
 #looking at one run and wrong the moment you put two side by side, because each
 #picks its own range. The image overlay has the same lock under **scale…** on
 #the stage bar, so the same colour means the same grey level on every image you
@@ -465,8 +466,7 @@ if __name__ == "__main__":
 ### Highlights
 #
 #- Fully **offline** — no network, no telemetry, all computation local.
-#- **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-#  metrics, and view state (overlay toggles, heat opacity and locked range, ROI
+#- **Project save / open (JSON)** — persist groups, ROIs, metrics, and view state (overlay toggles, heat opacity and locked range, ROI
 #  list order, chart titles / axis names / ticks / locked scales, the chart type
 #  and position axis);
 #  reopen to pick up where you left off.
@@ -543,7 +543,7 @@ if __name__ == "__main__":
 #pytest                              # headless core + offscreen UI smoke
 #```
 #
-#- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
+#- `tests/test_core.py` — headless (no Qt): ROI patch/metrics,
 #  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
 #  jitter tolerance (field tiling and profile grouping alike), per-ROI field
 #  cells, ROI alignment / spacing,
@@ -554,7 +554,7 @@ if __name__ == "__main__":
 #  byte, survives CRLF, catches tampering, and is not stale; the batch files
 #  stay flat enough to run with LF endings.
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
-#  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
+#  select, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
 #  save/open, CSV export, image export of every view (field at native
 #  resolution, each results section, the ROI inspector),
@@ -575,7 +575,7 @@ if __name__ == "__main__":
 #  PEAR.bat         # launcher, no console window
 #  pear/
 #    core/          # pure NumPy/OpenCV, ZERO Qt imports (headless-testable)
-#      attributes.py                 # GLV statistics + SNR
+#      attributes.py                 # GLV statistics
 #      analysis.py                   # group/ROI model, geometry, metric collection
 #    ui/            # all Qt (theme, image_view, widgets, main_window)
 #                   #   widgets.py: rail, stage bar, charts, inspector
@@ -600,7 +600,7 @@ if __name__ == "__main__":
 ### Scope (V1)
 #
 #In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-#grid / box-select / align), GLV + within-group SNR metrics, value heatmap + outlier
+#grid / box-select / align), GLV metrics, value heatmap + outlier
 #flagging with per-overlay toggles and a field fill, attribute ranking +
 #group×metric heatmap, image export of every view (PNG / SVG),
 #per-ROI pixel inspector,
@@ -965,7 +965,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F e2f51545463880b61edefa6d8d98f9ce51c8953a 730 pear/core/analysis.py
+#F 42d43a082ead351a3dd04223168bdcd36511c96d 687 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -981,9 +981,7 @@ if __name__ == "__main__":
 #
 #Metrics
 #-------
-#GLV statistics come from each ROI patch. SNR is a *within-group* measurement:
-#one ROI in the group is tagged the *target* (T) and the remaining ROIs are the
-#*reference* (R); SNR = ``(mean_target - mean_reference) / std_reference``.
+#GLV statistics come from each ROI patch.
 #"""
 #
 #from __future__ import annotations
@@ -994,7 +992,7 @@ if __name__ == "__main__":
 #import cv2
 #import numpy as np
 #
-#from pear.core.attributes import SNR_ID, glv_value
+#from pear.core.attributes import glv_value
 #
 #Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
 #
@@ -1037,13 +1035,11 @@ if __name__ == "__main__":
 #
 #@dataclass
 #class Group:
-#    """A category of ROIs. One ROI may be tagged the SNR *target*; the rest
-#    of the group's ROIs are the SNR *reference*."""
+#    """A category of ROIs — "round holes", "square holes"."""
 #
 #    gid: str
 #    name: str
 #    color: str
-#    target_rid: Optional[int] = None
 #
 #
 ## --------------------------------------------------------------------------- #
@@ -1082,36 +1078,9 @@ if __name__ == "__main__":
 #
 #
 #def roi_metric(image: np.ndarray, roi: ROI, mid: str) -> float:
-#    """A per-ROI GLV statistic (SNR is a per-group metric, not per ROI)."""
+#    """One GLV statistic of one ROI."""
 #    p = roi_patch(image, roi.rect)
 #    return glv_value(p, mid) if p is not None else 0.0
-#
-#
-#def group_snr(image: np.ndarray, rois: List[ROI],
-#              target_rid: Optional[int]) -> Optional[float]:
-#    """Within-group SNR = (mean_target - mean_reference) / std_reference.
-#
-#    ``target_rid`` selects the target ROI; every other ROI in the group is
-#    the reference (their pixels are pooled). Returns None when there is no
-#    target, no reference, or the reference has no spread.
-#    """
-#    tgt = next((r for r in rois if r.rid == target_rid), None)
-#    refs = [r for r in rois if r.rid != target_rid]
-#    if tgt is None or not refs:
-#        return None
-#    tp = roi_patch(image, tgt.rect)
-#    if tp is None or tp.size == 0:
-#        return None
-#    ref_pix = [roi_patch(image, r.rect).astype(np.float64).ravel()
-#               for r in refs if roi_patch(image, r.rect) is not None]
-#    ref_pix = [a for a in ref_pix if a.size]
-#    if not ref_pix:
-#        return None
-#    ref = np.concatenate(ref_pix)
-#    sd = float(ref.std())
-#    if sd < 1e-9:
-#        return None
-#    return (float(tp.astype(np.float64).mean()) - float(ref.mean())) / sd
 #
 #
 #def group_rois(rois: List[ROI], gid: str) -> List[ROI]:
@@ -1532,8 +1501,7 @@ if __name__ == "__main__":
 #    label: str
 #    color: str
 #    values: np.ndarray
-#    # Centre of each ROI, index-aligned with ``values``. None for metrics that
-#    # are not per-ROI (SNR is one value for the whole group).
+#    # Centre of each ROI, index-aligned with ``values``.
 #    pos_x: Optional[np.ndarray] = None
 #    pos_y: Optional[np.ndarray] = None
 #
@@ -1558,7 +1526,7 @@ if __name__ == "__main__":
 #
 #def snapshot(groups: List[Group], rois: List[ROI]):
 #    """Copy the mutable model for safe use on a worker thread."""
-#    gs = [Group(g.gid, g.name, g.color, g.target_rid) for g in groups]
+#    gs = [Group(g.gid, g.name, g.color) for g in groups]
 #    rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
 #    return gs, rs
 #
@@ -1567,8 +1535,8 @@ if __name__ == "__main__":
 ## Project (de)serialization — plain JSON-friendly dicts
 ## --------------------------------------------------------------------------- #
 #def groups_to_json(groups: List[Group]) -> List[dict]:
-#    return [{"gid": g.gid, "name": g.name, "color": g.color,
-#             "target_rid": g.target_rid} for g in groups]
+#    return [{"gid": g.gid, "name": g.name, "color": g.color}
+#            for g in groups]
 #
 #
 #def rois_to_json(rois: List[ROI]) -> List[dict]:
@@ -1577,8 +1545,8 @@ if __name__ == "__main__":
 #
 #
 #def groups_from_json(items) -> List[Group]:
-#    return [Group(g["gid"], g["name"], g["color"], g.get("target_rid"))
-#            for g in (items or [])]
+#    # ``target_rid`` may still be in an older project file; it is ignored.
+#    return [Group(g["gid"], g["name"], g["color"]) for g in (items or [])]
 #
 #
 #def rois_from_json(items) -> List[ROI]:
@@ -1609,22 +1577,13 @@ if __name__ == "__main__":
 #        return pcache[g.gid]
 #
 #    def series_of(g: Group, mid: str) -> Series:
-#        v = vals(g, mid)
-#        if mid == SNR_ID:                 # one value per group, no position
-#            return Series(g.name, g.color, v)
 #        px, py = positions(g)
-#        return Series(g.name, g.color, v, px, py)
+#        return Series(g.name, g.color, vals(g, mid), px, py)
 #
 #    def vals(g: Group, mid: str) -> np.ndarray:
 #        key = (g.gid, mid)
 #        if key not in cache:
-#            grois = group_rois(rois, g.gid)
-#            if mid == SNR_ID:
-#                s = group_snr(image, grois, g.target_rid)
-#                cache[key] = np.asarray(
-#                    [] if s is None else [s], dtype=np.float64)
-#            else:
-#                cache[key] = group_values(image, grois, mid)
+#            cache[key] = group_values(image, group_rois(rois, g.gid), mid)
 #        return cache[key]
 #
 #    if mode == "between":
@@ -1641,7 +1600,7 @@ if __name__ == "__main__":
 #            n = len(group_rois(rois, g.gid))
 #            cells = [_summ(vals(g, m)) for m in metrics]
 #            res.table_rows.append((g.name, g.color, [str(n)] + cells))
-#        # group × metric heatmap + attribute ranking (GLV metrics only)
+#        # group × metric heatmap + attribute ranking
 #        res.heat = {
 #            "groups": [g.name for g in used],
 #            "colors": [g.color for g in used],
@@ -1650,8 +1609,6 @@ if __name__ == "__main__":
 #        }
 #        ranking = []
 #        for mid in metrics:
-#            if mid == SNR_ID:
-#                continue
 #            eta = attribute_separability([vals(g, mid) for g in used])
 #            d = (cohens_d(vals(used[0], mid), vals(used[1], mid))
 #                 if len(used) == 2 else None)
@@ -1696,19 +1653,15 @@ if __name__ == "__main__":
 #            return g
 #    return None
 #
-#F aa6df36f7c20b34cd055a0fc8d873e154416d1a0 122 pear/core/attributes.py
-#"""Metric bank — GLV statistics and e-beam SNR.
+#F e7678129fd577f63daf4f9f08fce964a0129d47e 95 pear/core/attributes.py
+#"""Metric bank — grey-level-value (GLV) statistics.
 #
-#Deliberately small: the tool measures **grey-level-value (GLV) statistics**
-#of a region plus a **signal-to-noise ratio (SNR)**. Everything is plain
-#NumPy and every reduction is guarded so degenerate / tiny patches never
-#raise.
+#Deliberately small: the tool measures **GLV statistics** of a region.
+#Everything is plain NumPy and every reduction is guarded so degenerate /
+#tiny patches never raise.
 #
-#GLV statistics operate on a single ROI patch. Their ids are stable
-#strings; custom quantiles use the id form ``glv_q<NN>`` (e.g. ``glv_q90``).
-#
-#SNR follows the e-beam definition ``(mean_target - mean_reference) /
-#std_reference`` and therefore needs a *target* ROI and a *reference* ROI.
+#The statistics operate on a single ROI patch. Their ids are stable strings;
+#custom quantiles use the id form ``glv_q<NN>`` (e.g. ``glv_q90``).
 #"""
 #
 #from __future__ import annotations
@@ -1740,13 +1693,6 @@ if __name__ == "__main__":
 #    "glv_max": "max(gray)",
 #}
 #
-#SNR_ID = "snr"
-#SNR_LABEL = "SNR"
-#SNR_FORMULA = "(mean_T − mean_R) / std_R"
-#
-#_EPS = 1e-9
-#
-#
 #def quantile_of(mid: str) -> Optional[int]:
 #    """Percentile for a quantile metric id (``glv_q90`` -> 90), else None."""
 #    if mid.startswith("glv_q") and mid[5:].isdigit():
@@ -1755,11 +1701,9 @@ if __name__ == "__main__":
 #
 #
 #def metric_label(mid: str) -> str:
-#    """Human label for any metric id (fixed, custom quantile, or SNR)."""
+#    """Human label for any metric id (fixed or custom quantile)."""
 #    if mid in GLV_STATS:
 #        return GLV_STATS[mid]
-#    if mid == SNR_ID:
-#        return SNR_LABEL
 #    q = quantile_of(mid)
 #    if q is not None:
 #        return f"GLV Q{q}"
@@ -1769,8 +1713,6 @@ if __name__ == "__main__":
 #def metric_formula(mid: str) -> str:
 #    if mid in GLV_FORMULAS:
 #        return GLV_FORMULAS[mid]
-#    if mid == SNR_ID:
-#        return SNR_FORMULA
 #    q = quantile_of(mid)
 #    if q is not None:
 #        return f"{q}th percentile"
@@ -1803,18 +1745,6 @@ if __name__ == "__main__":
 #    return {mid: glv_value(patch, mid) for mid in GLV_STATS}
 #
 #
-#def snr(target: np.ndarray, reference: np.ndarray) -> float:
-#    """E-beam SNR: ``(mean_target - mean_reference) / std_reference``."""
-#    t = np.asarray(target, dtype=np.float64).ravel()
-#    r = np.asarray(reference, dtype=np.float64).ravel()
-#    if t.size == 0 or r.size == 0:
-#        return 0.0
-#    sd = float(r.std())
-#    if sd < _EPS:
-#        return 0.0
-#    return (float(t.mean()) - float(r.mean())) / sd
-#
-#
 #def default_metrics() -> List[str]:
 #    """Metrics selected on first run."""
 #    return ["glv_mean", "glv_median"]
@@ -1822,7 +1752,7 @@ if __name__ == "__main__":
 #F afa940644becc78d2d6a262afdec4f08ba635fc2 2 pear/ui/__init__.py
 #"""Qt UI for PEAR. All Qt imports live under this package."""
 #
-#F 6869e3bf8d21fd22d4976cf413142066c7346274 937 pear/ui/image_view.py
+#F d13eca6cb50317dfe951360ded4a4ba3375f042e 937 pear/ui/image_view.py
 #"""Image stage: zoom/pan and place / move / resize ROIs.
 #
 #ROIs belong to groups and are drawn in their group's colour.
@@ -1890,7 +1820,7 @@ if __name__ == "__main__":
 #
 #    def __init__(self, parent=None):
 #        super().__init__(parent)
-#        self.setMinimumSize(420, 320)
+#        self.setMinimumSize(320, 240)   # the rail's width wins
 #        self.setMouseTracking(True)
 #        self.setFocusPolicy(Qt.StrongFocus)
 #
@@ -2186,7 +2116,6 @@ if __name__ == "__main__":
 #            p.drawRect(QRectF(tl, br))
 #
 #    def _paint_rois(self, p: QPainter) -> None:
-#        targets = {g.gid: g.target_rid for g in self._groups}
 #        for roi in self._rois:
 #            active_grp = roi.gid == self._active_gid
 #            selected = roi.rid == self._active_rid
@@ -2218,8 +2147,6 @@ if __name__ == "__main__":
 #                self._paint_selection_ring(p, r)
 #            if roi.rid in self._outliers:
 #                self._paint_outlier(p, r)
-#            if targets.get(roi.gid) == roi.rid:
-#                self._paint_badge(p, r, "T", QColor(17, 24, 39))
 #            val = self._roi_values.get(roi.rid)
 #            if val is not None:
 #                self._paint_value(p, r, val, roi.rid == self._hover_rid)
@@ -2529,14 +2456,17 @@ if __name__ == "__main__":
 #        pos = QPointF(e.position())
 #        self._cursor_img = self._to_image(pos)
 #        self._emit_cursor(pos)
-#        if self._grid_mode:
-#            if self._grid_stage == 1:
-#                self.update()
-#            return
+#        # Panning outranks the mode: the right button drags the picture around
+#        # whether or not a grid is being placed, and grid placement is exactly
+#        # when you need to reach the far corner.
 #        if self._interact == "pan":
 #            self._offset = self._pan_at_press + (pos - self._drag_start)
 #            self._fitted = False        # panned away from the fit
 #            self.update()
+#            return
+#        if self._grid_mode:
+#            if self._grid_stage == 1:
+#                self.update()
 #            return
 #        if self._interact == "marquee" and self._marquee is not None:
 #            self._marquee.setBottomRight(self._to_image(pos))
@@ -2760,7 +2690,7 @@ if __name__ == "__main__":
 #        else:
 #            self.update()
 #
-#F a9ac232f1ab5f9727e6f131f03f8afca0796c56e 973 pear/ui/main_window.py
+#F 1fea4ebfeee774ba5d3724e05580a42ed13df571 956 pear/ui/main_window.py
 #"""Main window: image stage + control rail. Analysis lives in its own window.
 #
 #Model: a Group is a category; ROIs belong to a group. Add ROIs on the image
@@ -2779,16 +2709,17 @@ if __name__ == "__main__":
 #from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 #from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
 #                               QMainWindow, QMenu, QMessageBox, QPushButton,
-#                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
+#                               QScrollArea, QSizePolicy, QToolButton,
+#                               QVBoxLayout, QWidget)
 #
 #from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
 #                                compute_analysis, distribute_rects,
-#                                group_outliers, group_rois, group_snr,
+#                                group_outliers, group_rois,
 #                                groups_from_json, groups_to_json, heat_cells,
 #                                heat_color, load_image, roi_center, roi_metric,
 #                                roi_patch, rois_from_json, rois_to_json,
 #                                snapshot, summarize, uniformity)
-#from pear.core.attributes import SNR_ID, metric_label
+#from pear.core.attributes import metric_label
 #from pear.ui import theme
 #from pear.ui.image_view import ImageView
 #from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
@@ -2820,7 +2751,7 @@ if __name__ == "__main__":
 #    def __init__(self):
 #        super().__init__()
 #        self.setWindowTitle("PEAR — group & ROI analysis")
-#        self.resize(1180, 820)
+#        self.resize(1320, 860)
 #
 #        self._image: Optional[np.ndarray] = None
 #        self._groups: List[Group] = []
@@ -2839,6 +2770,7 @@ if __name__ == "__main__":
 #        self._heat_range = None           # locked heat colours, or None = auto
 #        self._roi_order = "placed"        # ROI list order: placed | asc | desc
 #        self._values: dict = {}           # rid -> shown metric, one pass per refresh
+#        self._value_cache: dict = {}      # (rid, rect, metric) -> value
 #        self._outlier_rids: set = set()
 #        self._image_path: Optional[str] = None
 #        self._cmp_mode = "between"
@@ -2903,11 +2835,20 @@ if __name__ == "__main__":
 #        # The overlay controls sit on the stage, not at the bottom of the rail:
 #        # every one of them changes what the image looks like.
 #        self.stage_bar = StageBar()
+#        # In a narrow window the bar's controls would otherwise overlap each
+#        # other; it scrolls sideways instead, and never grows the window.
+#        bar_scroll = QScrollArea()
+#        bar_scroll.setWidget(self.stage_bar)
+#        bar_scroll.setWidgetResizable(True)
+#        bar_scroll.setFrameShape(QScrollArea.NoFrame)
+#        bar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+#        bar_scroll.setFixedHeight(self.stage_bar.sizeHint().height() + 2)
+#        bar_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 #        stage = QWidget()
 #        slay = QVBoxLayout(stage)
 #        slay.setContentsMargins(0, 0, 0, 0)
 #        slay.setSpacing(0)
-#        slay.addWidget(self.stage_bar)
+#        slay.addWidget(bar_scroll)
 #        slay.addWidget(self.image_view, 1)
 #        self.setCentralWidget(stage)
 #        self.rail = RailPanel()
@@ -2921,8 +2862,12 @@ if __name__ == "__main__":
 #        self.rail_dock.setWidget(scroll)
 #        self.rail_dock.setFeatures(QDockWidget.DockWidgetMovable |
 #                                   QDockWidget.DockWidgetFloatable)
+#        # The stage will happily take the whole window and leave the rail too
+#        # narrow to show its own labels. The rail's width is a floor; the image
+#        # gets what is left.
+#        self.rail_dock.setMinimumWidth(390)
 #        self.addDockWidget(Qt.RightDockWidgetArea, self.rail_dock)
-#        self.resizeDocks([self.rail_dock], [400], Qt.Horizontal)
+#        self.resizeDocks([self.rail_dock], [410], Qt.Horizontal)
 #
 #    def _build_status(self) -> None:
 #        bar = self.statusBar()
@@ -3002,7 +2947,6 @@ if __name__ == "__main__":
 #        self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
 #        self.rail.roi_size_changed.connect(self.image_view.set_roi_size)
 #        self.rail.roi_pick.connect(self.select_roi)
-#        self.rail.roi_set_target.connect(self.set_target_roi)
 #        self.rail.roi_del.connect(self.delete_roi)
 #        self.rail.roi_hovered.connect(self.image_view.set_hover)
 #        self.rail.metrics_changed.connect(self.set_metrics)
@@ -3067,6 +3011,7 @@ if __name__ == "__main__":
 #        self._selected_rids = set()
 #        self._outlier_rids = set()
 #        self._within_gid = None
+#        self._value_cache = {}    # a new image invalidates every measurement
 #        self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
 #        self.image_view.set_image(img)
 #        self.add_group()          # start with one group so adding ROIs works
@@ -3166,16 +3111,6 @@ if __name__ == "__main__":
 #            self._active_gid = roi.gid
 #        self._refresh()
 #
-#    def set_target_roi(self, rid: int) -> None:
-#        """Tag an ROI as its group's SNR target (toggle off if already target)."""
-#        roi = self._roi(rid)
-#        if roi is None:
-#            return
-#        g = self._group(roi.gid)
-#        if g is not None:
-#            g.target_rid = None if g.target_rid == rid else rid
-#            self._refresh()
-#
 #    def on_marquee_selected(self, rids) -> None:
 #        self._selected_rids = set(rids or [])
 #        self._refresh()
@@ -3210,7 +3145,6 @@ if __name__ == "__main__":
 #        if self._active_rid == rid:
 #            self._active_rid = None
 #        self._selected_rids.discard(rid)
-#        self._drop_targets({rid})
 #        self._refresh()
 #
 #    def delete_rois(self, rids) -> None:
@@ -3221,22 +3155,9 @@ if __name__ == "__main__":
 #        if self._active_rid in rid_set:
 #            self._active_rid = None
 #        self._selected_rids -= rid_set
-#        self._drop_targets(rid_set)
 #        self.statusBar().showMessage(f"Deleted {len(rid_set)} ROIs.", 3000)
 #        self._refresh()
 #
-#    def _drop_targets(self, rid_set: set) -> None:
-#        for g in self._groups:
-#            if g.target_rid in rid_set:
-#                g.target_rid = None
-#
-#    def _target_of_active(self) -> Optional[int]:
-#        g = self._group(self._active_gid)
-#        return g.target_rid if g is not None else None
-#
-#    # ------------------------------------------------------------------ #
-#    # metrics / comparison
-#    # ------------------------------------------------------------------ #
 #    def set_metrics(self, metrics: List[str]) -> None:
 #        self._metrics = list(metrics)
 #        self._render_analysis()
@@ -3313,7 +3234,7 @@ if __name__ == "__main__":
 #        self._refresh()
 #
 #    def _is_glv_show(self) -> bool:
-#        return bool(self._show_metric) and self._show_metric != SNR_ID
+#        return bool(self._show_metric)
 #
 #    def _update_heatmap(self) -> None:
 #        # Boxes and field are two ways to paint the same values: either one on
@@ -3349,16 +3270,21 @@ if __name__ == "__main__":
 #        """
 #        vals: dict = {}
 #        if self._image is not None and self._show_metric:
-#            if self._show_metric == SNR_ID:
-#                # SNR is a per-group value; it belongs to the target (T) ROI.
-#                for g in self._groups:
-#                    v = group_snr(self._image, group_rois(self._rois, g.gid),
-#                                  g.target_rid)
-#                    if v is not None and g.target_rid is not None:
-#                        vals[g.target_rid] = float(v)
-#            else:
-#                for r in self._rois:
-#                    vals[r.rid] = roi_metric(self._image, r, self._show_metric)
+#            # Nudging one ROI used to re-measure every other one. The patch
+#            # only changes when its rect does, so the answer is cached against
+#            # it — this is most of the "sticky" feeling on a field with a few
+#            # hundred boxes.
+#            for r in self._rois:
+#                key = (r.rid, tuple(r.rect), self._show_metric)
+#                v = self._value_cache.get(key)
+#                if v is None:
+#                    v = roi_metric(self._image, r, self._show_metric)
+#                    self._value_cache[key] = v
+#                vals[r.rid] = v
+#            if len(self._value_cache) > 20000:          # a session's worth
+#                self._value_cache = dict(
+#                    ((r.rid, tuple(r.rect), self._show_metric), vals[r.rid])
+#                    for r in self._rois)
 #        self._values = vals
 #
 #    def _update_roi_values(self) -> None:
@@ -3392,7 +3318,7 @@ if __name__ == "__main__":
 #        def key(r):
 #            v = self._values.get(r.rid)
 #            if v is None or not np.isfinite(v):
-#                return (1, 0.0)      # no value (SNR reference) — keep it last
+#                return (1, 0.0)      # unmeasurable — keep it last
 #            return (0, -v if rev else v)
 #
 #        return sorted(rois, key=key)
@@ -3456,8 +3382,8 @@ if __name__ == "__main__":
 #        self.rail.set_groups(self._groups, self._active_gid, counts)
 #        self.rail.set_rois(
 #            self._ordered_rois(group_rois(self._rois, self._active_gid)),
-#            self._active_rid, self._target_of_active(),
-#            self._selected_rids, self._outlier_rids, self._values)
+#            self._active_rid, self._selected_rids, self._outlier_rids,
+#            self._values)
 #        self.image_view.set_groups(self._groups, self._active_gid)
 #        self.image_view.set_rois(self._rois, self._active_rid)
 #        self.image_view.set_selection(self._selected_rids)
@@ -3694,27 +3620,18 @@ if __name__ == "__main__":
 #            w = csv.writer(fh)
 #            w.writerow(["PEAR group & ROI analysis"])
 #            w.writerow([])
-#            header = ["group", "roi", "role", "x", "y", "w", "h",
+#            header = ["group", "roi", "x", "y", "w", "h",
 #                      "center_x", "center_y"] + \
 #                     [metric_label(m) for m in self._metrics]
 #            w.writerow(header)
 #            for g in self._groups:
-#                grois = group_rois(self._rois, g.gid)
-#                gsnr = group_snr(self._image, grois, g.target_rid)
-#                for roi in grois:
+#                for roi in group_rois(self._rois, g.gid):
 #                    x, y, wid, hei = roi.rect
-#                    role = ("T" if roi.rid == g.target_rid
-#                            else ("R" if g.target_rid is not None else ""))
 #                    cx, cy = roi_center(roi.rect)
-#                    row = [g.name, roi.label, role, x, y, wid, hei,
+#                    row = [g.name, roi.label, x, y, wid, hei,
 #                           f"{cx:g}", f"{cy:g}"]
 #                    for mid in self._metrics:
-#                        if mid == SNR_ID:
-#                            # SNR is per group; report it on the target row only
-#                            row.append(f"{gsnr:.6g}" if (roi.rid == g.target_rid
-#                                       and gsnr is not None) else "")
-#                        else:
-#                            row.append(f"{roi_metric(self._image, roi, mid):.6g}")
+#                        row.append(f"{roi_metric(self._image, roi, mid):.6g}")
 #                    w.writerow(row)
 #            w.writerow([])
 #            w.writerow(["summary"])
@@ -3725,13 +3642,9 @@ if __name__ == "__main__":
 #                    continue
 #                line = [g.name, len(grois)]
 #                for mid in self._metrics:
-#                    if mid == SNR_ID:
-#                        s = group_snr(self._image, grois, g.target_rid)
-#                        line.append(f"{s:.6g}" if s is not None else "")
-#                    else:
-#                        vals = np.array([roi_metric(self._image, r, mid)
-#                                         for r in grois])
-#                        line.append(f"{summarize(vals)['mean']:.6g}")
+#                    vals = np.array([roi_metric(self._image, r, mid)
+#                                     for r in grois])
+#                    line.append(f"{summarize(vals)['mean']:.6g}")
 #                w.writerow(line)
 #
 #F d2e0f5632ceef07a1d5c29ba41647e1f22d73c04 196 pear/ui/theme.py
@@ -3931,7 +3844,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 1cac49688e85023e3e3f716e8136aec11e0be90d 2563 pear/ui/widgets.py
+#F 4749eabc52a5b5d83b65207b79eda0b6d7d89050 2696 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -3956,8 +3869,7 @@ if __name__ == "__main__":
 #from pear.core.analysis import (Group, cell_edges, heat_color,
 #                               linear_trend, pixel_hist,
 #                               profile_by_position, uniformity)
-#from pear.core.attributes import (GLV_STATS, SNR_ID, metric_formula,
-#                                  metric_label)
+#from pear.core.attributes import GLV_STATS, metric_formula, metric_label
 #from pear.ui import theme
 #
 #
@@ -4048,14 +3960,20 @@ if __name__ == "__main__":
 #    ``deleteLater`` only schedules the removal: until the event loop runs, a
 #    widget taken out of a layout keeps its parent and its last geometry, so a
 #    rebuilt list paints its stale rows over whatever sits under them (the
-#    Groups card's own title and Add button, for one). Unparenting first ends
-#    that on the spot.
+#    Groups card's own title and Add button, for one). Hiding ends that on the
+#    spot.
+#
+#    It has to be ``hide()`` and not ``setParent(None)``: these lists are
+#    rebuilt *from* the rows' own signals — click a ROI row and the refresh it
+#    triggers clears the list that row is in — and a widget reparented to None
+#    becomes a top-level window while its own event is still on the stack. That
+#    is a blank window flashing up per click, and then a crash.
 #    """
 #    while layout.count():
 #        it = layout.takeAt(0)
 #        w = it.widget()
 #        if w is not None:
-#            w.setParent(None)
+#            w.hide()
 #            w.deleteLater()
 #
 #
@@ -4148,6 +4066,26 @@ if __name__ == "__main__":
 #        v = self._style.get(key)
 #        return default if v is None or v == "" else v
 #
+#    def _font(self, delta: int = 0, weight=None):
+#        """Axis text at the size the user asked for (8 pt by default)."""
+#        size = self._st("font_pt", 8)
+#        try:
+#            size = float(size)
+#        except (TypeError, ValueError):
+#            size = 8.0
+#        size = float(np.clip(size + delta, 5.0, 24.0))
+#        return (theme.mono_font(size, weight=weight) if weight
+#                else theme.mono_font(size))
+#
+#    def _axis_ink(self) -> "QColor":
+#        """Tick and axis-name ink. Dark by default — a chart that ends up in a
+#        report is read on paper and on a projector, where a light grey tick
+#        label is simply not there."""
+#        return QColor(self._st("axis_ink", theme.INK))
+#
+#    def _mark_color(self, key: str, series_color) -> "QColor":
+#        return QColor(self._st(key, series_color))
+#
 #    def _nticks(self, key: str, default: int) -> int:
 #        try:
 #            return int(np.clip(int(self._st(key, default)), 2, 12))
@@ -4168,8 +4106,8 @@ if __name__ == "__main__":
 #        p.drawText(QRectF(8, 5, self.width() - 16, 19),
 #                   Qt.AlignHCenter | Qt.AlignVCenter, self.title_text())
 #        if not self._series:
-#            p.setPen(QColor(theme.INK3))
-#            p.setFont(theme.mono_font(9))
+#            p.setPen(self._axis_ink())
+#            p.setFont(self._font(1))
 #            p.drawText(self.rect(), Qt.AlignCenter, "no data")
 #            p.end()
 #            return
@@ -4189,7 +4127,7 @@ if __name__ == "__main__":
 #        """A boxed plot area with inward tick marks — the plain conventions a
 #        figure in a report follows, so the chart reads the same on a slide as
 #        it does on screen."""
-#        p.setPen(QPen(QColor(theme.INK3), 1.2))
+#        p.setPen(QPen(self._axis_ink(), 1.2))
 #        p.setBrush(Qt.NoBrush)
 #        p.drawRect(QRectF(left, top, right - left, bottom - top))
 #        for gx in xticks:
@@ -4199,13 +4137,26 @@ if __name__ == "__main__":
 #            p.drawLine(QPointF(left, gy), QPointF(left + 4, gy))
 #            p.drawLine(QPointF(right, gy), QPointF(right - 4, gy))
 #
-#    def _marker(self, p: QPainter, x, y, color, rad=3.2) -> None:
+#    def _marker(self, p: QPainter, x, y, color, rad=None) -> None:
 #        """One observation. Open — white centre, coloured rim — so a scatter
 #        never merges into the lines drawn in the same colour beside it."""
+#        if rad is None:
+#            try:
+#                rad = float(np.clip(float(self._st("point_size", 3.2)),
+#                                    0.5, 20.0))
+#            except (TypeError, ValueError):
+#                rad = 3.2
+#        col = self._mark_color("point_color", color)
 #        p.setBrush(QColor(255, 255, 255, 230))
-#        pen = QPen(QColor(color), 1.3)
-#        p.setPen(pen)
+#        p.setPen(QPen(col, max(0.6, rad * 0.4)))
 #        p.drawEllipse(QPointF(x, y), rad, rad)
+#
+#    def _line_w(self, default: float) -> float:
+#        try:
+#            return float(np.clip(float(self._st("line_width", default)),
+#                                 0.3, 12.0))
+#        except (TypeError, ValueError):
+#            return default
 #
 #    def _range(self):
 #        vmin, vmax = self._st("vmin"), self._st("vmax")
@@ -4221,8 +4172,8 @@ if __name__ == "__main__":
 #
 #    def _ytitle(self, p: QPainter, text: str) -> None:
 #        p.save()
-#        p.setFont(theme.mono_font(8))
-#        p.setPen(QColor(theme.INK3))
+#        p.setFont(self._font())
+#        p.setPen(self._axis_ink())
 #        tw = p.fontMetrics().horizontalAdvance(text)
 #        p.translate(11, self.height() / 2.0)
 #        p.rotate(-90)
@@ -4256,7 +4207,7 @@ if __name__ == "__main__":
 #            pad = (hi - lo) * 0.08
 #            return lo - pad, hi + pad
 #
-#        p.setFont(theme.mono_font(8))
+#        p.setFont(self._font())
 #        ny = self._nticks("yticks", 5)
 #        gridys = [top + H * t / (ny - 1.0) for t in range(ny)]
 #        for t, gy in enumerate(gridys):
@@ -4264,7 +4215,7 @@ if __name__ == "__main__":
 #            p.drawLine(left, int(gy), right, int(gy))
 #            if own:                     # one label per lane instead, below
 #                continue
-#            p.setPen(QColor(theme.INK3))
+#            p.setPen(self._axis_ink())
 #            p.drawText(QRectF(16, gy - 6, left - 20, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter,
 #                       _fmt(ghi - (ghi - glo) * t / (ny - 1.0)))
@@ -4273,8 +4224,8 @@ if __name__ == "__main__":
 #                                 if own else "value"))
 #        xlab = self._st("xlabel", "")
 #        if xlab:
-#            p.setPen(QColor(theme.INK2))
-#            p.setFont(theme.mono_font(8, weight=700))
+#            p.setPen(self._axis_ink())
+#            p.setFont(self._font(weight=700))
 #            p.drawText(QRectF(left, self.height() - 16, W, 13),
 #                       Qt.AlignHCenter, str(xlab))
 #
@@ -4310,17 +4261,18 @@ if __name__ == "__main__":
 #                    jitter = ((k % 7) / 6.0 - 0.5) * bw * 0.72
 #                    self._marker(p, cx + jitter, Y(val), col)
 #            # median
-#            p.setPen(QPen(col, 2.4))
+#            p.setPen(QPen(self._mark_color("line_color", col),
+#                          self._line_w(2.2)))
 #            p.drawLine(int(cx - bw / 2), int(Y(med)), int(cx + bw / 2), int(Y(med)))
 #            # mean value, placed just above the column's own data
 #            p.setPen(col)
-#            p.setFont(theme.mono_font(8, weight=700))
+#            p.setFont(self._font(weight=700))
 #            my = max(top - 15, Y(vmax) - 16)
 #            p.drawText(QRectF(cx - lane / 2, my, lane, 13),
 #                       Qt.AlignHCenter | Qt.AlignVCenter, _fmt(float(v.mean())))
 #            # label below the column
-#            p.setPen(QColor(theme.INK2))
-#            p.setFont(theme.mono_font(8))
+#            p.setPen(self._axis_ink())
+#            p.setFont(self._font())
 #            lab = p.fontMetrics().elidedText(
 #                f"{s['label']} · n={v.size}", Qt.ElideRight, int(lane))
 #            p.drawText(QRectF(cx - lane / 2, bottom + 4, lane, 14),
@@ -4330,7 +4282,7 @@ if __name__ == "__main__":
 #            # this lane's own range, so a stretched lane still says what it
 #            # spans and is never mistaken for the one beside it
 #            span = hi - lo
-#            p.setPen(QColor(theme.INK3))
+#            p.setPen(self._axis_ink())
 #            p.drawText(QRectF(cx - lane / 2, bottom + 18, lane, 13),
 #                       Qt.AlignHCenter | Qt.AlignVCenter,
 #                       f"{_fmt_span(vmin, span)} … {_fmt_span(vmax, span)}")
@@ -4347,8 +4299,8 @@ if __name__ == "__main__":
 #        series = [s for s in self._series
 #                  if s.get(key) is not None and s[key].size]
 #        if not series:
-#            p.setPen(QColor(theme.INK3))
-#            p.setFont(theme.mono_font(9))
+#            p.setPen(self._axis_ink())
+#            p.setFont(self._font(1))
 #            p.drawText(self.rect(), Qt.AlignCenter,
 #                       "no per-ROI position for this metric")
 #            return
@@ -4368,7 +4320,7 @@ if __name__ == "__main__":
 #
 #        # value labels can need many decimals on a near-flat profile, so size
 #        # the gutter from the widest one rather than a fixed guess
-#        p.setFont(theme.mono_font(8))
+#        p.setFont(self._font())
 #        fm = p.fontMetrics()
 #        ny = self._nticks("yticks", 5)
 #        ticks = [_fmt_span(hi - (hi - lo) * t / (ny - 1.0), hi - lo)
@@ -4393,7 +4345,7 @@ if __name__ == "__main__":
 #        for gy, lab in zip(gridys, ticks):
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
-#            p.setPen(QColor(theme.INK3))
+#            p.setPen(self._axis_ink())
 #            p.drawText(QRectF(18, gy - 6, left - 24, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter, lab)
 #        self._ytitle(p, self._st("ylabel", "value"))
@@ -4402,7 +4354,7 @@ if __name__ == "__main__":
 #        nx = self._nticks("xticks", 5)
 #        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
 #        self._frame(p, left, top, right, bottom, xticks=xs, yticks=gridys)
-#        p.setPen(QColor(theme.INK3))
+#        p.setPen(self._axis_ink())
 #        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 28, bottom + 2, 56, 12), Qt.AlignHCenter,
 #                       f"{xlo + (xhi - xlo) * t / (nx - 1.0):.0f}")
@@ -4433,7 +4385,7 @@ if __name__ == "__main__":
 #            # least-squares tilt — the brand accent, so it never reads as data
 #            if self._trend and fit is not None:
 #                slope, inter = fit
-#                pen = QPen(QColor(theme.AMBER), 1.6)
+#                pen = QPen(QColor(theme.AMBER), self._line_w(2.2) * 0.75)
 #                pen.setStyle(Qt.DashLine)
 #                p.setPen(pen)
 #                p.setBrush(Qt.NoBrush)
@@ -4451,7 +4403,8 @@ if __name__ == "__main__":
 #            # same weight and the line disappears into its own scatter.
 #            cx, cy = profile_by_position(px_, v)
 #            if cx.size >= 2:
-#                p.setPen(QPen(col.darker(190), 2.2))
+#                p.setPen(QPen(self._mark_color("line_color", col.darker(190)),
+#                              self._line_w(2.2)))
 #                p.setBrush(Qt.NoBrush)
 #                pts = [QPointF(X(a), Y(b)) for a, b in zip(cx, cy)]
 #                for a, b in zip(pts, pts[1:]):
@@ -4468,8 +4421,8 @@ if __name__ == "__main__":
 #            p.setBrush(col)
 #            p.setPen(Qt.NoPen)
 #            p.drawRect(int(left), int(ly) + 2, 8, 8)
-#            p.setPen(QColor(theme.INK2))
-#            p.setFont(theme.mono_font(8))
+#            p.setPen(self._axis_ink())
+#            p.setFont(self._font())
 #            p.drawText(QRectF(left + 12, ly - 2, W - 12, 14),
 #                       Qt.AlignLeft | Qt.AlignVCenter,
 #                       p.fontMetrics().elidedText(txt, Qt.ElideRight,
@@ -4485,7 +4438,7 @@ if __name__ == "__main__":
 #                 QColor(theme.AMBER), Qt.DashLine),
 #                ("group mean — where flat would sit",
 #                 QColor(theme.INK3), Qt.DashLine)]
-#        p.setFont(theme.mono_font(8))
+#        p.setFont(self._font())
 #        fm = p.fontMetrics()
 #        wid = max(fm.horizontalAdvance(t) for t, _c, _st in rows) + 42
 #        hgt = 6 + 13 * len(rows)
@@ -4503,7 +4456,7 @@ if __name__ == "__main__":
 #            p.setPen(pen)
 #            p.drawLine(QPointF(box.left() + 6, y + 6.5),
 #                       QPointF(box.left() + 30, y + 6.5))
-#            p.setPen(QColor(theme.INK2))
+#            p.setPen(self._axis_ink())
 #            p.drawText(QRectF(box.left() + 36, y, wid - 40, 13),
 #                       Qt.AlignLeft | Qt.AlignVCenter, text)
 #            y += 13
@@ -4522,8 +4475,8 @@ if __name__ == "__main__":
 #                  if s.get("pos_x") is not None and s.get("pos_y") is not None
 #                  and s["pos_x"].size]
 #        if not series:
-#            p.setPen(QColor(theme.INK3))
-#            p.setFont(theme.mono_font(9))
+#            p.setPen(self._axis_ink())
+#            p.setFont(self._font(1))
 #            p.drawText(self.rect(), Qt.AlignCenter,
 #                       "no per-ROI position for this metric")
 #            return
@@ -4591,8 +4544,8 @@ if __name__ == "__main__":
 #        p.setPen(QPen(QColor(theme.LINE2), 1))
 #        p.setBrush(Qt.NoBrush)
 #        p.drawRect(int(left), int(top), int(W), int(H))
-#        p.setFont(theme.mono_font(8))
-#        p.setPen(QColor(theme.INK3))
+#        p.setFont(self._font())
+#        p.setPen(self._axis_ink())
 #        nx, ny = self._nticks("xticks", 3), self._nticks("yticks", 3)
 #        grid_mode = cells and equal and xc.size > 0 and yc.size > 0
 #        if grid_mode:
@@ -4630,7 +4583,7 @@ if __name__ == "__main__":
 #            # One filled cell per ROI, spanning to the boundary it shares with
 #            # its neighbour: the difference against the cell next door is the
 #            # point of the view, and touching blocks show it where dots cannot.
-#            p.setFont(theme.mono_font(8, weight=700))
+#            p.setFont(self._font(weight=700))
 #            fm = p.fontMetrics()
 #            for s in series:
 #                edge = QColor(s["color"])
@@ -4688,8 +4641,8 @@ if __name__ == "__main__":
 #        p.setPen(QPen(QColor(theme.LINE2), 1))
 #        p.setBrush(Qt.NoBrush)
 #        p.drawRect(int(bx), int(top), bw, int(bh))
-#        p.setPen(QColor(theme.INK3))
-#        p.setFont(theme.mono_font(8))
+#        p.setPen(self._axis_ink())
+#        p.setFont(self._font())
 #        p.drawText(QRectF(bx + bw + 2, top - 2, cbar_w - bw - 4, 12),
 #                   Qt.AlignLeft, _fmt_span(hi, hi - lo))
 #        p.drawText(QRectF(bx + bw + 2, top + bh - 10, cbar_w - bw - 4, 12),
@@ -4706,8 +4659,8 @@ if __name__ == "__main__":
 #            txt += f" · cell {cw:.0f}×{ch:.0f} px"
 #        if cells and equal:
 #            txt += " · equal cells"
-#        p.setPen(QColor(theme.INK2))
-#        p.setFont(theme.mono_font(8))
+#        p.setPen(self._axis_ink())
+#        p.setFont(self._font())
 #        p.drawText(QRectF(left, bottom + 28, W + cbar_w, 13),
 #                   Qt.AlignLeft | Qt.AlignVCenter, txt)
 #
@@ -4723,7 +4676,7 @@ if __name__ == "__main__":
 #        axis still labels each slot with the position it stands for.
 #        """
 #        cw, ch = W / float(xc.size), H / float(yc.size)
-#        p.setFont(theme.mono_font(8, weight=700))
+#        p.setFont(self._font(weight=700))
 #        fm = p.fontMetrics()
 #        for s in series:
 #            edge = QColor(s["color"])
@@ -4781,7 +4734,7 @@ if __name__ == "__main__":
 #        # 0 · 7.5 · 15 · 22.5 rounded to "8" and "22" in the label
 #        yticks = [step * k for k in range(int(round(ymax / step)) + 1)]
 #
-#        p.setFont(theme.mono_font(8))
+#        p.setFont(self._font())
 #        fm = p.fontMetrics()
 #        ylabs = [(f"{v:.0f}%" if pct else f"{v:.0f}") for v in yticks]
 #        left = int(np.clip(max(fm.horizontalAdvance(t) for t in ylabs) + 26,
@@ -4803,7 +4756,7 @@ if __name__ == "__main__":
 #            gy = Y(v)
 #            p.setPen(QPen(QColor(theme.LINE2), 1))
 #            p.drawLine(left, int(gy), right, int(gy))
-#            p.setPen(QColor(theme.INK3))
+#            p.setPen(self._axis_ink())
 #            p.drawText(QRectF(8, gy - 6, left - 12, 12),
 #                       Qt.AlignRight | Qt.AlignVCenter, lab)
 #        # bars, back to front so a thin group is never buried
@@ -4815,7 +4768,8 @@ if __name__ == "__main__":
 #            fill = QColor(col)
 #            fill.setAlpha(70 if len(self._series) > 1 else 120)
 #            p.setBrush(fill)
-#            p.setPen(QPen(col, 1.4))
+#            p.setPen(QPen(self._mark_color("line_color", col),
+#                          self._line_w(1.4)))
 #            for k in range(nbins):
 #                if b[k] <= 0:
 #                    continue
@@ -4827,13 +4781,13 @@ if __name__ == "__main__":
 #        xs = [left + W * t / (nx - 1.0) for t in range(nx)]
 #        self._frame(p, left, top, right, bottom, xticks=xs,
 #                    yticks=[Y(v) for v in yticks])
-#        p.setFont(theme.mono_font(8))
-#        p.setPen(QColor(theme.INK3))
+#        p.setFont(self._font())
+#        p.setPen(self._axis_ink())
 #        for t, gx in enumerate(xs):
 #            p.drawText(QRectF(gx - 30, bottom + 5, 60, 12), Qt.AlignHCenter,
 #                       _fmt_span(lo + span * t / (nx - 1.0), span))
-#        p.setPen(QColor(theme.INK2))
-#        p.setFont(theme.mono_font(8, weight=700))
+#        p.setPen(self._axis_ink())
+#        p.setFont(self._font(weight=700))
 #        p.drawText(QRectF(left, bottom + 19, W, 13), Qt.AlignHCenter,
 #                   str(self._st("xlabel", self._xlabel or "value")))
 #        self._ytitle(p, self._st("ylabel", "share of group (%)" if pct
@@ -4846,7 +4800,7 @@ if __name__ == "__main__":
 #        """Keyed legend, boxed at the top right of the plot area."""
 #        if not rows:
 #            return
-#        p.setFont(theme.mono_font(8, weight=700))
+#        p.setFont(self._font(weight=700))
 #        fm = p.fontMetrics()
 #        texts = [f"{lab}  {extra}" if extra else lab for lab, _c, extra in rows]
 #        wid = max(fm.horizontalAdvance(t) for t in texts) + 26
@@ -4863,7 +4817,7 @@ if __name__ == "__main__":
 #            p.setPen(Qt.NoPen)
 #            p.setBrush(QColor(color))
 #            p.drawRect(QRectF(box.left() + 6, y + 3, 9, 7))
-#            p.setPen(QColor(theme.INK2))
+#            p.setPen(self._axis_ink())
 #            p.drawText(QRectF(box.left() + 20, y, wid - 24, 13),
 #                       Qt.AlignLeft | Qt.AlignVCenter, txt)
 #            y += 13
@@ -4990,7 +4944,7 @@ if __name__ == "__main__":
 #        return list(self._selected)
 #
 #    def ids(self) -> List[str]:
-#        return list(GLV_STATS.keys()) + self._custom + [SNR_ID]
+#        return list(GLV_STATS.keys()) + self._custom
 #
 #    def set_state(self, metrics, extra_ids=()) -> None:
 #        """Restore the picker (used when opening a project).
@@ -5089,7 +5043,7 @@ if __name__ == "__main__":
 #            "as one surface. The measured box stays outlined on top. Works on "
 #            "its own — boxes and field are two ways to paint the same values.")
 #        self.cells_chk.toggled.connect(self._on_cells)
-#        self.outliers_chk = QCheckBox("flag outliers")
+#        self.outliers_chk = QCheckBox("outliers")
 #        self.outliers_chk.setToolTip("Mark ROIs outside Q1−1.5·IQR … Q3+1.5·IQR "
 #                                     "within their group.")
 #        self.outliers_chk.toggled.connect(self.outliers_changed)
@@ -5126,7 +5080,7 @@ if __name__ == "__main__":
 #            "stage.")
 #        self.image_btn.clicked.connect(self.export_image_requested)
 #        lay.addWidget(self.image_btn)
-#        self.set_metrics(list(GLV_STATS.keys()) + [SNR_ID])
+#        self.set_metrics(list(GLV_STATS.keys()))
 #        self._gate()
 #
 #    # -- state -------------------------------------------------------- #
@@ -5339,6 +5293,67 @@ if __name__ == "__main__":
 #        tip.setWordWrap(True)
 #        root.addWidget(tip)
 #
+#        head = QLabel("Text and marks")
+#        head.setObjectName("SectionTitle")
+#        head.setFont(theme.display_font(12, weight=700))
+#        root.addWidget(head)
+#        mrow = QHBoxLayout()
+#        mrow.setSpacing(6)
+#        ml = QLabel("size")
+#        ml.setObjectName("Hint")
+#        ml.setMinimumWidth(96)
+#        self.font_spin = QDoubleSpinBox()
+#        self.font_spin.setRange(5, 24)
+#        self.font_spin.setDecimals(1)
+#        self.font_spin.setSingleStep(0.5)
+#        self.font_spin.setSuffix(" pt")
+#        self.font_spin.setValue(float(style.get("font_pt") or 8))
+#        self.point_spin = QDoubleSpinBox()
+#        self.point_spin.setRange(0.5, 20)
+#        self.point_spin.setDecimals(1)
+#        self.point_spin.setSingleStep(0.5)
+#        self.point_spin.setSuffix(" px")
+#        self.point_spin.setValue(float(style.get("point_size") or 3.2))
+#        self.line_spin = QDoubleSpinBox()
+#        self.line_spin.setRange(0.3, 12)
+#        self.line_spin.setDecimals(1)
+#        self.line_spin.setSingleStep(0.2)
+#        self.line_spin.setSuffix(" px")
+#        self.line_spin.setValue(float(style.get("line_width") or 2.2))
+#        for sp in (self.font_spin, self.point_spin, self.line_spin):
+#            sp.setMinimumHeight(28)
+#            sp.setFixedWidth(88)
+#        mrow.addWidget(ml)
+#        mrow.addWidget(QLabel("axis text"))
+#        mrow.addWidget(self.font_spin)
+#        mrow.addWidget(QLabel("point"))
+#        mrow.addWidget(self.point_spin)
+#        mrow.addWidget(QLabel("line"))
+#        mrow.addWidget(self.line_spin)
+#        mrow.addStretch(1)
+#        root.addLayout(mrow)
+#
+#        crow = QHBoxLayout()
+#        crow.setSpacing(6)
+#        cl = QLabel("colour")
+#        cl.setObjectName("Hint")
+#        cl.setMinimumWidth(96)
+#        crow.addWidget(cl)
+#        self._colors = {}
+#        for key, label, default in (("axis_ink", "axis", theme.INK),
+#                                    ("point_color", "points", ""),
+#                                    ("line_color", "lines", "")):
+#            crow.addWidget(QLabel(label))
+#            crow.addLayout(self._color_pick(key, style.get(key) or "", default))
+#        crow.addStretch(1)
+#        root.addLayout(crow)
+#        note = QLabel("Points and lines follow their group's colour until you "
+#                      "pick one here. Axis text is dark by default — light "
+#                      "grey ticks vanish on a projector.")
+#        note.setObjectName("Hint")
+#        note.setWordWrap(True)
+#        root.addWidget(note)
+#
 #        head = QLabel("Scales")
 #        head.setObjectName("SectionTitle")
 #        head.setFont(theme.display_font(12, weight=700))
@@ -5362,6 +5377,36 @@ if __name__ == "__main__":
 #        reset.clicked.connect(self._reset)
 #        root.addWidget(buttons)
 #
+#    def _color_pick(self, key: str, current: str, default: str):
+#        """A swatch plus an *auto* box — auto hands the choice back."""
+#        row = QHBoxLayout()
+#        row.setSpacing(4)
+#        state = {"color": current or default}
+#        self._colors[key] = state
+#        btn = QPushButton()
+#        btn.setFixedSize(22, 22)
+#
+#        def paint():
+#            btn.setStyleSheet(f"background:{state['color']}; "
+#                              "border:1px solid rgba(0,0,0,.25); "
+#                              "border-radius:4px;")
+#        paint()
+#
+#        def choose():
+#            c = QColorDialog.getColor(QColor(state["color"]), self)
+#            if c.isValid():
+#                state["color"] = c.name()
+#                state["auto"] = False
+#                auto.setChecked(False)
+#                paint()
+#        btn.clicked.connect(choose)
+#        auto = QCheckBox("auto")
+#        auto.setChecked(not current)
+#        state["box"] = auto
+#        row.addWidget(btn)
+#        row.addWidget(auto)
+#        return row
+#
 #    def _reset(self) -> None:
 #        for ed in list(self._title_edits.values()) + [self.x_edit, self.y_edit]:
 #            ed.clear()
@@ -5369,6 +5414,11 @@ if __name__ == "__main__":
 #        self.yt_spin.setValue(5)
 #        self.v_auto.setChecked(True)
 #        self.h_auto.setChecked(True)
+#        self.font_spin.setValue(8.0)
+#        self.point_spin.setValue(3.2)
+#        self.line_spin.setValue(2.2)
+#        for state in self._colors.values():
+#            state["box"].setChecked(True)
 #
 #    def result_style(self) -> dict:
 #        """The overrides, with anything left at its default omitted."""
@@ -5382,6 +5432,12 @@ if __name__ == "__main__":
 #                out[key] = ed.text().strip()
 #        out["xticks"] = int(self.xt_spin.value())
 #        out["yticks"] = int(self.yt_spin.value())
+#        out["font_pt"] = round(float(self.font_spin.value()), 1)
+#        out["point_size"] = round(float(self.point_spin.value()), 1)
+#        out["line_width"] = round(float(self.line_spin.value()), 1)
+#        for key, state in self._colors.items():
+#            if not state["box"].isChecked():
+#                out[key] = state["color"]
 #        if not self.v_auto.isChecked() and self.v_hi.value() > self.v_lo.value():
 #            out["vmin"], out["vmax"] = self.v_lo.value(), self.v_hi.value()
 #        if not self.h_auto.isChecked() and self.h_hi.value() > self.h_lo.value():
@@ -5405,7 +5461,6 @@ if __name__ == "__main__":
 #    grid_shape_changed = Signal(int, int)
 #    roi_size_changed = Signal(int, int)     # ROI W × H for click / grid
 #    roi_pick = Signal(int)                  # select an ROI from the list
-#    roi_set_target = Signal(int)            # tag an ROI as its group's SNR target
 #    roi_del = Signal(int)
 #    roi_hovered = Signal(int)                # rid under the cursor (-1 = none)
 #    metrics_changed = Signal(list)
@@ -5556,8 +5611,7 @@ if __name__ == "__main__":
 #            "• Click → drop a size-W×H ROI · drag → custom size\n"
 #            "• Grid → two corners, set row×col, Add grid\n"
 #            "• Shift+drag → box-select · Del removes them\n"
-#            "• Double-click an ROI → pixel inspector\n"
-#            "• T → pick the group’s SNR target (rest are reference)")
+#            "• Double-click an ROI → pixel inspector")
 #        self.roi_hint.setObjectName("Hint")
 #        self.roi_hint.setWordWrap(True)
 #        rlay.addWidget(self.roi_hint)
@@ -5567,7 +5621,7 @@ if __name__ == "__main__":
 #        root.addWidget(roi)
 #
 #        # Metrics
-#        met = _card("Metrics", "GLV + SNR")
+#        met = _card("Metrics", "grey-level statistics")
 #        self.metrics = MetricPicker()
 #        self.metrics.changed.connect(self.metrics_changed)
 #        self.metrics.ids_changed.connect(self.metric_ids_changed)
@@ -5594,22 +5648,33 @@ if __name__ == "__main__":
 #
 #    def set_groups(self, groups: List[Group], active_gid, counts: dict) -> None:
 #        self._active_gid = active_gid
+#        sig = (tuple((g.gid, g.name, g.color) for g in groups), active_gid,
+#               tuple(sorted(counts.items())))
+#        if sig == getattr(self, "_grp_sig", None):
+#            return          # a refresh that changes nothing costs nothing
+#        self._grp_sig = sig
 #        _clear(self.grp_host)
 #        for g in groups:
 #            self.grp_host.addWidget(
 #                self._group_row(g, g.gid == active_gid, counts.get(g.gid, 0)))
 #
-#    def set_rois(self, active_group_rois, active_rid, target_rid=None,
+#    def set_rois(self, active_group_rois, active_rid,
 #                 selected_rids=None, outlier_rids=None, values=None) -> None:
 #        selected = set(selected_rids or [])
 #        outliers = set(outlier_rids or [])
 #        values = values or {}
+#        sig = (tuple((r.rid, tuple(r.rect), r.label) for r in active_group_rois),
+#               active_rid, tuple(sorted(selected)), tuple(sorted(outliers)),
+#               tuple(sorted((k, round(float(v), 6))
+#                            for k, v in values.items())))
+#        if sig == getattr(self, "_roi_sig", None):
+#            return          # rebuilding a hundred rows for nothing is the jank
+#        self._roi_sig = sig
 #        _clear(self.roi_host)
 #        self._roi_rows = {}
 #        for r in active_group_rois:
-#            row = self._roi_row(r, r.rid == active_rid, r.rid == target_rid,
-#                                r.rid in selected, r.rid in outliers,
-#                                values.get(r.rid))
+#            row = self._roi_row(r, r.rid == active_rid, r.rid in selected,
+#                                r.rid in outliers, values.get(r.rid))
 #            self._roi_rows[r.rid] = row
 #            self.roi_host.addWidget(row)
 #        # size the list to its content, capped so it never buries the buttons
@@ -5645,9 +5710,8 @@ if __name__ == "__main__":
 #        row.clicked = lambda: self.group_pick.emit(g.gid)
 #        return row
 #
-#    def _roi_row(self, r, active: bool, is_target: bool,
-#                 selected: bool, outlier: bool = False,
-#                 value=None) -> QWidget:
+#    def _roi_row(self, r, active: bool, selected: bool,
+#                 outlier: bool = False, value=None) -> QWidget:
 #        row = _ItemRow(active, compact=True, boxed=False, selected=selected)
 #        row.add_name(r.label or f"ROI {r.rid}", None,
 #                     color=(theme.WARNING if outlier else None))
@@ -5656,7 +5720,6 @@ if __name__ == "__main__":
 #                         "Outlier of the shown metric within this group")
 #        if value is not None:
 #            row.add_count(_fmt(float(value)))
-#        row.add_target_toggle(is_target, lambda: self.roi_set_target.emit(r.rid))
 #        row.add_delete(lambda: self.roi_del.emit(r.rid))
 #        row.clicked = lambda: self.roi_pick.emit(r.rid)
 #        row.on_hover = lambda on, rid=r.rid: self.roi_hovered.emit(rid if on else -1)
@@ -5725,23 +5788,6 @@ if __name__ == "__main__":
 #        f.setToolTip(tooltip)
 #        f.setStyleSheet(f"color:{color}; font-weight:800;")
 #        self.lay.addWidget(f)
-#
-#    def add_target_toggle(self, is_target: bool, on_toggle):
-#        b = QPushButton("T")
-#        b.setCheckable(True)
-#        b.setChecked(is_target)
-#        b.setFixedSize(22, 20)
-#        b.setToolTip("SNR target (T). The group’s other ROIs are the "
-#                     "reference (R). Click to toggle.")
-#        if is_target:
-#            b.setStyleSheet(f"background:{theme.AMBER}; color:#FFFFFF; "
-#                            "border:none; border-radius:5px; font-weight:700;")
-#        else:
-#            b.setStyleSheet(f"background:transparent; color:{theme.INK3}; "
-#                            f"border:1px solid {theme.LINE}; border-radius:5px; "
-#                            "font-weight:700;")
-#        b.clicked.connect(lambda: on_toggle())
-#        self.lay.addWidget(b)
 #
 #    def add_name(self, name, on_rename, color=None):
 #        if on_rename is None:
@@ -6714,7 +6760,7 @@ if __name__ == "__main__":
 #        inst.venv_python("/x").endswith("python.exe")
 #    assert icon.SIZES[0] == 16 and icon.SIZES[-1] == 256
 #
-#F 1a85608e188451ae3438d83f5a05c19660d2d041 359 tests/test_core.py
+#F eb90e90443060f6ea509a30158643a2823581c09 337 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -6732,19 +6778,18 @@ if __name__ == "__main__":
 #                                cell_edges, cohens_d, distribute_rects,
 #                                heat_cells, jitter_tolerance,
 #                                compute_analysis, grid_between, group_outliers,
-#                                group_rois, group_snr, group_values,
+#                                group_rois, group_values,
 #                                groups_from_json, groups_to_json, heat_color,
 #                                group_positions, linear_trend, pixel_hist,
 #                                profile_by_position, roi_center, roi_metric,
 #                                roi_patch, rois_from_json, rois_to_json,
 #                                snapshot, summarize, uniformity)
-#from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
+#from pear.core.attributes import glv_value, metric_label, quantile_of
 #
 #
 #def _bright_dark(img):
 #    """Group 'bright' on feature centers, 'dark' on background corners.
 #
-#    Each group's first ROI is tagged the SNR target (rids 1 and 5).
 #    """
 #    rid = 1
 #    rois = []
@@ -6754,8 +6799,8 @@ if __name__ == "__main__":
 #    for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)]:
 #        rois.append(ROI(rid, "dark", (c * CELL_W + 3, r * CELL_H + 3, 10, 8)))
 #        rid += 1
-#    groups = [Group("bright", "Bright", "#F59E0B", target_rid=1),
-#              Group("dark", "Dark", "#2563EB", target_rid=5)]
+#    groups = [Group("bright", "Bright", "#0D9488"),
+#              Group("dark", "Dark", "#2563EB")]
 #    return groups, rois
 #
 #
@@ -6767,21 +6812,6 @@ if __name__ == "__main__":
 #    assert abs(glv_value(p, "glv_mean")
 #               - roi_metric(img, ROI(1, "g", (22, 18, 20, 16)), "glv_mean")) < 1e-9
 #    assert quantile_of("glv_q90") == 90 and metric_label("glv_q90") == "GLV Q90"
-#
-#
-#def test_group_snr_within_target_vs_reference():
-#    img = make_field()
-#    # target on a bright feature, references on dark background
-#    tgt = ROI(1, "g", (22, 18, 20, 16))
-#    refs = [ROI(2, "g", (3, 3, 10, 8)), ROI(3, "g", (CELL_W + 3, 3, 10, 8))]
-#    rois = [tgt] + refs
-#    snr = group_snr(img, rois, target_rid=1)
-#    assert snr is not None and snr > 0                    # bright over dark
-#    assert group_snr(img, rois, target_rid=None) is None  # no target
-#    assert group_snr(img, [tgt], target_rid=1) is None     # no reference
-#    flat = np.full((60, 60), 100, np.uint8)                # reference has no spread
-#    assert group_snr(flat, [ROI(1, "g", (20, 20, 10, 10)),
-#                            ROI(2, "g", (0, 0, 10, 10))], 1) is None
 #
 #
 #def test_group_values_distributions_separate():
@@ -6822,13 +6852,13 @@ if __name__ == "__main__":
 #def test_compute_analysis_between_and_within():
 #    img = make_field()
 #    groups, rois = _bright_dark(img)
-#    res = compute_analysis(img, groups, rois, ["glv_mean", SNR_ID], "between", None)
+#    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std"],
+#                           "between", None)
 #    assert res.empty is None
 #    assert len(res.charts) == 2 and len(res.charts[0].series) == 2
 #    assert len(res.table_rows) == 2
-#    # SNR is one value per group (targets are set in _bright_dark)
-#    snr_chart = res.charts[1]
-#    assert all(s.values.size == 1 for s in snr_chart.series)
+#    second = res.charts[1]
+#    assert all(s.values.size == 4 for s in second.series)
 #    within = compute_analysis(img, groups, rois, ["glv_mean"], "within", "bright")
 #    assert within.empty is None and len(within.charts[0].series) == 1
 #
@@ -6887,14 +6917,14 @@ if __name__ == "__main__":
 #def test_compute_analysis_ranking_and_heat():
 #    img = make_field()
 #    groups, rois = _bright_dark(img)
-#    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std", SNR_ID],
+#    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std"],
 #                           "between", None)
-#    # heatmap: 2 groups × 3 metrics
+#    # heatmap: 2 groups × 2 metrics
 #    assert res.heat is not None
-#    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 3
-#    # ranking excludes SNR and is sorted by η² desc
+#    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 2
+#    # ranking is sorted by η² desc
 #    labels = [r[0] for r in res.ranking]
-#    assert "SNR" not in labels and len(res.ranking) == 2
+#    assert len(res.ranking) == 2
 #    etas = [r[1] for r in res.ranking if r[1] is not None]
 #    assert etas == sorted(etas, reverse=True)
 #
@@ -6903,8 +6933,8 @@ if __name__ == "__main__":
 #    groups, rois = _bright_dark(make_field())
 #    g2 = groups_from_json(groups_to_json(groups))
 #    r2 = rois_from_json(rois_to_json(rois))
-#    assert [ (g.gid, g.name, g.color, g.target_rid) for g in g2 ] == \
-#           [ (g.gid, g.name, g.color, g.target_rid) for g in groups ]
+#    assert [(g.gid, g.name, g.color) for g in g2] == \
+#           [(g.gid, g.name, g.color) for g in groups]
 #    assert r2[0].rect == rois[0].rect and r2[0].rid == rois[0].rid
 #    assert isinstance(r2[0].rect, tuple)
 #
@@ -6914,9 +6944,7 @@ if __name__ == "__main__":
 #    gs, rs = snapshot(groups, rois)
 #    rois[0].rect = (0, 0, 1, 1)
 #    groups[0].name = "changed"
-#    groups[0].target_rid = 999
 #    assert rs[0].rect != (0, 0, 1, 1) and gs[0].name == "Bright"
-#    assert gs[0].target_rid == 1              # snapshot copies the SNR target
 #
 #
 #def test_roi_center_and_group_positions():
@@ -7068,13 +7096,9 @@ if __name__ == "__main__":
 #    assert s.pos_x is not None and s.pos_y is not None
 #    assert s.pos_x.size == s.values.size == 2
 #    assert list(s.pos_x) == [6.0, 34.0]
-#    # SNR is one value for the whole group, so it carries no ROI positions
-#    for g in groups:
-#        g.target_rid = group_rois(rois, g.gid)[0].rid
-#    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
-#    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 0eb9954962ffba240bce58d971c8105ff3357492 1103 tests/test_ui_smoke.py
+#
+#F 2bf477dd28529cb170b13d13061beadc7b40e786 1144 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7085,6 +7109,7 @@ if __name__ == "__main__":
 #os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 #sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 #
+#import numpy as np
 #import pytest
 #
 #from examples.make_sample import CELL_H, CELL_W, make_field
@@ -7178,7 +7203,7 @@ if __name__ == "__main__":
 #    win = MainWindow()
 #    win.set_image(make_field(), "f.png")
 #    _two_groups(win)
-#    win.set_metrics(["glv_mean", "snr"])
+#    win.set_metrics(["glv_mean", "glv_std"])
 #    win.on_cmp_mode("between")
 #    win.render_analysis_sync()
 #    from pear.ui.widgets import DistributionChart
@@ -7287,38 +7312,6 @@ if __name__ == "__main__":
 #    mid_rid = group_rois(win._rois, gid)[1].rid
 #    win.delete_roi(mid_rid)
 #    assert [r.label for r in group_rois(win._rois, gid)] == ["ROI 1", "ROI 2"]
-#
-#
-#def test_set_target_roi_toggles_and_snr(app):
-#    from pear.core.analysis import group_rois, group_snr
-#    from pear.ui.main_window import MainWindow
-#    win = MainWindow()
-#    win.set_image(make_field(), "f.png")
-#    win.on_roi_created((22, 18, 20, 16))        # bright feature
-#    win.on_roi_created((3, 3, 10, 8))           # dark background
-#    win.on_roi_created((CELL_W + 3, 3, 10, 8))  # dark background
-#    gid = win._active_gid
-#    tgt = group_rois(win._rois, gid)[0].rid
-#    win.set_target_roi(tgt)
-#    assert win._group(gid).target_rid == tgt
-#    snr = group_snr(win._image, group_rois(win._rois, gid), tgt)
-#    assert snr is not None and snr > 0
-#    win.set_target_roi(tgt)                      # toggles back off
-#    assert win._group(gid).target_rid is None
-#
-#
-#def test_show_snr_labels_target_only(app):
-#    from pear.core.analysis import group_rois
-#    from pear.ui.main_window import MainWindow
-#    win = MainWindow()
-#    win.set_image(make_field(), "f.png")
-#    win.on_roi_created((22, 18, 20, 16))
-#    win.on_roi_created((3, 3, 10, 8))
-#    gid = win._active_gid
-#    tgt = group_rois(win._rois, gid)[0].rid
-#    win.set_target_roi(tgt)
-#    win.on_show_metric("snr")
-#    assert list(win.image_view._roi_values.keys()) == [tgt]
 #
 #
 #def test_marquee_select_and_batch_delete(app):
@@ -7462,8 +7455,7 @@ if __name__ == "__main__":
 #    win.rename_group(win._active_gid, "round holes")
 #    win.on_roi_created((22, 18, 20, 16))
 #    win.on_roi_created((3, 3, 10, 8))
-#    win.set_target_roi(group_rois(win._rois, win._active_gid)[0].rid)
-#    win.set_metrics(["glv_mean", "snr"])
+#    win.set_metrics(["glv_mean", "glv_std"])
 #    proj = tmp_path / "p.pear.json"
 #    assert win.save_project(str(proj)) == str(proj)
 #
@@ -7472,24 +7464,8 @@ if __name__ == "__main__":
 #    assert win2._image is not None
 #    assert win2._group("A").name == "round holes"
 #    a_rois = group_rois(win2._rois, "A")
-#    assert len(a_rois) == 2 and win2._group("A").target_rid == a_rois[0].rid
-#    assert win2._metrics == ["glv_mean", "snr"]
-#
-#
-#def test_export_includes_snr_with_target(app, tmp_path):
-#    from pear.core.analysis import group_rois
-#    from pear.ui.main_window import MainWindow
-#    win = MainWindow()
-#    win.set_image(make_field(), "f.png")
-#    win.on_roi_created((22, 18, 20, 16))
-#    win.on_roi_created((3, 3, 10, 8))
-#    gid = win._active_gid
-#    win.set_target_roi(group_rois(win._rois, gid)[0].rid)
-#    win.set_metrics(["glv_mean", "snr"])
-#    out = tmp_path / "snr.csv"
-#    assert win.export_csv(str(out)) == str(out)
-#    text = out.read_text(encoding="utf-8-sig")
-#    assert "role" in text and "SNR" in text
+#    assert len(a_rois) == 2
+#    assert win2._metrics == ["glv_mean", "glv_std"]
 #
 #
 #def _grid_group(win, rows=3, cols=4):
@@ -7535,8 +7511,11 @@ if __name__ == "__main__":
 #def test_rebuilt_lists_leave_no_stale_rows(app):
 #    """A rebuilt list must not keep painting its old rows over the card.
 #
-#    ``deleteLater`` alone leaves them parented until the event loop runs, and
-#    they cover the Groups card's title and Add button while they linger.
+#    ``deleteLater`` alone leaves them visible until the event loop runs, and
+#    they cover the Groups card's title and Add button while they linger. They
+#    must be *hidden*, not reparented: these lists are rebuilt from their own
+#    rows' signals, and a widget reparented to None mid-event becomes a stray
+#    top-level window and then a crash.
 #    """
 #    from pear.core.analysis import group_rois
 #    from pear.ui.main_window import MainWindow
@@ -7549,9 +7528,25 @@ if __name__ == "__main__":
 #    for _ in range(3):
 #        win._refresh()                       # no processEvents in between
 #    grp_card = win.rail.grp_add_btn.parentWidget()
-#    assert len(grp_card.findChildren(_ItemRow)) == len(win._groups)
+#
+#    def live(host):
+#        return [r for r in host.findChildren(_ItemRow) if not r.isHidden()]
+#
+#    assert len(live(grp_card)) == len(win._groups)
 #    roi_rows = len(group_rois(win._rois, win._active_gid))
-#    assert len(win.rail.roi_host.parentWidget().findChildren(_ItemRow)) == roi_rows
+#    assert len(live(win.rail.roi_host.parentWidget())) == roi_rows
+#    # nothing was turned into a window on the way out
+#    assert all(r.parentWidget() is not None
+#               for r in grp_card.findChildren(_ItemRow))
+#
+#    # a row's own click rebuilds the list it lives in — the path that used to
+#    # flash a blank window per click and then take the app down
+#    rid = group_rois(win._rois, win._active_gid)[0].rid
+#    for _ in range(5):
+#        win.select_roi(rid)
+#        win.rail.set_hovered_roi(rid)
+#    app.processEvents()
+#    assert len(live(win.rail.roi_host.parentWidget())) == roi_rows
 #
 #
 #def test_value_labels_only_where_they_fit(app):
@@ -7937,7 +7932,8 @@ if __name__ == "__main__":
 #    assert win2.analysis.chart_style()["vmax"] == 200.0
 #
 #    dlg._reset()                                 # Reset clears every override
-#    assert dlg.result_style() == {"xticks": 5, "yticks": 5}
+#    assert dlg.result_style() == {"xticks": 5, "yticks": 5, "font_pt": 8.0,
+#                                  "point_size": 3.2, "line_width": 2.2}
 #
 #
 #def test_heat_scale_locks_the_image_overlay(app, tmp_path):
@@ -7972,6 +7968,76 @@ if __name__ == "__main__":
 #
 #    win.on_heat_range(None)                            # back to auto
 #    assert win.image_view._heat == auto
+#
+#
+#def test_chart_text_and_marks_are_adjustable(app):
+#    """Axis ink, text size, point size and line width all come from the style."""
+#    from PySide6.QtGui import QColor
+#    from pear.ui import theme
+#    from pear.ui.main_window import MainWindow
+#    from pear.ui.widgets import ChartSettingsDialog, DistributionChart
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    _two_groups(win)
+#    win.set_metrics(["glv_mean"])
+#    win.on_cmp_mode("between")
+#    win.render_analysis_sync()
+#    ap = win.analysis
+#    ap._pick_ctype("box")
+#    app.processEvents()
+#    c = [x for x in ap._chart_widgets if x._ctype == "box"][-1]
+#    # dark by default: a light grey tick label is not there on a projector
+#    assert c._axis_ink() == QColor(theme.INK)
+#    assert c._font().pointSizeF() == pytest.approx(8.0, abs=0.5)
+#
+#    dlg = ChartSettingsDialog(None, ["GLV mean"], {})
+#    dlg.font_spin.setValue(12.0)
+#    dlg.point_spin.setValue(6.0)
+#    dlg.line_spin.setValue(4.0)
+#    state = dlg._colors["point_color"]
+#    state["color"] = "#123456"
+#    state["box"].setChecked(False)
+#    style = dlg.result_style()
+#    assert style["font_pt"] == 12.0 and style["point_size"] == 6.0
+#    assert style["line_width"] == 4.0 and style["point_color"] == "#123456"
+#
+#    ap.set_chart_style(style)
+#    app.processEvents()
+#    c = [x for x in ap._chart_widgets if x._ctype == "box"][-1]
+#    assert c._font().pointSizeF() == pytest.approx(12.0, abs=0.5)
+#    assert c._line_w(2.2) == 4.0
+#    assert c._mark_color("point_color", "#FF0000") == QColor("#123456")
+#    assert c._mark_color("line_color", "#FF0000") == QColor("#FF0000")  # auto
+#    c.grab()                                   # the painter reads all of it
+#
+#    dlg._reset()
+#    back = dlg.result_style()
+#    assert back["font_pt"] == 8.0 and "point_color" not in back
+#
+#
+#def test_right_drag_pans_while_placing_a_grid(app):
+#    """Reaching the far corner is exactly when panning matters."""
+#    from PySide6.QtCore import QPointF, Qt
+#    from PySide6.QtGui import QMouseEvent
+#    from pear.ui.main_window import MainWindow
+#    win = MainWindow()
+#    win.set_image(make_field(), "f.png")
+#    win.set_grid_mode(True)
+#    iv = win.image_view
+#    before = QPointF(iv._offset)
+#    start, end = QPointF(120.0, 90.0), QPointF(180.0, 130.0)
+#    iv.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, start,
+#                                   Qt.RightButton, Qt.RightButton,
+#                                   Qt.NoModifier))
+#    iv.mouseMoveEvent(QMouseEvent(QMouseEvent.Type.MouseMove, end,
+#                                  Qt.NoButton, Qt.RightButton, Qt.NoModifier))
+#    iv.mouseReleaseEvent(QMouseEvent(QMouseEvent.Type.MouseButtonRelease, end,
+#                                     Qt.RightButton, Qt.NoButton,
+#                                     Qt.NoModifier))
+#    assert iv._offset.x() == pytest.approx(before.x() + 60.0)
+#    assert iv._offset.y() == pytest.approx(before.y() + 40.0)
+#    assert iv._grid_stage == 0        # panning placed no grid anchor
+#    assert win._rois == []
 #
 #
 #def test_export_chart_image_writes_png_and_svg(app, tmp_path):
@@ -8096,23 +8162,22 @@ if __name__ == "__main__":
 #
 #
 #def test_position_chart_without_positions_is_safe(app):
-#    """SNR has no per-ROI position — the chart says so instead of crashing."""
-#    from pear.ui.main_window import MainWindow
+#    """A series with no per-ROI position says so instead of crashing.
+#
+#    Nothing in the app produces one today, but the guard is what keeps a
+#    future per-group metric from taking the window down.
+#    """
 #    from pear.ui.widgets import DistributionChart
-#    from pear.core.analysis import group_rois
-#    win = MainWindow()
-#    win.set_image(make_field(), "f.png")
-#    gid = _grid_group(win, 2, 2)
-#    win.set_target_roi(group_rois(win._rois, gid)[0].rid)
-#    win.set_metrics(["snr"])
-#    win.on_cmp_mode("within")
-#    win.on_within_group(gid)
-#    win.render_analysis_sync()
-#    win.analysis._pick_ctype("position")
-#    app.processEvents()
-#    for c in win.analysis.body.findChildren(DistributionChart):
-#        assert all("pos_x" not in s for s in c._series)
-#        c.grab()                       # draws the "no position" hint
+#    chart = DistributionChart()
+#    chart.resize(420, 300)
+#    chart.set_data("GLV mean", [{"label": "A", "color": "#2563EB",
+#                                 "values": np.array([1.0, 2.0, 3.0])}],
+#                   "position")
+#    assert all("pos_x" not in s for s in chart._series)
+#    chart.grab()                       # draws the "no position" hint
+#    chart.set_data("GLV mean", [{"label": "A", "color": "#2563EB",
+#                                 "values": np.array([1.0, 2.0])}], "map")
+#    chart.grab()
 #
 #
 #def test_chart_state_round_trips_through_a_project(app, tmp_path):

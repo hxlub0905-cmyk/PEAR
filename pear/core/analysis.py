@@ -13,9 +13,7 @@ either *between* groups or *within* a single group.
 
 Metrics
 -------
-GLV statistics come from each ROI patch. SNR is a *within-group* measurement:
-one ROI in the group is tagged the *target* (T) and the remaining ROIs are the
-*reference* (R); SNR = ``(mean_target - mean_reference) / std_reference``.
+GLV statistics come from each ROI patch.
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from pear.core.attributes import SNR_ID, glv_value
+from pear.core.attributes import glv_value
 
 Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
 
@@ -69,13 +67,11 @@ class ROI:
 
 @dataclass
 class Group:
-    """A category of ROIs. One ROI may be tagged the SNR *target*; the rest
-    of the group's ROIs are the SNR *reference*."""
+    """A category of ROIs — "round holes", "square holes"."""
 
     gid: str
     name: str
     color: str
-    target_rid: Optional[int] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -114,36 +110,9 @@ def roi_patch(image: np.ndarray, rect: Rect) -> Optional[np.ndarray]:
 
 
 def roi_metric(image: np.ndarray, roi: ROI, mid: str) -> float:
-    """A per-ROI GLV statistic (SNR is a per-group metric, not per ROI)."""
+    """One GLV statistic of one ROI."""
     p = roi_patch(image, roi.rect)
     return glv_value(p, mid) if p is not None else 0.0
-
-
-def group_snr(image: np.ndarray, rois: List[ROI],
-              target_rid: Optional[int]) -> Optional[float]:
-    """Within-group SNR = (mean_target - mean_reference) / std_reference.
-
-    ``target_rid`` selects the target ROI; every other ROI in the group is
-    the reference (their pixels are pooled). Returns None when there is no
-    target, no reference, or the reference has no spread.
-    """
-    tgt = next((r for r in rois if r.rid == target_rid), None)
-    refs = [r for r in rois if r.rid != target_rid]
-    if tgt is None or not refs:
-        return None
-    tp = roi_patch(image, tgt.rect)
-    if tp is None or tp.size == 0:
-        return None
-    ref_pix = [roi_patch(image, r.rect).astype(np.float64).ravel()
-               for r in refs if roi_patch(image, r.rect) is not None]
-    ref_pix = [a for a in ref_pix if a.size]
-    if not ref_pix:
-        return None
-    ref = np.concatenate(ref_pix)
-    sd = float(ref.std())
-    if sd < 1e-9:
-        return None
-    return (float(tp.astype(np.float64).mean()) - float(ref.mean())) / sd
 
 
 def group_rois(rois: List[ROI], gid: str) -> List[ROI]:
@@ -564,8 +533,7 @@ class Series:
     label: str
     color: str
     values: np.ndarray
-    # Centre of each ROI, index-aligned with ``values``. None for metrics that
-    # are not per-ROI (SNR is one value for the whole group).
+    # Centre of each ROI, index-aligned with ``values``.
     pos_x: Optional[np.ndarray] = None
     pos_y: Optional[np.ndarray] = None
 
@@ -590,7 +558,7 @@ class AnalysisResult:
 
 def snapshot(groups: List[Group], rois: List[ROI]):
     """Copy the mutable model for safe use on a worker thread."""
-    gs = [Group(g.gid, g.name, g.color, g.target_rid) for g in groups]
+    gs = [Group(g.gid, g.name, g.color) for g in groups]
     rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
     return gs, rs
 
@@ -599,8 +567,8 @@ def snapshot(groups: List[Group], rois: List[ROI]):
 # Project (de)serialization — plain JSON-friendly dicts
 # --------------------------------------------------------------------------- #
 def groups_to_json(groups: List[Group]) -> List[dict]:
-    return [{"gid": g.gid, "name": g.name, "color": g.color,
-             "target_rid": g.target_rid} for g in groups]
+    return [{"gid": g.gid, "name": g.name, "color": g.color}
+            for g in groups]
 
 
 def rois_to_json(rois: List[ROI]) -> List[dict]:
@@ -609,8 +577,8 @@ def rois_to_json(rois: List[ROI]) -> List[dict]:
 
 
 def groups_from_json(items) -> List[Group]:
-    return [Group(g["gid"], g["name"], g["color"], g.get("target_rid"))
-            for g in (items or [])]
+    # ``target_rid`` may still be in an older project file; it is ignored.
+    return [Group(g["gid"], g["name"], g["color"]) for g in (items or [])]
 
 
 def rois_from_json(items) -> List[ROI]:
@@ -641,22 +609,13 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
         return pcache[g.gid]
 
     def series_of(g: Group, mid: str) -> Series:
-        v = vals(g, mid)
-        if mid == SNR_ID:                 # one value per group, no position
-            return Series(g.name, g.color, v)
         px, py = positions(g)
-        return Series(g.name, g.color, v, px, py)
+        return Series(g.name, g.color, vals(g, mid), px, py)
 
     def vals(g: Group, mid: str) -> np.ndarray:
         key = (g.gid, mid)
         if key not in cache:
-            grois = group_rois(rois, g.gid)
-            if mid == SNR_ID:
-                s = group_snr(image, grois, g.target_rid)
-                cache[key] = np.asarray(
-                    [] if s is None else [s], dtype=np.float64)
-            else:
-                cache[key] = group_values(image, grois, mid)
+            cache[key] = group_values(image, group_rois(rois, g.gid), mid)
         return cache[key]
 
     if mode == "between":
@@ -673,7 +632,7 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
             n = len(group_rois(rois, g.gid))
             cells = [_summ(vals(g, m)) for m in metrics]
             res.table_rows.append((g.name, g.color, [str(n)] + cells))
-        # group × metric heatmap + attribute ranking (GLV metrics only)
+        # group × metric heatmap + attribute ranking
         res.heat = {
             "groups": [g.name for g in used],
             "colors": [g.color for g in used],
@@ -682,8 +641,6 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
         }
         ranking = []
         for mid in metrics:
-            if mid == SNR_ID:
-                continue
             eta = attribute_separability([vals(g, mid) for g in used])
             d = (cohens_d(vals(used[0], mid), vals(used[1], mid))
                  if len(used) == 2 else None)

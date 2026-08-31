@@ -8,7 +8,7 @@ of repeating-cell structures. It runs *before* you set up an inspection recipe.
 Sort the features you care about into **groups** (say, *round holes* vs
 *square holes*), drop a **measurement box (ROI)** on each instance, and
 **compare the distribution** of a grey-level statistic (GLV) or the
-signal-to-noise ratio (SNR) between the groups — or within one group. The
+value between the groups — or within one group. The
 numbers are what feed the inspection recipe.
 
 ## The "no verdict" principle
@@ -29,17 +29,15 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
     list); **Delete** removes the selection.
   - **Keyboard**: arrow keys nudge the selected ROI (Shift = 10 px), **Ctrl+D**
     duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
-    group.
+    group. **Right-drag pans** the image at any time, grid placement included.
   - **align** — pull the selection (or the whole active group, with nothing
     selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
     Bottom*) or even out its spacing (*Even across / Even down*).
   - The ROI list carries each ROI's shown metric and sorts by it (**order**:
     as placed / value ↑ / value ↓), so the odd one out is one glance away.
 - **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
-  Q75, std, min, max, plus any custom **Q*n***) and **SNR**. SNR is a
-  *within-group* measurement: tag one ROI as the **target (T)** and the rest
-  become the **reference (R)**, giving the e-beam definition
-  **(mean_T − mean_R) / std_R**. Any one metric can be shown live on the ROIs.
+  Q75, std, min, max, plus any custom **Q*n***). Any one of them can be shown
+  live on the ROIs.
 - **ROI overlay** — one strip sits above the image, where what it changes is:
   pick the metric under **show on ROIs**, then switch each reading of it on
   its own.
@@ -98,8 +96,11 @@ drawn in the same colour beside it.
 
 **Chart settings…** makes each figure yours: **rename** it (the title sits
 centred above the plot, and the export menu follows the new name), give the
-**axes your own names**, set the **tick counts**, and **lock the value axis or
-the heat colours to a fixed range** — auto scaling is right while you are
+**axes your own names**, set the **tick counts**, set the **axis text size and
+its colour** (dark by default — a light grey tick label is not there on a
+projector), set the **point size, line width and their colours** (points and
+lines follow their group's colour until you pick one), and **lock the value
+axis or the heat colours to a fixed range** — auto scaling is right while you are
 looking at one run and wrong the moment you put two side by side, because each
 picks its own range. The image overlay has the same lock under **scale…** on
 the stage bar, so the same colour means the same grey level on every image you
@@ -173,8 +174,7 @@ vertical intensity profiles.
 ## Highlights
 
 - Fully **offline** — no network, no telemetry, all computation local.
-- **Project save / open (JSON)** — persist groups, ROIs, the SNR target,
-  metrics, and view state (overlay toggles, heat opacity and locked range, ROI
+- **Project save / open (JSON)** — persist groups, ROIs, metrics, and view state (overlay toggles, heat opacity and locked range, ROI
   list order, chart titles / axis names / ticks / locked scales, the chart type
   and position axis);
   reopen to pick up where you left off.
@@ -251,7 +251,7 @@ pip install pytest
 pytest                              # headless core + offscreen UI smoke
 ```
 
-- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
+- `tests/test_core.py` — headless (no Qt): ROI patch/metrics,
   grid interpolation, outlier detection, heat colormap, heat-map cell edges,
   jitter tolerance (field tiling and profile grouping alike), per-ROI field
   cells, ROI alignment / spacing,
@@ -262,7 +262,7 @@ pytest                              # headless core + offscreen UI smoke
   byte, survives CRLF, catches tampering, and is not stale; the batch files
   stay flat enough to run with LF endings.
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
-  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
+  select, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
   save/open, CSV export, image export of every view (field at native
   resolution, each results section, the ROI inspector),
@@ -283,7 +283,7 @@ pear/
   PEAR.bat         # launcher, no console window
   pear/
     core/          # pure NumPy/OpenCV, ZERO Qt imports (headless-testable)
-      attributes.py                 # GLV statistics + SNR
+      attributes.py                 # GLV statistics
       analysis.py                   # group/ROI model, geometry, metric collection
     ui/            # all Qt (theme, image_view, widgets, main_window)
                    #   widgets.py: rail, stage bar, charts, inspector
@@ -308,7 +308,7 @@ git add -A && python tools/make_text_bundle.py && git add -A
 ## Scope (V1)
 
 In scope: single image, ROI groups, additive/editable ROIs (click / drag /
-grid / box-select / align), GLV + within-group SNR metrics, value heatmap + outlier
+grid / box-select / align), GLV metrics, value heatmap + outlier
 flagging with per-overlay toggles and a field fill, attribute ranking +
 group×metric heatmap, image export of every view (PNG / SVG),
 per-ROI pixel inspector,
