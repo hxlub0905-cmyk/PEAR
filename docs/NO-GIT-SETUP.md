@@ -71,6 +71,32 @@ python -m pear                     # 然後 Load… 那張圖
 
 ---
 
+## 3.5 一鍵安裝（Windows）
+
+解開之後，**點兩下 `install.bat`** 就好。它會：
+
+1. 在 `.venv` 建一個虛擬環境（建不起來就退回裝進現在這個 Python）
+2. 裝三個相依套件 —— **如果旁邊有 `wheels\` 資料夾就從那裡裝**（離線機的重點）
+3. 驗證 `numpy` / `opencv-python` / `PySide6` 真的 import 得起來
+4. 畫出 `pear.ico`
+5. 在桌面與開始功能表建立 **PEAR** 捷徑（用 `cscript`，不需要 PowerShell）
+
+之後從桌面捷徑或 `PEAR.bat` 啟動，不會有黑色主控台視窗。
+
+離線機沒有下載管道時，先在**有網路的機器**上：
+
+```
+pip download -r requirements.txt -d wheels
+```
+
+把 `wheels\` 整個資料夾一起帶過去，放在 `install.bat` 旁邊即可。
+
+> `.bat` 只有三行、而且刻意不用括號區塊與 `goto` —— 因為這個包全部是 LF 換行，
+> 而 `cmd.exe` 對 LF 換行的批次檔在遇到區塊或 `goto` 時會出怪事。真正的邏輯在
+> `tools/install_windows.py` 裡，出錯時它講得出原因。
+
+---
+
 ## 4. 確認解出來的東西是完整的
 
 ```

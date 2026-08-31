@@ -5,9 +5,15 @@ Build:  pyinstaller pear.spec
 Output: dist/PEAR/   (zip the folder to deploy to a machine without Python)
 """
 
+import os
+
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
+
+# Drawn by tools/make_icon.py (install.bat runs it); absent in a fresh clone.
+_icon = os.path.join(os.path.abspath(SPECPATH), "pear.ico")
+icon = _icon if os.path.exists(_icon) else None
 
 hiddenimports = collect_submodules("pear")
 
@@ -53,6 +59,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=icon,
 )
 coll = COLLECT(
     exe,

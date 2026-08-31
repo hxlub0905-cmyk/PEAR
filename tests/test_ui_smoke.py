@@ -1067,3 +1067,36 @@ def test_csv_carries_the_roi_centre(app, tmp_path):
     text = out.read_text(encoding="utf-8-sig")
     assert "center_x" in text and "center_y" in text
     assert "15,25" in text.replace(", ", ",")     # centre of (10,20,10,10)
+
+
+def test_icon_carries_every_windows_size(app, tmp_path):
+    """The .ico is assembled by hand — so check Windows could read it back."""
+    import struct
+    import sys as _sys
+    from PySide6.QtGui import QImage
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tools.make_icon import SIZES, build_ico, draw, write_icon
+
+    data = build_ico()
+    reserved, kind, count = struct.unpack("<HHH", data[:6])
+    assert (reserved, kind, count) == (0, 1, len(SIZES))
+    for i, size in enumerate(SIZES):
+        w, h, colors, res, planes, bits, length, offset = struct.unpack(
+            "<BBBBHHII", data[6 + 16 * i:22 + 16 * i])
+        assert (w, h) == (size % 256, size % 256)     # 256 is stored as 0
+        assert (planes, bits) == (1, 32)
+        payload = data[offset:offset + length]
+        assert payload[:4] == b"\x89PNG"              # Vista+ compressed entry
+        img = QImage.fromData(payload, "PNG")
+        assert (img.width(), img.height()) == (size, size)
+
+    # it draws something: the tile is not blank, and the mark is not the tile
+    big = draw(64)
+    assert big.pixelColor(2, 2).alpha() == 0           # rounded corner is clear
+    assert big.pixelColor(32, 32) != big.pixelColor(6, 32)
+
+    out = tmp_path / "x.ico"
+    assert write_icon(str(out)) == str(out)
+    from PySide6.QtGui import QIcon
+    assert sorted(s.width() for s in QIcon(str(out)).availableSizes()) == \
+        sorted(SIZES)

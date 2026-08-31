@@ -27,7 +27,7 @@ import sys
 
 SENTINEL = "# ==== PEAR-BUNDLE-DATA ==== 以下是資料，不要編輯 ===="
 PART, N_PARTS = 1, 1   # 這是第幾批 / 共幾批（1/1 = 沒有分批）
-TOTAL = 22                       # 整個 repo 有幾個檔案，不是這一批有幾個
+TOTAL = 26                       # 整個 repo 有幾個檔案，不是這一批有幾個
 
 
 def blob_sha(data: bytes) -> str:
@@ -126,7 +126,7 @@ if __name__ == "__main__":
     sys.exit(main())
 
 # ==== PEAR-BUNDLE-DATA ==== 以下是資料，不要編輯 ====
-#F 9270953b0346cf975159e5d7eae0389e80ff1d82 11 .gitignore
+#F 81eb983622588cb29249bf7d0fa727075947d947 17 .gitignore
 #__pycache__/
 #*.py[cod]
 #*.egg-info/
@@ -137,6 +137,12 @@ if __name__ == "__main__":
 #.venv/
 #venv/
 #examples/sample_field.png
+## drawn by tools/make_icon.py at install time — the plain-text
+## bundle takes text only, so no binary lives in the repo
+#pear.ico
+#pear_icon.png
+## wheels dropped here for an offline install
+#wheels/
 #
 #F c26e1ad3de08462b65d861e19f6fbec303663ea4 136 CLAUDE.md
 ## CLAUDE.md — PEAR
@@ -275,7 +281,15 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F d725a7f0000a5e0a91c4411466e81c203864a02b 280 README.md
+#F 0423de0a4c5fa9404d6ea616a1ff7819344529f9 7 PEAR.bat
+#@echo off
+#rem Start PEAR. Uses the virtual environment install.bat made, if it is there.
+#cd /d "%~dp0"
+#if exist "%~dp0.venv\Scripts\pythonw.exe" start "PEAR" "%~dp0.venv\Scripts\pythonw.exe" -m pear
+#if exist "%~dp0.venv\Scripts\pythonw.exe" exit /b
+#start "PEAR" pythonw -m pear
+#
+#F 2386ae5b5e1a1aa502ff05fcb539c1c22eae8197 319 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -468,6 +482,25 @@ if __name__ == "__main__":
 #
 ### Install & run
 #
+#**Windows, one click** — double-click **`install.bat`**. It makes a virtual
+#environment in `.venv`, installs the three dependencies, checks they import,
+#draws the icon, and puts a **PEAR** shortcut on the Desktop and in the Start
+#Menu. Afterwards, start it from that shortcut or from **`PEAR.bat`** (no
+#console window). If pip cannot reach the network — the usual case on a fab
+#PC — drop the wheels into a `wheels\` folder beside `install.bat` and it
+#installs from there instead:
+#
+#```bat
+#pip download -r requirements.txt -d wheels     :: on a machine with internet
+#install.bat                                    :: on the fab PC
+#install.bat --run                              :: …and launch it
+#```
+#
+#The batch files are three lines each; everything that can go wrong lives in
+#`tools/install_windows.py`, where it can say what went wrong.
+#
+#**Anywhere else:**
+#
 #```bash
 #pip install -r requirements.txt
 #python -m pear
@@ -480,11 +513,27 @@ if __name__ == "__main__":
 #python -m pear                     # then Load… the generated image
 #```
 #
+### The icon
+#
+#`tools/make_icon.py` draws it — a measurement grid of nine cells across the
+#app's own heat ramp with one ROI ringed in white — and writes a seven-size
+#`pear.ico` (16 … 256 px). `install.bat` runs it; the app and the PyInstaller
+#build pick it up when it is there.
+#
+#It is generated rather than committed on purpose: the repo travels to the
+#offline machine as **one plain-text file**, and that bundle takes text only,
+#so the icon ships as the QPainter code that draws it.
+#
+#```bash
+#python tools/make_icon.py                      # -> pear.ico
+#python tools/make_icon.py --png preview.png    # …and a PNG to look at
+#```
+#
 ### Build a standalone executable
 #
 #```bash
 #pip install pyinstaller
-#pyinstaller pear.spec               # -> dist/PEAR/
+#pyinstaller pear.spec               # -> dist/PEAR/  (uses pear.ico if drawn)
 #```
 #
 ### Tests
@@ -502,7 +551,8 @@ if __name__ == "__main__":
 #  trend / uniformity, project (de)serialize, between/within comparison,
 #  snapshot isolation.
 #- `tests/test_bundle.py` — the single-file text bundle round-trips byte for
-#  byte, survives CRLF, catches tampering, and is not stale.
+#  byte, survives CRLF, catches tampering, and is not stale; the batch files
+#  stay flat enough to run with LF endings.
 #- `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
 #  select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
 #  shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
@@ -514,12 +564,15 @@ if __name__ == "__main__":
 #  heat-map lattice, value-label fitting, fit across
 #  a resize, ROI list values / ordering, align buttons, status headline,
 #  per-lane box scale, chart settings (titles, axis names, ticks, locked value
-#  and heat scales), list rebuilds leaving no stale rows.
+#  and heat scales), the generated icon (every Windows size, readable back),
+#  list rebuilds leaving no stale rows.
 #
 ### Repository layout
 #
 #```
 #pear/
+#  install.bat      # one-click Windows install (calls tools/install_windows.py)
+#  PEAR.bat         # launcher, no console window
 #  pear/
 #    core/          # pure NumPy/OpenCV, ZERO Qt imports (headless-testable)
 #      attributes.py                 # GLV statistics + SNR
@@ -556,7 +609,7 @@ if __name__ == "__main__":
 #
 #Out of scope: defect detection/decision, classification, ML; batch processing.
 #
-#F 87587617f3d930165605e4916ad7b59b469b80a2 99 docs/NO-GIT-SETUP.md
+#F 1281348ac68aee93d47d2cc19ced138a10504273 125 docs/NO-GIT-SETUP.md
 ## 在沒有 git、也下載不了東西的機器上安裝 PEAR
 #
 #適用情境：**公司機不能用 git，而且下載被擋** —— `.zip` 這個類別過不了，proxy
@@ -627,6 +680,32 @@ if __name__ == "__main__":
 #python examples/make_sample.py     # 產 examples/sample_field.png
 #python -m pear                     # 然後 Load… 那張圖
 #```
+#
+#---
+#
+### 3.5 一鍵安裝（Windows）
+#
+#解開之後，**點兩下 `install.bat`** 就好。它會：
+#
+#1. 在 `.venv` 建一個虛擬環境（建不起來就退回裝進現在這個 Python）
+#2. 裝三個相依套件 —— **如果旁邊有 `wheels\` 資料夾就從那裡裝**（離線機的重點）
+#3. 驗證 `numpy` / `opencv-python` / `PySide6` 真的 import 得起來
+#4. 畫出 `pear.ico`
+#5. 在桌面與開始功能表建立 **PEAR** 捷徑（用 `cscript`，不需要 PowerShell）
+#
+#之後從桌面捷徑或 `PEAR.bat` 啟動，不會有黑色主控台視窗。
+#
+#離線機沒有下載管道時，先在**有網路的機器**上：
+#
+#```
+#pip download -r requirements.txt -d wheels
+#```
+#
+#把 `wheels\` 整個資料夾一起帶過去，放在 `install.bat` 旁邊即可。
+#
+#> `.bat` 只有三行、而且刻意不用括號區塊與 `goto` —— 因為這個包全部是 LF 換行，
+#> 而 `cmd.exe` 對 LF 換行的批次檔在遇到區塊或 `goto` 時會出怪事。真正的邏輯在
+#> `tools/install_windows.py` 裡，出錯時它講得出原因。
 #
 #---
 #
@@ -730,7 +809,15 @@ if __name__ == "__main__":
 #if __name__ == "__main__":
 #    main()
 #
-#F ba265be45aff893a5f979fedd4c4398357f83f20 67 pear.spec
+#F 868f29341078d1e98a9e1e081a9d7521f8465590 7 install.bat
+#@echo off
+#rem PEAR one-click install. Everything happens in tools\install_windows.py --
+#rem this file stays flat (no blocks, no goto) so it works with LF endings,
+#rem which the plain-text bundle requires.
+#py -3 "%~dp0tools\install_windows.py" %* || python "%~dp0tools\install_windows.py" %*
+#pause
+#
+#F cd6991919b64aeefc870c285a56c23bdc3106ad0 74 pear.spec
 ## -*- mode: python ; coding: utf-8 -*-
 #"""PyInstaller spec — one-folder, windowed build of PEAR.
 #
@@ -738,9 +825,15 @@ if __name__ == "__main__":
 #Output: dist/PEAR/   (zip the folder to deploy to a machine without Python)
 #"""
 #
+#import os
+#
 #from PyInstaller.utils.hooks import collect_submodules
 #
 #block_cipher = None
+#
+## Drawn by tools/make_icon.py (install.bat runs it); absent in a fresh clone.
+#_icon = os.path.join(os.path.abspath(SPECPATH), "pear.ico")
+#icon = _icon if os.path.exists(_icon) else None
 #
 #hiddenimports = collect_submodules("pear")
 #
@@ -786,6 +879,7 @@ if __name__ == "__main__":
 #    target_arch=None,
 #    codesign_identity=None,
 #    entitlements_file=None,
+#    icon=icon,
 #)
 #coll = COLLECT(
 #    exe,
@@ -808,12 +902,33 @@ if __name__ == "__main__":
 #
 #__version__ = "0.1.0"
 #
-#F ecc65a61623c78b190ca2cba9978ac627b920e42 34 pear/__main__.py
+#F 5d4e8b6fc182ef89efee5d4e19e3fb2c00a8f81d 59 pear/__main__.py
 #"""Entry point: ``python -m pear`` (and the ``pear`` console script)."""
 #
 #from __future__ import annotations
 #
 #import sys
+#
+#
+#def app_icon():
+#    """The icon ``tools/make_icon.py`` drew, if it has been run.
+#
+#    It is generated rather than committed — the offline machine gets the repo
+#    as one plain-text file, which takes no binaries — so its absence is normal
+#    and never fatal.
+#    """
+#    import os
+#
+#    from PySide6.QtGui import QIcon
+#
+#    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#    for name in ("pear.ico", "pear_icon.png"):
+#        path = os.path.join(root, name)
+#        if os.path.exists(path):
+#            icon = QIcon(path)
+#            if not icon.isNull():
+#                return icon
+#    return None
 #
 #
 #def main() -> int:
@@ -826,6 +941,7 @@ if __name__ == "__main__":
 #        print(f"PEAR {__version__}")
 #        return 0
 #
+#    from PySide6.QtGui import QIcon
 #    from PySide6.QtWidgets import QApplication
 #
 #    from pear.ui.main_window import MainWindow
@@ -834,6 +950,9 @@ if __name__ == "__main__":
 #    app = QApplication.instance() or QApplication(sys.argv)
 #    app.setApplicationName("PEAR")
 #    apply_theme(app)
+#    icon = app_icon()
+#    if icon is not None:
+#        app.setWindowIcon(icon)
 #
 #    win = MainWindow()
 #    win.show()
@@ -6412,7 +6531,7 @@ if __name__ == "__main__":
 #opencv-python>=4.7
 #numpy>=1.23
 #
-#F e18ca268725a3c24006720f5234cee7b108f5e56 133 tests/test_bundle.py
+#F f0a9e81d13a90d1306074ffc0b9093370433428a 182 tests/test_bundle.py
 #"""The single-file text bundle: it round-trips, and it is not stale.
 #
 #The bundle is how the code reaches a machine that cannot download anything
@@ -6545,6 +6664,55 @@ if __name__ == "__main__":
 #    """Every data line is commented out, so the bundle still compiles."""
 #    body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
 #    compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
+#
+#
+## --------------------------------------------------------------------------- #
+## The Windows one-click install travels in the same bundle
+## --------------------------------------------------------------------------- #
+#ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#
+#
+#@pytest.mark.parametrize("name", ["install.bat", "PEAR.bat"])
+#def test_batch_files_survive_lf_line_endings(name):
+#    """The bundle only carries LF, and cmd.exe is unreliable with LF blocks.
+#
+#    So both batch files have to stay flat: no parenthesised blocks, no goto,
+#    no labels — the constructs that actually misbehave when a .bat has Unix
+#    line endings. Everything else lives in tools/install_windows.py.
+#    """
+#    raw = open(os.path.join(ROOT, name), "rb").read()
+#    assert b"\r\n" not in raw               # the bundle would refuse it
+#    text = raw.decode("utf-8")
+#    assert text.startswith("@echo off")
+#    for line in text.splitlines():
+#        bare = line.strip().lower()
+#        if bare.startswith("rem "):
+#            continue
+#        assert "goto" not in bare, line
+#        assert not bare.endswith("("), line   # a block start
+#        assert not bare.startswith(":"), line  # a label
+#
+#
+#def test_install_bat_delegates_to_the_python_installer():
+#    text = open(os.path.join(ROOT, "install.bat"), encoding="utf-8").read()
+#    assert "tools\\install_windows.py" in text
+#    assert "%~dp0" in text                    # works from any working directory
+#    assert "pause" in text                    # the window must not vanish
+#    launcher = open(os.path.join(ROOT, "PEAR.bat"), encoding="utf-8").read()
+#    assert "pythonw" in launcher              # no console window behind the app
+#    assert ".venv" in launcher and "-m pear" in launcher
+#
+#
+#def test_installer_and_icon_are_importable_off_windows():
+#    """They are plain modules — a syntax error must not wait for a fab PC."""
+#    sys.path.insert(0, ROOT)
+#    import tools.install_windows as inst
+#    import tools.make_icon as icon
+#
+#    assert inst.MODULES and os.path.basename(inst.VENV) == ".venv"
+#    assert inst.venv_python("/x").endswith("python") or \
+#        inst.venv_python("/x").endswith("python.exe")
+#    assert icon.SIZES[0] == 16 and icon.SIZES[-1] == 256
 #
 #F 1a85608e188451ae3438d83f5a05c19660d2d041 359 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
@@ -6906,7 +7074,7 @@ if __name__ == "__main__":
 #    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
 #    assert snr_res.charts[0].series[0].pos_x is None
 #
-#F 1f24b5ab0ee5b1e749db9412695ff4b8a65abff0 1070 tests/test_ui_smoke.py
+#F 0eb9954962ffba240bce58d971c8105ff3357492 1103 tests/test_ui_smoke.py
 #"""Offscreen UI smoke test for the group/ROI analysis app."""
 #
 #from __future__ import annotations
@@ -7976,6 +8144,410 @@ if __name__ == "__main__":
 #    text = out.read_text(encoding="utf-8-sig")
 #    assert "center_x" in text and "center_y" in text
 #    assert "15,25" in text.replace(", ", ",")     # centre of (10,20,10,10)
+#
+#
+#def test_icon_carries_every_windows_size(app, tmp_path):
+#    """The .ico is assembled by hand — so check Windows could read it back."""
+#    import struct
+#    import sys as _sys
+#    from PySide6.QtGui import QImage
+#    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#    from tools.make_icon import SIZES, build_ico, draw, write_icon
+#
+#    data = build_ico()
+#    reserved, kind, count = struct.unpack("<HHH", data[:6])
+#    assert (reserved, kind, count) == (0, 1, len(SIZES))
+#    for i, size in enumerate(SIZES):
+#        w, h, colors, res, planes, bits, length, offset = struct.unpack(
+#            "<BBBBHHII", data[6 + 16 * i:22 + 16 * i])
+#        assert (w, h) == (size % 256, size % 256)     # 256 is stored as 0
+#        assert (planes, bits) == (1, 32)
+#        payload = data[offset:offset + length]
+#        assert payload[:4] == b"\x89PNG"              # Vista+ compressed entry
+#        img = QImage.fromData(payload, "PNG")
+#        assert (img.width(), img.height()) == (size, size)
+#
+#    # it draws something: the tile is not blank, and the mark is not the tile
+#    big = draw(64)
+#    assert big.pixelColor(2, 2).alpha() == 0           # rounded corner is clear
+#    assert big.pixelColor(32, 32) != big.pixelColor(6, 32)
+#
+#    out = tmp_path / "x.ico"
+#    assert write_icon(str(out)) == str(out)
+#    from PySide6.QtGui import QIcon
+#    assert sorted(s.width() for s in QIcon(str(out)).availableSizes()) == \
+#        sorted(SIZES)
+#
+#F 1a5c914e592af6b0b22833d5f05929d8e384ddf3 211 tools/install_windows.py
+##!/usr/bin/env python3
+#"""One-click Windows install for PEAR — the part ``install.bat`` calls.
+#
+#Why the work is here and not in the .bat
+#----------------------------------------
+#The repo travels to the fab machine as one plain-text file and that bundle
+#only accepts LF line endings, but ``cmd.exe`` is unreliable with LF-only
+#batch files once blocks or ``goto`` appear. So ``install.bat`` is three lines
+#with neither, and everything that could go wrong lives here, where it can
+#say what went wrong.
+#
+#What it does
+#------------
+#1. Makes a virtual environment in ``.venv`` (falls back to a ``--user``
+#   install if the machine forbids one).
+#2. Installs the three dependencies — **from ``wheels\\`` if that folder
+#   exists**, which is the whole point on a machine with no download route,
+#   otherwise from the network.
+#3. Checks the imports actually work.
+#4. Draws ``pear.ico``.
+#5. Puts shortcuts on the Desktop and in the Start Menu, pointing at
+#   ``PEAR.bat`` with that icon.
+#
+#    python tools\\install_windows.py            # install
+#    python tools\\install_windows.py --run      # …and launch it
+#    python tools\\install_windows.py --no-venv  # install into this Python
+#    python tools\\install_windows.py --no-shortcuts
+#"""
+#from __future__ import annotations
+#
+#import argparse
+#import os
+#import subprocess
+#import sys
+#import tempfile
+#
+#ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#VENV = os.path.join(ROOT, ".venv")
+#WHEELS = os.path.join(ROOT, "wheels")
+#MODULES = (("numpy", "numpy"), ("cv2", "opencv-python"),
+#           ("PySide6.QtWidgets", "PySide6"))
+#
+#
+#def say(step: str, text: str = "") -> None:
+#    print(f"\n[{step}] {text}" if text else f"\n[{step}]")
+#
+#
+#def run(cmd, **kw) -> int:
+#    """Run a command, showing it first — an install that fails silently is
+#    worse than one that fails loudly on a machine you cannot debug."""
+#    print("    > " + subprocess.list2cmdline(cmd))
+#    return subprocess.call(cmd, cwd=ROOT, **kw)
+#
+#
+#def venv_python(base: str) -> str:
+#    exe = "python.exe" if os.name == "nt" else "python"
+#    sub = "Scripts" if os.name == "nt" else "bin"
+#    return os.path.join(base, sub, exe)
+#
+#
+#def make_venv() -> str:
+#    """The interpreter to install into: the venv's, or this one."""
+#    if os.path.exists(venv_python(VENV)):
+#        print(f"    reusing {VENV}")
+#        return venv_python(VENV)
+#    if run([sys.executable, "-m", "venv", VENV]) == 0:
+#        return venv_python(VENV)
+#    print("    ! could not create a virtual environment — installing into\n"
+#          "      this Python instead (add --no-venv to skip the attempt)")
+#    return sys.executable
+#
+#
+#def install_deps(python: str, user: bool) -> bool:
+#    """Dependencies, from the local wheel folder if there is one."""
+#    base = [python, "-m", "pip", "install", "--disable-pip-version-check"]
+#    if user:
+#        base.append("--user")
+#    req = os.path.join(ROOT, "requirements.txt")
+#    if os.path.isdir(WHEELS):
+#        print(f"    found {WHEELS} — installing offline from it")
+#        code = run(base + ["--no-index", "--find-links", WHEELS, "-r", req])
+#        if code == 0:
+#            return True
+#        print("    ! the wheels in that folder did not satisfy "
+#              "requirements.txt; trying the network")
+#    return run(base + ["-r", req]) == 0
+#
+#
+#def check_imports(python: str) -> bool:
+#    missing = []
+#    for module, package in MODULES:
+#        code = subprocess.call([python, "-c", f"import {module}"],
+#                               stdout=subprocess.DEVNULL,
+#                               stderr=subprocess.DEVNULL)
+#        state = "ok" if code == 0 else "MISSING"
+#        print(f"    {package:<14} {state}")
+#        if code != 0:
+#            missing.append(package)
+#    return not missing
+#
+#
+#def make_icon(python: str) -> str:
+#    icon = os.path.join(ROOT, "pear.ico")
+#    if run([python, os.path.join(ROOT, "tools", "make_icon.py"),
+#            "--out", icon]) != 0 or not os.path.exists(icon):
+#        print("    ! icon not drawn — the shortcuts will use the default one")
+#        return ""
+#    return icon
+#
+#
+#def make_shortcuts(icon: str) -> None:
+#    """Desktop and Start Menu shortcuts, via WScript — no PowerShell.
+#
+#    Locked-down machines often block PowerShell scripts outright, and
+#    ``cscript`` is the one scripting host that has always been there.
+#    """
+#    if os.name != "nt":
+#        print("    (skipped: shortcuts are a Windows thing)")
+#        return
+#    launcher = os.path.join(ROOT, "PEAR.bat")
+#    home = os.path.expanduser("~")
+#    targets = [os.path.join(home, "Desktop", "PEAR.lnk"),
+#               os.path.join(home, "AppData", "Roaming", "Microsoft",
+#                            "Windows", "Start Menu", "Programs", "PEAR.lnk")]
+#    lines = ['Set s = WScript.CreateObject("WScript.Shell")']
+#    for path in targets:
+#        folder = os.path.dirname(path)
+#        if not os.path.isdir(folder):
+#            print(f"    (skipped: no {folder})")
+#            continue
+#        lines += [
+#            f'Set k = s.CreateShortcut("{path}")',
+#            f'k.TargetPath = "{launcher}"',
+#            f'k.WorkingDirectory = "{ROOT}"',
+#            'k.Description = "PEAR — Pre-EBI Attribute Ranker"',
+#        ]
+#        if icon:
+#            lines.append(f'k.IconLocation = "{icon}"')
+#        lines.append("k.Save")
+#        print(f"    {path}")
+#    if len(lines) == 1:
+#        return
+#    with tempfile.NamedTemporaryFile("w", suffix=".vbs", delete=False,
+#                                     encoding="utf-8") as fh:
+#        fh.write("\r\n".join(lines) + "\r\n")
+#        script = fh.name
+#    try:
+#        if subprocess.call(["cscript", "//nologo", script]) != 0:
+#            print("    ! could not write the shortcuts — run PEAR.bat directly")
+#    except OSError:
+#        print("    ! cscript is not available — run PEAR.bat directly")
+#    finally:
+#        os.unlink(script)
+#
+#
+#def main(argv=None) -> int:
+#    ap = argparse.ArgumentParser(description="Install PEAR on Windows.")
+#    ap.add_argument("--no-venv", action="store_true",
+#                    help="install into the Python running this script")
+#    ap.add_argument("--no-shortcuts", action="store_true")
+#    ap.add_argument("--run", action="store_true", help="launch when done")
+#    args = ap.parse_args(argv)
+#
+#    print("PEAR — Pre-EBI Attribute Ranker")
+#    print(f"repo   : {ROOT}")
+#    print(f"python : {sys.version.split()[0]}  ({sys.executable})")
+#    if sys.version_info < (3, 9):
+#        print("\n! PEAR needs Python 3.9 or newer. Install one, then run "
+#              "install.bat again.")
+#        return 2
+#
+#    say("1/5", "virtual environment")
+#    python = sys.executable if args.no_venv else make_venv()
+#    user_flag = args.no_venv or python == sys.executable
+#
+#    say("2/5", "dependencies")
+#    if not install_deps(python, user_flag):
+#        print("\n! pip could not install the dependencies.\n"
+#              "  On a machine with no download route, copy the wheels for\n"
+#              "  numpy, opencv-python and PySide6 into:\n"
+#              f"      {WHEELS}\n"
+#              "  (any machine with internet: pip download -r requirements.txt\n"
+#              "   -d wheels), then run install.bat again.")
+#        return 1
+#
+#    say("3/5", "checking the imports")
+#    if not check_imports(python):
+#        print("\n! something did not install cleanly — see the list above.")
+#        return 1
+#
+#    say("4/5", "drawing the icon")
+#    icon = make_icon(python)
+#
+#    say("5/5", "shortcuts")
+#    if args.no_shortcuts:
+#        print("    (skipped)")
+#    else:
+#        make_shortcuts(icon)
+#
+#    print("\nDone. Start PEAR from the Desktop shortcut, or with PEAR.bat.")
+#    if args.run:
+#        print("\nLaunching…")
+#        pyw = python.replace("python.exe", "pythonw.exe")
+#        subprocess.Popen([pyw if os.path.exists(pyw) else python, "-m", "pear"],
+#                         cwd=ROOT)
+#    return 0
+#
+#
+#if __name__ == "__main__":
+#    raise SystemExit(main())
+#
+#F 0d2a20edd273a695c7041c8e27541b639f4ba4a9 158 tools/make_icon.py
+##!/usr/bin/env python3
+#"""Draw PEAR's icon and write a multi-size Windows ``.ico``.
+#
+#Why generated instead of committed
+#----------------------------------
+#The whole repo travels to the offline machine as **one plain-text file**
+#(``bundle/pear_bundle.py``), and that bundle refuses anything that is not
+#LF + UTF-8 text — a binary ``.ico`` in ``git ls-files`` would break it. So the
+#icon ships as the few dozen lines of QPainter below and is drawn on the
+#machine that installs PEAR, where PySide6 already exists.
+#
+#The mark
+#--------
+#A measurement grid: nine cells across the heat ramp the app uses (blue →
+#amber → red), one of them ringed in white — a ROI on a field. That is what
+#PEAR does, and it survives being shrunk to 16 px, which a pear silhouette or
+#a wordmark would not.
+#
+#    python tools/make_icon.py                 # -> pear.ico (+ pear_icon.png)
+#    python tools/make_icon.py --out D:\\x.ico
+#"""
+#from __future__ import annotations
+#
+#import argparse
+#import os
+#import struct
+#import sys
+#from typing import List
+#
+#sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#
+##: The sizes Windows actually asks for: 16 in the tray and small list views,
+##: 32 on the desktop, 48 in medium icons, 256 in the extra-large view.
+#SIZES = (16, 24, 32, 48, 64, 128, 256)
+#
+#INK = "#111827"          # tile: the image stage's own black, softened
+#RAMP = ("#2563EB", "#4B72C8", "#8E8AA0", "#F59E0B", "#EA7A0B", "#DC2626")
+#
+#
+#def _cell_colors(n: int) -> List[str]:
+#    """Nine cells sampled across the ramp — a field with a gradient in it."""
+#    order = (0, 1, 3, 1, 3, 4, 2, 4, 5)
+#    return [RAMP[order[i % len(order)]] for i in range(n)]
+#
+#
+#def draw(size: int):
+#    """The icon at one size, as a QImage."""
+#    from PySide6.QtCore import QRectF, Qt
+#    from PySide6.QtGui import QColor, QImage, QPainter, QPen
+#
+#    img = QImage(size, size, QImage.Format_ARGB32)
+#    img.fill(Qt.transparent)
+#    p = QPainter(img)
+#    p.setRenderHint(QPainter.Antialiasing, True)
+#
+#    pad = max(1.0, size * 0.06)
+#    tile = QRectF(pad, pad, size - 2 * pad, size - 2 * pad)
+#    radius = size * 0.18
+#    p.setPen(Qt.NoPen)
+#    p.setBrush(QColor(INK))
+#    p.drawRoundedRect(tile, radius, radius)
+#
+#    # the grid of measured cells
+#    inset = size * 0.13
+#    grid = tile.adjusted(inset, inset, -inset, -inset)
+#    gap = 0.0 if size < 32 else max(1.0, size * 0.02)
+#    cw = (grid.width() - gap * 2) / 3.0
+#    ch = (grid.height() - gap * 2) / 3.0
+#    colors = _cell_colors(9)
+#    cell_r = 0.0 if size < 32 else size * 0.04
+#    for i, color in enumerate(colors):
+#        r, c = divmod(i, 3)
+#        rect = QRectF(grid.left() + c * (cw + gap), grid.top() + r * (ch + gap),
+#                      cw, ch)
+#        p.setPen(Qt.NoPen)
+#        p.setBrush(QColor(color))
+#        if cell_r:
+#            p.drawRoundedRect(rect, cell_r, cell_r)
+#        else:
+#            p.drawRect(rect)
+#
+#    # the ROI: one cell picked out. Below 24 px a ring is mud, so the cell is
+#    # simply left brighter than its neighbours by the ramp itself.
+#    if size >= 24:
+#        r, c = 1, 1
+#        rect = QRectF(grid.left() + c * (cw + gap), grid.top() + r * (ch + gap),
+#                      cw, ch)
+#        pen = QPen(QColor("#FFFFFF"), max(1.0, size * 0.028))
+#        p.setPen(pen)
+#        p.setBrush(Qt.NoBrush)
+#        grow = size * 0.012
+#        p.drawRect(rect.adjusted(-grow, -grow, grow, grow))
+#    p.end()
+#    return img
+#
+#
+#def _png_bytes(img) -> bytes:
+#    from PySide6.QtCore import QBuffer, QByteArray
+#
+#    ba = QByteArray()
+#    buf = QBuffer(ba)
+#    buf.open(QBuffer.WriteOnly)
+#    if not img.save(buf, "PNG"):
+#        raise RuntimeError("Qt could not encode the icon as PNG")
+#    buf.close()
+#    return bytes(ba)
+#
+#
+#def build_ico(sizes=SIZES) -> bytes:
+#    """Assemble a Windows ``.ico`` from PNG-compressed entries.
+#
+#    Qt writes PNG but not ICO, and ICO is a header plus payloads — so the
+#    container is written here rather than dragging in a second imaging
+#    library that the offline machine would then have to install.
+#    """
+#    payloads = [_png_bytes(draw(s)) for s in sizes]
+#    out = bytearray(struct.pack("<HHH", 0, 1, len(sizes)))
+#    offset = 6 + 16 * len(sizes)
+#    for size, data in zip(sizes, payloads):
+#        dim = 0 if size >= 256 else size          # 0 means 256 in an ICO
+#        out += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32,
+#                           len(data), offset)
+#        offset += len(data)
+#    for data in payloads:
+#        out += data
+#    return bytes(out)
+#
+#
+#def write_icon(path: str, png_path: str = "") -> str:
+#    """Write the ``.ico`` (and optionally a PNG preview). Returns the path."""
+#    from PySide6.QtGui import QGuiApplication
+#
+#    if QGuiApplication.instance() is None:
+#        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+#        QGuiApplication([])                       # QPainter needs a GUI app
+#    data = build_ico()
+#    with open(path, "wb") as fh:
+#        fh.write(data)
+#    if png_path:
+#        draw(256).save(png_path, "PNG")
+#    return path
+#
+#
+#def main(argv=None) -> int:
+#    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#    ap = argparse.ArgumentParser(description="Draw PEAR's Windows icon.")
+#    ap.add_argument("--out", default=os.path.join(root, "pear.ico"))
+#    ap.add_argument("--png", default="", help="also write a PNG preview here")
+#    args = ap.parse_args(argv)
+#    path = write_icon(args.out, args.png)
+#    print(f"{path}  ({os.path.getsize(path)} bytes, "
+#          f"{len(SIZES)} sizes: {', '.join(str(s) for s in SIZES)})")
+#    return 0
+#
+#
+#if __name__ == "__main__":
+#    raise SystemExit(main())
 #
 #F dc218e869f9f2f3780472eb526d60eb94d2cbaec 305 tools/make_text_bundle.py
 ##!/usr/bin/env python3

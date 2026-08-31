@@ -8,3 +8,9 @@ dist/
 .venv/
 venv/
 examples/sample_field.png
+# drawn by tools/make_icon.py at install time — the plain-text
+# bundle takes text only, so no binary lives in the repo
+pear.ico
+pear_icon.png
+# wheels dropped here for an offline install
+wheels/

@@ -190,6 +190,25 @@ vertical intensity profiles.
 
 ## Install & run
 
+**Windows, one click** — double-click **`install.bat`**. It makes a virtual
+environment in `.venv`, installs the three dependencies, checks they import,
+draws the icon, and puts a **PEAR** shortcut on the Desktop and in the Start
+Menu. Afterwards, start it from that shortcut or from **`PEAR.bat`** (no
+console window). If pip cannot reach the network — the usual case on a fab
+PC — drop the wheels into a `wheels\` folder beside `install.bat` and it
+installs from there instead:
+
+```bat
+pip download -r requirements.txt -d wheels     :: on a machine with internet
+install.bat                                    :: on the fab PC
+install.bat --run                              :: …and launch it
+```
+
+The batch files are three lines each; everything that can go wrong lives in
+`tools/install_windows.py`, where it can say what went wrong.
+
+**Anywhere else:**
+
 ```bash
 pip install -r requirements.txt
 python -m pear
@@ -202,11 +221,27 @@ python examples/make_sample.py     # writes examples/sample_field.png
 python -m pear                     # then Load… the generated image
 ```
 
+## The icon
+
+`tools/make_icon.py` draws it — a measurement grid of nine cells across the
+app's own heat ramp with one ROI ringed in white — and writes a seven-size
+`pear.ico` (16 … 256 px). `install.bat` runs it; the app and the PyInstaller
+build pick it up when it is there.
+
+It is generated rather than committed on purpose: the repo travels to the
+offline machine as **one plain-text file**, and that bundle takes text only,
+so the icon ships as the QPainter code that draws it.
+
+```bash
+python tools/make_icon.py                      # -> pear.ico
+python tools/make_icon.py --png preview.png    # …and a PNG to look at
+```
+
 ## Build a standalone executable
 
 ```bash
 pip install pyinstaller
-pyinstaller pear.spec               # -> dist/PEAR/
+pyinstaller pear.spec               # -> dist/PEAR/  (uses pear.ico if drawn)
 ```
 
 ## Tests
@@ -224,7 +259,8 @@ pytest                              # headless core + offscreen UI smoke
   trend / uniformity, project (de)serialize, between/within comparison,
   snapshot isolation.
 - `tests/test_bundle.py` — the single-file text bundle round-trips byte for
-  byte, survives CRLF, catches tampering, and is not stale.
+  byte, survives CRLF, catches tampering, and is not stale; the batch files
+  stay flat enough to run with LF endings.
 - `tests/test_ui_smoke.py` — offscreen: full UI path, three add modes, marquee
   select, target/SNR, ROI re-indexing, heatmap/outliers, hover sync, keyboard
   shortcuts, chart toggles, ranking/heatmap render, ROI inspector, project
@@ -236,12 +272,15 @@ pytest                              # headless core + offscreen UI smoke
   heat-map lattice, value-label fitting, fit across
   a resize, ROI list values / ordering, align buttons, status headline,
   per-lane box scale, chart settings (titles, axis names, ticks, locked value
-  and heat scales), list rebuilds leaving no stale rows.
+  and heat scales), the generated icon (every Windows size, readable back),
+  list rebuilds leaving no stale rows.
 
 ## Repository layout
 
 ```
 pear/
+  install.bat      # one-click Windows install (calls tools/install_windows.py)
+  PEAR.bat         # launcher, no console window
   pear/
     core/          # pure NumPy/OpenCV, ZERO Qt imports (headless-testable)
       attributes.py                 # GLV statistics + SNR
