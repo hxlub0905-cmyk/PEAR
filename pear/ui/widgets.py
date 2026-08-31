@@ -1211,31 +1211,38 @@ class RailPanel(QWidget):
         grow.addWidget(self.grid_cols, 1)
         rlay.addLayout(grow)
         # Tidy: hand-placed ROIs sit a few pixels off each other, which only
-        # shows up once the field fill tiles them into a staircase.
-        arow = QHBoxLayout()
-        arow.setSpacing(4)
-        al = QLabel("align")
-        al.setObjectName("Hint")
-        arow.addWidget(al)
+        # shows up once the field fill tiles them into a staircase. Spelt out
+        # rather than iconified — six unlabelled arrow glyphs at 30 px is a
+        # puzzle, and this is a button you press once and want to press right.
+        alab = QLabel("align")
+        alab.setObjectName("Hint")
+        alab.setToolTip("Acts on the ROIs selected with Shift+drag; with none "
+                        "selected, on the whole active group.")
+        rlay.addWidget(alab)
         self.align_btns = {}
-        for mode, text, tip in (
-                ("left", "⇤", "Align the selected ROIs' left edges"),
-                ("hcenter", "⇔", "Centre the selected ROIs horizontally"),
-                ("right", "⇥", "Align the selected ROIs' right edges"),
-                ("top", "⤒", "Align the selected ROIs' top edges"),
-                ("vcenter", "⇕", "Centre the selected ROIs vertically"),
-                ("bottom", "⤓", "Align the selected ROIs' bottom edges"),
-                ("distx", "⇹", "Even the horizontal spacing (3+ ROIs)"),
-                ("disty", "⇳", "Even the vertical spacing (3+ ROIs)")):
+        rows = (("left", "⇤ Left"), ("hcenter", "⇔ Centre"), ("right", "Right ⇥"),
+                ("top", "⤒ Top"), ("vcenter", "⇕ Middle"), ("bottom", "Bottom ⤓"),
+                ("distx", "⇹ Even across"), ("disty", "⇳ Even down"))
+        tips = {
+            "left": "Move them onto the leftmost left edge",
+            "hcenter": "Line their centres up on one vertical axis",
+            "right": "Move them onto the rightmost right edge",
+            "top": "Move them onto the topmost top edge",
+            "vcenter": "Line their centres up on one horizontal axis",
+            "bottom": "Move them onto the bottommost bottom edge",
+            "distx": "Space them evenly left to right (needs 3+)",
+            "disty": "Space them evenly top to bottom (needs 3+)"}
+        made = []
+        for mode, text in rows:
             b = QPushButton(text)
-            b.setFixedSize(30, 28)
-            b.setToolTip(f"{tip}. Shift+drag on the image selects ROIs; "
+            b.setMinimumHeight(30)
+            b.setToolTip(f"{tips[mode]}. Shift+drag selects ROIs on the image; "
                          "with none selected the whole active group is used.")
             b.clicked.connect(lambda _=False, m=mode: self.roi_align.emit(m))
             self.align_btns[mode] = b
-            arow.addWidget(b)
-        arow.addStretch(1)
-        rlay.addLayout(arow)
+            made.append(b)
+        for i in range(0, len(made), 3):
+            rlay.addLayout(_button_row(*made[i:i + 3]))
         # Order: the list is where you scan for the odd one out, so it sorts
         # by the shown metric as well as by the order the ROIs were placed.
         orow = QHBoxLayout()

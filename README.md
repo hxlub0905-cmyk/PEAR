@@ -31,11 +31,8 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
     duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
     group.
   - **align** — pull the selection (or the whole active group, with nothing
-    selected) onto one edge — left / centre / right, top / middle / bottom —
-    or even out its horizontal / vertical spacing. Hand-placed ROIs sit a few
-    pixels off each other, which is invisible until *fill field* tiles them:
-    the cell edges fall midway between centres, so a stray offset turns a
-    clean grid into a staircase.
+    selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
+    Bottom*) or even out its spacing (*Even across / Even down*).
   - The ROI list carries each ROI's shown metric and sorts by it (**order**:
     as placed / value ↑ / value ↓), so the odd one out is one glance away.
 - **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
@@ -53,13 +50,20 @@ surfaces measured numbers and distributions; the engineer draws the conclusion.
   - **fill field** — spread each ROI's colour over the patch of image it
     speaks for (midway to its neighbours), so a gradient across the field
     reads as one surface instead of a row of small tinted boxes. The measured
-    box stays outlined on top.
+    box stays outlined on top. Hand-placed ROIs land a few pixels off each
+    other, and cell edges fall midway between centres — taken literally, a
+    grid of eight columns shatters into thirty-odd slivers. Centres within a
+    **jitter tolerance measured from the data** count as one row or column, so
+    the field tiles as the grid it is; a genuinely uneven layout is left
+    alone, and *align* is there when you want the ROIs themselves tidied.
   - **flag outliers** — Tukey fences within each group.
 
-  Under a heat overlay colour means one thing — the value — so the ROI
-  outlines drop to neutral ink over a white halo rather than the group's
-  colour, which would otherwise read as a point on the scale (an amber group
-  against the ramp's amber midpoint especially).
+  ROI outlines are **neutral ink over a white halo**, never the group's
+  colour: on this stage colour means a value (the heat ramp), and a neutral
+  rule stays legible on a black surround, on a bright feature and on any
+  colour of the ramp alike. The group shows in the box's **fill tint**
+  instead — and no group is ever amber, since amber is the ramp's midpoint
+  and the accent used for trend lines.
 
 ## Comparisons (in a separate Analysis window)
 
@@ -192,7 +196,7 @@ pytest                              # headless core + offscreen UI smoke
 
 - `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
   grid interpolation, outlier detection, heat colormap, heat-map cell edges,
-  per-ROI field cells, ROI alignment / spacing,
+  jitter tolerance, per-ROI field cells, ROI alignment / spacing,
   attribute separability / ranking, pixel histogram, ROI positions / linear
   trend / uniformity, project (de)serialize, between/within comparison,
   snapshot isolation.

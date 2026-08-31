@@ -376,27 +376,17 @@ class ImageView(QWidget):
                 fill.setAlpha(self._heat_alpha)
             else:
                 fill = QColor(color)
-                fill.setAlpha(64 if active_grp else 26)
+                fill.setAlpha(90 if active_grp else 45)   # the group's tag
+            # The outline is always neutral ink over a white halo. Colour on
+            # this stage means a value — the heat ramp — so a box wearing its
+            # group's colour reads as a reading off the scale; and a neutral
+            # rule is legible on a black stage, on a bright feature and on any
+            # colour of the ramp alike. The group shows in the fill tint.
             width = 2.4 if selected else (1.8 if active_grp else 1.2)
-            if heat is not None:
-                # Under a heat overlay colour means one thing — the value. A
-                # box in the group's colour reads as a reading off the scale
-                # (an amber group against an amber midpoint especially), so
-                # the outline drops to neutral ink over a white halo, which
-                # sits on any colour of the ramp without claiming to be one.
-                p.setBrush(fill)
-                p.setPen(Qt.NoPen)
-                p.drawRect(r)
-                self._stroke_neutral(p, r, width, dashed=False,
-                                     strong=active_grp)
-            else:
-                stroke = QColor(color)
-                stroke.setAlpha(255 if active_grp else 130)
-                pen = QPen(stroke, width)
-                pen.setCosmetic(True)
-                p.setPen(pen)
-                p.setBrush(fill)
-                p.drawRect(r)
+            p.setBrush(fill)
+            p.setPen(Qt.NoPen)
+            p.drawRect(r)
+            self._stroke_neutral(p, r, width, dashed=False, strong=active_grp)
             if roi.rid == self._hover_rid and not self._exporting:
                 self._paint_hover_ring(p, r)
             if in_sel and not self._exporting:
@@ -404,7 +394,7 @@ class ImageView(QWidget):
             if roi.rid in self._outliers:
                 self._paint_outlier(p, r)
             if targets.get(roi.gid) == roi.rid:
-                self._paint_badge(p, r, "T", color)
+                self._paint_badge(p, r, "T", QColor(17, 24, 39))
             val = self._roi_values.get(roi.rid)
             if val is not None:
                 self._paint_value(p, r, val, roi.rid == self._hover_rid)
@@ -513,7 +503,7 @@ class ImageView(QWidget):
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
         p.setPen(QPen(QColor("#FFFFFF"), 1.4))
-        p.setBrush(color)
+        p.setBrush(QColor(17, 24, 39))          # neutral, like the outline
         for c in self._handle_centers(rect):
             p.drawRect(QRectF(c.x() - _HANDLE / 2, c.y() - _HANDLE / 2,
                               _HANDLE, _HANDLE))
@@ -557,16 +547,13 @@ class ImageView(QWidget):
         rects = self._grid_rects()
         if not rects:
             return
-        color = self._gcolor(self._active_gid)
-        prev = QColor(color)
-        prev.setAlpha(70)
-        pen = QPen(color, 1.4)
-        pen.setCosmetic(True)
-        for i, rect in enumerate(rects):
+        prev = QColor(255, 255, 255, 60)
+        for rect in rects:
             r = self._rect_to_widget(rect)
-            p.setPen(pen)
+            p.setPen(Qt.NoPen)
             p.setBrush(prev)
             p.drawRect(r)
+            self._stroke_neutral(p, r, 1.4, dashed=True, strong=False)
         # emphasise the two corner anchors
         apen = QPen(QColor(theme.INFO), 2.2)
         apen.setCosmetic(True)

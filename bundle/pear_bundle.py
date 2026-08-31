@@ -275,7 +275,7 @@ if __name__ == "__main__":
 #`CLAUDE.md` 與 `docs/` 底下給使用者看的操作說明用**繁體中文**。
 #跟使用者對話用**繁體中文**。
 #
-#F 4848de0afcc4377af24d250ab599d490c5219a35 251 README.md
+#F 0625fc22a67aae3c43cec634e411f9dc1e8c879a 255 README.md
 ## PEAR — Pre-EBI Attribute Ranker
 #
 #PEAR is a **pre-inspection measurement tool** for electron-beam-inspection (EBI)
@@ -309,11 +309,8 @@ if __name__ == "__main__":
 #    duplicates it, **Ctrl+A** selects the whole group, **1–9** switch the active
 #    group.
 #  - **align** — pull the selection (or the whole active group, with nothing
-#    selected) onto one edge — left / centre / right, top / middle / bottom —
-#    or even out its horizontal / vertical spacing. Hand-placed ROIs sit a few
-#    pixels off each other, which is invisible until *fill field* tiles them:
-#    the cell edges fall midway between centres, so a stray offset turns a
-#    clean grid into a staircase.
+#    selected) onto one edge (*Left / Centre / Right*, *Top / Middle /
+#    Bottom*) or even out its spacing (*Even across / Even down*).
 #  - The ROI list carries each ROI's shown metric and sorts by it (**order**:
 #    as placed / value ↑ / value ↓), so the odd one out is one glance away.
 #- **Metrics** — a customizable set of **GLV statistics** (mean, median, Q25,
@@ -331,13 +328,20 @@ if __name__ == "__main__":
 #  - **fill field** — spread each ROI's colour over the patch of image it
 #    speaks for (midway to its neighbours), so a gradient across the field
 #    reads as one surface instead of a row of small tinted boxes. The measured
-#    box stays outlined on top.
+#    box stays outlined on top. Hand-placed ROIs land a few pixels off each
+#    other, and cell edges fall midway between centres — taken literally, a
+#    grid of eight columns shatters into thirty-odd slivers. Centres within a
+#    **jitter tolerance measured from the data** count as one row or column, so
+#    the field tiles as the grid it is; a genuinely uneven layout is left
+#    alone, and *align* is there when you want the ROIs themselves tidied.
 #  - **flag outliers** — Tukey fences within each group.
 #
-#  Under a heat overlay colour means one thing — the value — so the ROI
-#  outlines drop to neutral ink over a white halo rather than the group's
-#  colour, which would otherwise read as a point on the scale (an amber group
-#  against the ramp's amber midpoint especially).
+#  ROI outlines are **neutral ink over a white halo**, never the group's
+#  colour: on this stage colour means a value (the heat ramp), and a neutral
+#  rule stays legible on a black surround, on a bright feature and on any
+#  colour of the ramp alike. The group shows in the box's **fill tint**
+#  instead — and no group is ever amber, since amber is the ramp's midpoint
+#  and the accent used for trend lines.
 #
 ### Comparisons (in a separate Analysis window)
 #
@@ -470,7 +474,7 @@ if __name__ == "__main__":
 #
 #- `tests/test_core.py` — headless (no Qt): ROI patch/metrics, within-group SNR,
 #  grid interpolation, outlier detection, heat colormap, heat-map cell edges,
-#  per-ROI field cells, ROI alignment / spacing,
+#  jitter tolerance, per-ROI field cells, ROI alignment / spacing,
 #  attribute separability / ranking, pixel histogram, ROI positions / linear
 #  trend / uniformity, project (de)serialize, between/within comparison,
 #  snapshot isolation.
@@ -817,7 +821,7 @@ if __name__ == "__main__":
 #F 2efd69f74fc456741a297efd7f7cca343ca2526b 2 pear/core/__init__.py
 #"""Pure NumPy/OpenCV core for PEAR — ZERO Qt imports (headless-testable)."""
 #
-#F fd139e10da4fbdc13b18da290ed13b50fa5bd651 656 pear/core/analysis.py
+#F 99c197bf536733b86cbc75dc8a5b2121ebbe5420 714 pear/core/analysis.py
 #"""Data model, geometry, and analysis orchestration.
 #
 #Pure NumPy/OpenCV — no Qt.
@@ -851,9 +855,11 @@ if __name__ == "__main__":
 #Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
 #
 ## Categorical palette for groups (cycles).
+## No amber in here: amber is the brand accent (trend lines) and the midpoint
+## of the heat ramp, so a group wearing it reads as a value off the scale.
 #GROUP_PALETTE: List[str] = [
-#    "#F59E0B", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
-#    "#0891B2", "#EA580C", "#4B5563",
+#    "#0D9488", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
+#    "#0891B2", "#B45309", "#4B5563",
 #]
 #
 ## Sequential ramp for the metric heatmap: cool → amber → warm.
@@ -1116,7 +1122,55 @@ if __name__ == "__main__":
 #            "cv_pct": (sd / den * 100.0) if den > 1e-12 else 0.0}
 #
 #
-#def cell_edges(positions, decimals: int = 3):
+#def jitter_tolerance(sorted_unique) -> float:
+#    """How far apart two centres can be and still be the same row or column.
+#
+#    Hand-placed ROIs land a few pixels off each other, so a row of eight is
+#    really eight tight knots of positions, not eight positions. Sort the gaps
+#    between neighbouring centres and there is a step change between the
+#    within-knot gaps (a few px) and the pitch between knots (tens of px); the
+#    tolerance sits in that step. Returns 0 when the gaps have no such split —
+#    a genuine scatter is not jitter and must not be merged.
+#    """
+#    a = np.asarray(sorted_unique, dtype=np.float64)
+#    if a.size < 3:
+#        return 0.0
+#    gaps = np.sort(np.diff(a))
+#    gaps = gaps[gaps > 0]
+#    if gaps.size < 2:
+#        return 0.0
+#    ratios = gaps[1:] / np.maximum(gaps[:-1], 1e-9)
+#    i = int(np.argmax(ratios))
+#    # Evidence for jitter, not a sparse layout: the step has to be a real
+#    # step (4x), and there has to be a population of small gaps below it —
+#    # one small gap among large ones is a missing ROI, not a wobble.
+#    if i < 1 or ratios[i] < 4.0:
+#        return 0.0
+#    # the log-middle of the step: comfortably above every jitter gap, and
+#    # never far enough to swallow a whole pitch
+#    return float(np.sqrt(gaps[i] * gaps[i + 1]))
+#
+#
+#def cluster_positions(positions, tol: float):
+#    """Collapse centres within ``tol`` of their neighbour into one position.
+#
+#    The representative is the cluster's mean, so a row that wobbles by a pixel
+#    or two lands on the row it was meant to be.
+#    """
+#    a = np.sort(np.asarray(positions, dtype=np.float64))
+#    if a.size == 0:
+#        return np.empty(0)
+#    if tol <= 0:
+#        return np.unique(a)
+#    out, start = [], 0
+#    for i in range(1, a.size + 1):
+#        if i == a.size or a[i] - a[i - 1] > tol:
+#            out.append(float(a[start:i].mean()))
+#            start = i
+#    return np.asarray(out, dtype=np.float64)
+#
+#
+#def cell_edges(positions, decimals: int = 3, tol: Optional[float] = None):
 #    """Tiling boundaries for ROI centres along one axis.
 #
 #    Returns ``(centres, edges)``: the distinct centres, sorted, and the
@@ -1126,6 +1180,11 @@ if __name__ == "__main__":
 #    where centres landed on rounded pixels, no overlap where the spacing is
 #    uneven; a lone gap in the layout simply gives that ROI a wider cell.
 #
+#    Centres within ``tol`` of each other count as one row or column, so a grid
+#    placed by hand tiles as the grid it is rather than shattering into a
+#    sliver per stray pixel. ``tol=None`` measures it from the data
+#    (:func:`jitter_tolerance`); pass 0 to keep every distinct centre.
+#
 #    A single distinct centre has no neighbour to measure against and gets a
 #    one-pixel cell; the caller substitutes a size of its own.
 #    """
@@ -1133,7 +1192,10 @@ if __name__ == "__main__":
 #    a = a[np.isfinite(a)]
 #    if a.size == 0:
 #        return np.empty(0), np.empty(0)
-#    c = np.unique(np.round(a, decimals))
+#    a = np.round(a, decimals)
+#    if tol is None:
+#        tol = jitter_tolerance(np.unique(a))
+#    c = cluster_positions(a, tol)
 #    if c.size == 1:
 #        return c, np.asarray([c[0] - 0.5, c[0] + 0.5])
 #    mid = (c[:-1] + c[1:]) / 2.0
@@ -1600,7 +1662,7 @@ if __name__ == "__main__":
 #F afa940644becc78d2d6a262afdec4f08ba635fc2 2 pear/ui/__init__.py
 #"""Qt UI for PEAR. All Qt imports live under this package."""
 #
-#F ac714caab6a5973c3e8c8b1c64327b9b34f932ee 950 pear/ui/image_view.py
+#F 6869e3bf8d21fd22d4976cf413142066c7346274 937 pear/ui/image_view.py
 #"""Image stage: zoom/pan and place / move / resize ROIs.
 #
 #ROIs belong to groups and are drawn in their group's colour.
@@ -1979,27 +2041,17 @@ if __name__ == "__main__":
 #                fill.setAlpha(self._heat_alpha)
 #            else:
 #                fill = QColor(color)
-#                fill.setAlpha(64 if active_grp else 26)
+#                fill.setAlpha(90 if active_grp else 45)   # the group's tag
+#            # The outline is always neutral ink over a white halo. Colour on
+#            # this stage means a value — the heat ramp — so a box wearing its
+#            # group's colour reads as a reading off the scale; and a neutral
+#            # rule is legible on a black stage, on a bright feature and on any
+#            # colour of the ramp alike. The group shows in the fill tint.
 #            width = 2.4 if selected else (1.8 if active_grp else 1.2)
-#            if heat is not None:
-#                # Under a heat overlay colour means one thing — the value. A
-#                # box in the group's colour reads as a reading off the scale
-#                # (an amber group against an amber midpoint especially), so
-#                # the outline drops to neutral ink over a white halo, which
-#                # sits on any colour of the ramp without claiming to be one.
-#                p.setBrush(fill)
-#                p.setPen(Qt.NoPen)
-#                p.drawRect(r)
-#                self._stroke_neutral(p, r, width, dashed=False,
-#                                     strong=active_grp)
-#            else:
-#                stroke = QColor(color)
-#                stroke.setAlpha(255 if active_grp else 130)
-#                pen = QPen(stroke, width)
-#                pen.setCosmetic(True)
-#                p.setPen(pen)
-#                p.setBrush(fill)
-#                p.drawRect(r)
+#            p.setBrush(fill)
+#            p.setPen(Qt.NoPen)
+#            p.drawRect(r)
+#            self._stroke_neutral(p, r, width, dashed=False, strong=active_grp)
 #            if roi.rid == self._hover_rid and not self._exporting:
 #                self._paint_hover_ring(p, r)
 #            if in_sel and not self._exporting:
@@ -2007,7 +2059,7 @@ if __name__ == "__main__":
 #            if roi.rid in self._outliers:
 #                self._paint_outlier(p, r)
 #            if targets.get(roi.gid) == roi.rid:
-#                self._paint_badge(p, r, "T", color)
+#                self._paint_badge(p, r, "T", QColor(17, 24, 39))
 #            val = self._roi_values.get(roi.rid)
 #            if val is not None:
 #                self._paint_value(p, r, val, roi.rid == self._hover_rid)
@@ -2116,7 +2168,7 @@ if __name__ == "__main__":
 #
 #    def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
 #        p.setPen(QPen(QColor("#FFFFFF"), 1.4))
-#        p.setBrush(color)
+#        p.setBrush(QColor(17, 24, 39))          # neutral, like the outline
 #        for c in self._handle_centers(rect):
 #            p.drawRect(QRectF(c.x() - _HANDLE / 2, c.y() - _HANDLE / 2,
 #                              _HANDLE, _HANDLE))
@@ -2160,16 +2212,13 @@ if __name__ == "__main__":
 #        rects = self._grid_rects()
 #        if not rects:
 #            return
-#        color = self._gcolor(self._active_gid)
-#        prev = QColor(color)
-#        prev.setAlpha(70)
-#        pen = QPen(color, 1.4)
-#        pen.setCosmetic(True)
-#        for i, rect in enumerate(rects):
+#        prev = QColor(255, 255, 255, 60)
+#        for rect in rects:
 #            r = self._rect_to_widget(rect)
-#            p.setPen(pen)
+#            p.setPen(Qt.NoPen)
 #            p.setBrush(prev)
 #            p.drawRect(r)
+#            self._stroke_neutral(p, r, 1.4, dashed=True, strong=False)
 #        # emphasise the two corner anchors
 #        apen = QPen(QColor(theme.INFO), 2.2)
 #        apen.setCosmetic(True)
@@ -3701,7 +3750,7 @@ if __name__ == "__main__":
 #    fam = _pick(["Segoe UI", "Liberation Sans", "Helvetica Neue", "Arial"], "Arial")
 #    app.setFont(QFont(fam, 10))
 #
-#F 2d9bf115c0848ec63bd1a2bbd13829f451a43792 2169 pear/ui/widgets.py
+#F ef35c867ac653ee791afa9c816c2533ab28bcf2c 2176 pear/ui/widgets.py
 #"""Workspace widgets: the control rail (Groups / ROIs / Metrics), a
 #box-and-strip distribution chart, and the Analysis panel (hosted in its own
 #window).
@@ -4915,31 +4964,38 @@ if __name__ == "__main__":
 #        grow.addWidget(self.grid_cols, 1)
 #        rlay.addLayout(grow)
 #        # Tidy: hand-placed ROIs sit a few pixels off each other, which only
-#        # shows up once the field fill tiles them into a staircase.
-#        arow = QHBoxLayout()
-#        arow.setSpacing(4)
-#        al = QLabel("align")
-#        al.setObjectName("Hint")
-#        arow.addWidget(al)
+#        # shows up once the field fill tiles them into a staircase. Spelt out
+#        # rather than iconified — six unlabelled arrow glyphs at 30 px is a
+#        # puzzle, and this is a button you press once and want to press right.
+#        alab = QLabel("align")
+#        alab.setObjectName("Hint")
+#        alab.setToolTip("Acts on the ROIs selected with Shift+drag; with none "
+#                        "selected, on the whole active group.")
+#        rlay.addWidget(alab)
 #        self.align_btns = {}
-#        for mode, text, tip in (
-#                ("left", "⇤", "Align the selected ROIs' left edges"),
-#                ("hcenter", "⇔", "Centre the selected ROIs horizontally"),
-#                ("right", "⇥", "Align the selected ROIs' right edges"),
-#                ("top", "⤒", "Align the selected ROIs' top edges"),
-#                ("vcenter", "⇕", "Centre the selected ROIs vertically"),
-#                ("bottom", "⤓", "Align the selected ROIs' bottom edges"),
-#                ("distx", "⇹", "Even the horizontal spacing (3+ ROIs)"),
-#                ("disty", "⇳", "Even the vertical spacing (3+ ROIs)")):
+#        rows = (("left", "⇤ Left"), ("hcenter", "⇔ Centre"), ("right", "Right ⇥"),
+#                ("top", "⤒ Top"), ("vcenter", "⇕ Middle"), ("bottom", "Bottom ⤓"),
+#                ("distx", "⇹ Even across"), ("disty", "⇳ Even down"))
+#        tips = {
+#            "left": "Move them onto the leftmost left edge",
+#            "hcenter": "Line their centres up on one vertical axis",
+#            "right": "Move them onto the rightmost right edge",
+#            "top": "Move them onto the topmost top edge",
+#            "vcenter": "Line their centres up on one horizontal axis",
+#            "bottom": "Move them onto the bottommost bottom edge",
+#            "distx": "Space them evenly left to right (needs 3+)",
+#            "disty": "Space them evenly top to bottom (needs 3+)"}
+#        made = []
+#        for mode, text in rows:
 #            b = QPushButton(text)
-#            b.setFixedSize(30, 28)
-#            b.setToolTip(f"{tip}. Shift+drag on the image selects ROIs; "
+#            b.setMinimumHeight(30)
+#            b.setToolTip(f"{tips[mode]}. Shift+drag selects ROIs on the image; "
 #                         "with none selected the whole active group is used.")
 #            b.clicked.connect(lambda _=False, m=mode: self.roi_align.emit(m))
 #            self.align_btns[mode] = b
-#            arow.addWidget(b)
-#        arow.addStretch(1)
-#        rlay.addLayout(arow)
+#            made.append(b)
+#        for i in range(0, len(made), 3):
+#            rlay.addLayout(_button_row(*made[i:i + 3]))
 #        # Order: the list is where you scan for the odd one out, so it sorts
 #        # by the shown metric as well as by the order the ROIs were placed.
 #        orow = QHBoxLayout()
@@ -6041,7 +6097,7 @@ if __name__ == "__main__":
 #    body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
 #    compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
 #
-#F 6ca0400fd683979f574f5a61a8806bb93a0fdb4c 327 tests/test_core.py
+#F aea4748396c784725311012d02f127940323eb3b 343 tests/test_core.py
 #"""Headless core tests (no Qt) for the group/ROI analysis model."""
 #
 #from __future__ import annotations
@@ -6057,7 +6113,7 @@ if __name__ == "__main__":
 #from examples.make_sample import CELL_H, CELL_W, make_field
 #from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
 #                                cell_edges, cohens_d, distribute_rects,
-#                                heat_cells,
+#                                heat_cells, jitter_tolerance,
 #                                compute_analysis, grid_between, group_outliers,
 #                                group_rois, group_snr, group_values,
 #                                groups_from_json, groups_to_json, heat_color,
@@ -6286,6 +6342,22 @@ if __name__ == "__main__":
 #    assert list(c) == [7.0] and list(e) == [6.5, 7.5]
 #    c, e = cell_edges([])
 #    assert c.size == 0 and e.size == 0
+#
+#
+#def test_cell_edges_treat_hand_jitter_as_one_row():
+#    """A grid placed by hand wobbles; it must still tile as the grid it is."""
+#    rng = np.random.default_rng(3)
+#    xs = np.array([40 + c * 90 + int(rng.integers(-3, 4)) + 15
+#                   for _r in range(5) for c in range(8)], dtype=float)
+#    c, e = cell_edges(xs)
+#    assert c.size == 8                       # eight columns, not thirty-four
+#    widths = np.diff(e)
+#    assert widths.min() > 60                 # no slivers between the knots
+#    assert jitter_tolerance(np.unique(xs)) > 3
+#    # …but a genuinely uneven layout is left alone
+#    assert cell_edges([0.0, 10.0, 40.0])[0].size == 3
+#    assert cell_edges(np.array([0.0, 11, 23, 37, 55, 70, 88]))[0].size == 7
+#    assert jitter_tolerance(np.array([0.0, 11, 23, 37, 55, 70, 88])) == 0.0
 #
 #
 #def test_heat_cells_tile_the_field_and_clip_to_the_image():

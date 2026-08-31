@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from examples.make_sample import CELL_H, CELL_W, make_field
 from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
                                 cell_edges, cohens_d, distribute_rects,
-                                heat_cells,
+                                heat_cells, jitter_tolerance,
                                 compute_analysis, grid_between, group_outliers,
                                 group_rois, group_snr, group_values,
                                 groups_from_json, groups_to_json, heat_color,
@@ -242,6 +242,22 @@ def test_cell_edges_on_degenerate_input():
     assert list(c) == [7.0] and list(e) == [6.5, 7.5]
     c, e = cell_edges([])
     assert c.size == 0 and e.size == 0
+
+
+def test_cell_edges_treat_hand_jitter_as_one_row():
+    """A grid placed by hand wobbles; it must still tile as the grid it is."""
+    rng = np.random.default_rng(3)
+    xs = np.array([40 + c * 90 + int(rng.integers(-3, 4)) + 15
+                   for _r in range(5) for c in range(8)], dtype=float)
+    c, e = cell_edges(xs)
+    assert c.size == 8                       # eight columns, not thirty-four
+    widths = np.diff(e)
+    assert widths.min() > 60                 # no slivers between the knots
+    assert jitter_tolerance(np.unique(xs)) > 3
+    # …but a genuinely uneven layout is left alone
+    assert cell_edges([0.0, 10.0, 40.0])[0].size == 3
+    assert cell_edges(np.array([0.0, 11, 23, 37, 55, 70, 88]))[0].size == 7
+    assert jitter_tolerance(np.array([0.0, 11, 23, 37, 55, 70, 88])) == 0.0
 
 
 def test_heat_cells_tile_the_field_and_clip_to_the_image():

@@ -31,9 +31,11 @@ from pear.core.attributes import SNR_ID, glv_value
 Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
 
 # Categorical palette for groups (cycles).
+# No amber in here: amber is the brand accent (trend lines) and the midpoint
+# of the heat ramp, so a group wearing it reads as a value off the scale.
 GROUP_PALETTE: List[str] = [
-    "#F59E0B", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
-    "#0891B2", "#EA580C", "#4B5563",
+    "#0D9488", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
+    "#0891B2", "#B45309", "#4B5563",
 ]
 
 # Sequential ramp for the metric heatmap: cool → amber → warm.
@@ -296,7 +298,55 @@ def uniformity(values) -> Dict[str, float]:
             "cv_pct": (sd / den * 100.0) if den > 1e-12 else 0.0}
 
 
-def cell_edges(positions, decimals: int = 3):
+def jitter_tolerance(sorted_unique) -> float:
+    """How far apart two centres can be and still be the same row or column.
+
+    Hand-placed ROIs land a few pixels off each other, so a row of eight is
+    really eight tight knots of positions, not eight positions. Sort the gaps
+    between neighbouring centres and there is a step change between the
+    within-knot gaps (a few px) and the pitch between knots (tens of px); the
+    tolerance sits in that step. Returns 0 when the gaps have no such split —
+    a genuine scatter is not jitter and must not be merged.
+    """
+    a = np.asarray(sorted_unique, dtype=np.float64)
+    if a.size < 3:
+        return 0.0
+    gaps = np.sort(np.diff(a))
+    gaps = gaps[gaps > 0]
+    if gaps.size < 2:
+        return 0.0
+    ratios = gaps[1:] / np.maximum(gaps[:-1], 1e-9)
+    i = int(np.argmax(ratios))
+    # Evidence for jitter, not a sparse layout: the step has to be a real
+    # step (4x), and there has to be a population of small gaps below it —
+    # one small gap among large ones is a missing ROI, not a wobble.
+    if i < 1 or ratios[i] < 4.0:
+        return 0.0
+    # the log-middle of the step: comfortably above every jitter gap, and
+    # never far enough to swallow a whole pitch
+    return float(np.sqrt(gaps[i] * gaps[i + 1]))
+
+
+def cluster_positions(positions, tol: float):
+    """Collapse centres within ``tol`` of their neighbour into one position.
+
+    The representative is the cluster's mean, so a row that wobbles by a pixel
+    or two lands on the row it was meant to be.
+    """
+    a = np.sort(np.asarray(positions, dtype=np.float64))
+    if a.size == 0:
+        return np.empty(0)
+    if tol <= 0:
+        return np.unique(a)
+    out, start = [], 0
+    for i in range(1, a.size + 1):
+        if i == a.size or a[i] - a[i - 1] > tol:
+            out.append(float(a[start:i].mean()))
+            start = i
+    return np.asarray(out, dtype=np.float64)
+
+
+def cell_edges(positions, decimals: int = 3, tol: Optional[float] = None):
     """Tiling boundaries for ROI centres along one axis.
 
     Returns ``(centres, edges)``: the distinct centres, sorted, and the
@@ -306,6 +356,11 @@ def cell_edges(positions, decimals: int = 3):
     where centres landed on rounded pixels, no overlap where the spacing is
     uneven; a lone gap in the layout simply gives that ROI a wider cell.
 
+    Centres within ``tol`` of each other count as one row or column, so a grid
+    placed by hand tiles as the grid it is rather than shattering into a
+    sliver per stray pixel. ``tol=None`` measures it from the data
+    (:func:`jitter_tolerance`); pass 0 to keep every distinct centre.
+
     A single distinct centre has no neighbour to measure against and gets a
     one-pixel cell; the caller substitutes a size of its own.
     """
@@ -313,7 +368,10 @@ def cell_edges(positions, decimals: int = 3):
     a = a[np.isfinite(a)]
     if a.size == 0:
         return np.empty(0), np.empty(0)
-    c = np.unique(np.round(a, decimals))
+    a = np.round(a, decimals)
+    if tol is None:
+        tol = jitter_tolerance(np.unique(a))
+    c = cluster_positions(a, tol)
     if c.size == 1:
         return c, np.asarray([c[0] - 0.5, c[0] + 0.5])
     mid = (c[:-1] + c[1:]) / 2.0
