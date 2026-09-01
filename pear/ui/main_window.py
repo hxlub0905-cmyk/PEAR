@@ -14,20 +14,24 @@ from typing import List, Optional
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtWidgets import (QDockWidget, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QDockWidget, QFileDialog, QHBoxLayout,
+                               QLabel, QMainWindow, QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy,
+                               QToolButton, QVBoxLayout, QWidget)
 
-from pear.core.analysis import (GROUP_PALETTE, ROI, Group, compute_analysis,
-                                group_outliers, group_rois, group_snr,
-                                groups_from_json, groups_to_json, heat_color,
-                                load_image, roi_center, roi_metric, roi_patch,
-                                rois_from_json, rois_to_json, snapshot,
-                                summarize)
-from pear.core.attributes import SNR_ID, metric_label
+from pear.core.analysis import (GROUP_PALETTE, ROI, Group, align_rects,
+                                compute_analysis, distribute_rects,
+                                group_outliers, group_rois,
+                                groups_from_json, groups_to_json, heat_cells,
+                                rois_from_points, rois_to_points,
+                                heat_color, load_image, roi_center, roi_metric,
+                                roi_patch, rois_from_json, rois_to_json,
+                                snapshot, summarize, uniformity)
+from pear.core.attributes import metric_label
 from pear.ui import theme
 from pear.ui.image_view import ImageView
-from pear.ui.widgets import AnalysisPanel, RailPanel, RoiInspector
+from pear.ui.widgets import (AnalysisPanel, RailPanel, RoiInspector,
+                             RoiSizeDialog, StageBar, save_widget_image)
 
 _FILTER = "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)"
 
@@ -55,7 +59,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PEAR — group & ROI analysis")
-        self.resize(1180, 820)
+        self.resize(1320, 860)
 
         self._image: Optional[np.ndarray] = None
         self._groups: List[Group] = []
@@ -66,8 +70,15 @@ class MainWindow(QMainWindow):
         self._next_rid = 1
         self._metrics: List[str] = ["glv_mean", "glv_median"]
         self._show_metric = ""            # single metric drawn live on ROIs
+        self._show_values = True          # print the shown metric on each ROI
         self._heatmap = False             # colour ROIs by the shown metric
+        self._heat_field = False          # spread the heat over each ROI's cell
         self._flag_outliers = False       # flag Tukey outliers of the shown metric
+        self._heat_alpha = 70             # heat fill opacity, percent
+        self._heat_range = None           # locked heat colours, or None = auto
+        self._roi_order = "placed"        # ROI list order: placed | asc | desc
+        self._values: dict = {}           # rid -> shown metric, one pass per refresh
+        self._value_cache: dict = {}      # (rid, rect, metric) -> value
         self._outlier_rids: set = set()
         self._image_path: Optional[str] = None
         self._cmp_mode = "between"
@@ -89,6 +100,7 @@ class MainWindow(QMainWindow):
         self._build_inspector_window()
         self._wire()
         self.rail.set_ready(False)
+        self.stage_bar.setEnabled(False)
 
     # ------------------------------------------------------------------ #
     def _build_topbar(self) -> None:
@@ -128,7 +140,25 @@ class MainWindow(QMainWindow):
 
     def _build_docks(self) -> None:
         self.image_view = ImageView()
-        self.setCentralWidget(self.image_view)
+        # The overlay controls sit on the stage, not at the bottom of the rail:
+        # every one of them changes what the image looks like.
+        self.stage_bar = StageBar()
+        # In a narrow window the bar's controls would otherwise overlap each
+        # other; it scrolls sideways instead, and never grows the window.
+        bar_scroll = QScrollArea()
+        bar_scroll.setWidget(self.stage_bar)
+        bar_scroll.setWidgetResizable(True)
+        bar_scroll.setFrameShape(QScrollArea.NoFrame)
+        bar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        bar_scroll.setFixedHeight(self.stage_bar.sizeHint().height() + 2)
+        bar_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        stage = QWidget()
+        slay = QVBoxLayout(stage)
+        slay.setContentsMargins(0, 0, 0, 0)
+        slay.setSpacing(0)
+        slay.addWidget(bar_scroll)
+        slay.addWidget(self.image_view, 1)
+        self.setCentralWidget(stage)
         self.rail = RailPanel()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -140,11 +170,21 @@ class MainWindow(QMainWindow):
         self.rail_dock.setWidget(scroll)
         self.rail_dock.setFeatures(QDockWidget.DockWidgetMovable |
                                    QDockWidget.DockWidgetFloatable)
+        # The stage will happily take the whole window and leave the rail too
+        # narrow to show its own labels. The rail's width is a floor; the image
+        # gets what is left.
+        self.rail_dock.setMinimumWidth(390)
         self.addDockWidget(Qt.RightDockWidgetArea, self.rail_dock)
-        self.resizeDocks([self.rail_dock], [400], Qt.Horizontal)
+        self.resizeDocks([self.rail_dock], [410], Qt.Horizontal)
 
     def _build_status(self) -> None:
         bar = self.statusBar()
+        # the headline numbers, so the one figure you keep glancing at does
+        # not need the Analysis window opened for it
+        self.summary_lbl = QLabel("")
+        self.summary_lbl.setObjectName("Mono")
+        self.summary_lbl.setFont(theme.mono_font(9))
+        bar.addPermanentWidget(self.summary_lbl)
         self.cursor_lbl = QLabel("")
         self.cursor_lbl.setObjectName("Mono")
         self.cursor_lbl.setFont(theme.mono_font(9))
@@ -183,10 +223,23 @@ class MainWindow(QMainWindow):
         self.inspector = RoiInspector()
         self.inspector_window = QWidget()
         self.inspector_window.setWindowTitle("PEAR — ROI inspector")
-        self.inspector_window.resize(600, 440)
+        self.inspector_window.resize(600, 470)
         lay = QVBoxLayout(self.inspector_window)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.inspector)
+        lay.setSpacing(0)
+        bar = QWidget()
+        bar.setObjectName("StageBar")
+        blay = QHBoxLayout(bar)
+        blay.setContentsMargins(12, 6, 12, 6)
+        blay.addStretch(1)
+        self.inspector_image_btn = QPushButton("Export image")
+        self.inspector_image_btn.setFixedHeight(26)
+        self.inspector_image_btn.setToolTip(
+            "Save this ROI's pixel view as a picture.")
+        self.inspector_image_btn.clicked.connect(self.export_inspector_image)
+        blay.addWidget(self.inspector_image_btn)
+        lay.addWidget(bar)
+        lay.addWidget(self.inspector, 1)
 
     def _wire(self) -> None:
         self.load_btn.clicked.connect(self.on_load)
@@ -202,13 +255,21 @@ class MainWindow(QMainWindow):
         self.rail.grid_shape_changed.connect(self.image_view.set_grid_shape)
         self.rail.roi_size_changed.connect(self.image_view.set_roi_size)
         self.rail.roi_pick.connect(self.select_roi)
-        self.rail.roi_set_target.connect(self.set_target_roi)
         self.rail.roi_del.connect(self.delete_roi)
         self.rail.roi_hovered.connect(self.image_view.set_hover)
         self.rail.metrics_changed.connect(self.set_metrics)
-        self.rail.show_metric_changed.connect(self.on_show_metric)
-        self.rail.heatmap_changed.connect(self.on_heatmap)
-        self.rail.outliers_changed.connect(self.on_flag_outliers)
+        self.rail.metric_ids_changed.connect(self.stage_bar.set_metrics)
+        self.rail.roi_order_changed.connect(self.on_roi_order)
+        self.rail.roi_align.connect(self.align_rois)
+        self.rail.roi_import.connect(self.import_rois)
+        self.rail.roi_export.connect(self.export_rois)
+        self.stage_bar.show_changed.connect(self.on_show_metric)
+        self.stage_bar.values_changed.connect(self.on_show_values)
+        self.stage_bar.heatmap_changed.connect(self.on_heatmap)
+        self.stage_bar.cells_changed.connect(self.on_heat_field)
+        self.stage_bar.outliers_changed.connect(self.on_flag_outliers)
+        self.stage_bar.heat_alpha_changed.connect(self.on_heat_alpha)
+        self.stage_bar.heat_range_changed.connect(self.on_heat_range)
         self.rail.open_analysis.connect(self.open_analysis)
 
         self.image_view.roi_created.connect(self.on_roi_created)
@@ -230,6 +291,8 @@ class MainWindow(QMainWindow):
         self.analysis.mode_changed.connect(self.on_cmp_mode)
         self.analysis.within_group_changed.connect(self.on_within_group)
         self.analysis.export_requested.connect(self.export_csv)
+        self.analysis.export_image_requested.connect(self.export_chart_image)
+        self.stage_bar.export_image_requested.connect(self.export_stage_image)
 
     # ------------------------------------------------------------------ #
     # image
@@ -258,6 +321,7 @@ class MainWindow(QMainWindow):
         self._selected_rids = set()
         self._outlier_rids = set()
         self._within_gid = None
+        self._value_cache = {}    # a new image invalidates every measurement
         self.dataset_lbl.setText(f"{name} · {img.shape[1]}×{img.shape[0]}")
         self.image_view.set_image(img)
         self.add_group()          # start with one group so adding ROIs works
@@ -357,16 +421,6 @@ class MainWindow(QMainWindow):
             self._active_gid = roi.gid
         self._refresh()
 
-    def set_target_roi(self, rid: int) -> None:
-        """Tag an ROI as its group's SNR target (toggle off if already target)."""
-        roi = self._roi(rid)
-        if roi is None:
-            return
-        g = self._group(roi.gid)
-        if g is not None:
-            g.target_rid = None if g.target_rid == rid else rid
-            self._refresh()
-
     def on_marquee_selected(self, rids) -> None:
         self._selected_rids = set(rids or [])
         self._refresh()
@@ -401,7 +455,6 @@ class MainWindow(QMainWindow):
         if self._active_rid == rid:
             self._active_rid = None
         self._selected_rids.discard(rid)
-        self._drop_targets({rid})
         self._refresh()
 
     def delete_rois(self, rids) -> None:
@@ -412,22 +465,9 @@ class MainWindow(QMainWindow):
         if self._active_rid in rid_set:
             self._active_rid = None
         self._selected_rids -= rid_set
-        self._drop_targets(rid_set)
         self.statusBar().showMessage(f"Deleted {len(rid_set)} ROIs.", 3000)
         self._refresh()
 
-    def _drop_targets(self, rid_set: set) -> None:
-        for g in self._groups:
-            if g.target_rid in rid_set:
-                g.target_rid = None
-
-    def _target_of_active(self) -> Optional[int]:
-        g = self._group(self._active_gid)
-        return g.target_rid if g is not None else None
-
-    # ------------------------------------------------------------------ #
-    # metrics / comparison
-    # ------------------------------------------------------------------ #
     def set_metrics(self, metrics: List[str]) -> None:
         self._metrics = list(metrics)
         self._render_analysis()
@@ -435,6 +475,59 @@ class MainWindow(QMainWindow):
     def on_show_metric(self, mid: str) -> None:
         self._show_metric = mid or ""
         self._refresh()
+
+    def on_show_values(self, on: bool) -> None:
+        self._show_values = bool(on)
+        self._refresh()
+
+    def on_heat_field(self, on: bool) -> None:
+        self._heat_field = bool(on)
+        if on and not self._is_glv_show():
+            self.statusBar().showMessage(
+                "Pick a GLV metric in “show on ROIs” to colour the field.", 4000)
+        self._update_heatmap()
+
+    def align_rois(self, mode: str) -> None:
+        """Tidy the marquee selection — or the whole active group if none.
+
+        Hand-placed ROIs are a few pixels off each other, which is invisible
+        until the field fill tiles them: cell edges fall midway between
+        centres, so a stray offset turns a clean grid into a staircase.
+        """
+        rois = [r for r in self._rois if r.rid in self._selected_rids]
+        scope = "selection"
+        if len(rois) < 2:
+            rois = group_rois(self._rois, self._active_gid)
+            scope = "group"
+        if len(rois) < 2:
+            self.statusBar().showMessage(
+                "Add at least two ROIs (Shift+drag selects them).", 4000)
+            return
+        rects = [r.rect for r in rois]
+        if mode in ("distx", "disty"):
+            out = distribute_rects(rects, "x" if mode == "distx" else "y")
+        else:
+            out = align_rects(rects, mode)
+        if out == rects:
+            return
+        for roi, rect in zip(rois, out):
+            roi.rect = tuple(rect)
+        self.statusBar().showMessage(
+            f"{mode} applied to {len(rois)} ROIs in the {scope}.", 3000)
+        self._refresh()
+
+    def on_roi_order(self, order: str) -> None:
+        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
+        self._refresh()
+
+    def on_heat_range(self, rng) -> None:
+        """Lock the heat colours to a fixed grey-level range (None = auto)."""
+        self._heat_range = tuple(rng) if rng else None
+        self._update_heatmap()
+
+    def on_heat_alpha(self, pct: int) -> None:
+        self._heat_alpha = int(max(0, min(100, int(pct))))
+        self._update_heatmap()
 
     def on_heatmap(self, on: bool) -> None:
         self._heatmap = bool(on)
@@ -451,39 +544,94 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _is_glv_show(self) -> bool:
-        return bool(self._show_metric) and self._show_metric != SNR_ID
+        return bool(self._show_metric)
 
     def _update_heatmap(self) -> None:
-        if self._heatmap and self._image is not None and self._is_glv_show():
-            vals = {r.rid: roi_metric(self._image, r, self._show_metric)
-                    for r in self._rois}
+        # Boxes and field are two ways to paint the same values: either one on
+        # its own is a heat overlay.
+        if ((self._heatmap or self._heat_field) and self._image is not None
+                and self._is_glv_show()):
+            vals = self._values
             finite = [v for v in vals.values() if np.isfinite(v)]
             if finite:
                 vmin, vmax = min(finite), max(finite)
+                if self._heat_range:      # locked: the same colour every image
+                    vmin, vmax = self._heat_range
                 span = (vmax - vmin) or 1.0
                 colors = {rid: heat_color((v - vmin) / span)
                           for rid, v in vals.items() if np.isfinite(v)}
                 self.image_view.set_heatmap(
-                    colors, (vmin, vmax, metric_label(self._show_metric)))
+                    colors, (vmin, vmax, metric_label(self._show_metric)),
+                    round(self._heat_alpha * 2.55))
+                shape = self._image.shape[:2]
+                self.image_view.set_heat_cells(
+                    heat_cells(self._rois, (shape[1], shape[0]))
+                    if self._heat_field else {})
                 return
         self.image_view.set_heatmap({}, None)
+        self.image_view.set_heat_cells({})
+
+    def _compute_values(self) -> None:
+        """``rid -> shown metric``, once per refresh.
+
+        The canvas labels, the heatmap, the ROI list and the status readout
+        all want the same numbers; computing them here keeps one pass over the
+        pixels instead of four.
+        """
+        vals: dict = {}
+        if self._image is not None and self._show_metric:
+            # Nudging one ROI used to re-measure every other one. The patch
+            # only changes when its rect does, so the answer is cached against
+            # it — this is most of the "sticky" feeling on a field with a few
+            # hundred boxes.
+            for r in self._rois:
+                key = (r.rid, tuple(r.rect), self._show_metric)
+                v = self._value_cache.get(key)
+                if v is None:
+                    v = roi_metric(self._image, r, self._show_metric)
+                    self._value_cache[key] = v
+                vals[r.rid] = v
+            if len(self._value_cache) > 20000:          # a session's worth
+                self._value_cache = dict(
+                    ((r.rid, tuple(r.rect), self._show_metric), vals[r.rid])
+                    for r in self._rois)
+        self._values = vals
 
     def _update_roi_values(self) -> None:
-        if not self._show_metric or self._image is None:
+        if not self._show_values or not self._values:
             self.image_view.set_roi_values({})
             return
-        vals = {}
-        if self._show_metric == SNR_ID:
-            # SNR is a per-group value; label the target (T) ROI with it.
-            for g in self._groups:
-                s = group_snr(self._image, group_rois(self._rois, g.gid),
-                              g.target_rid)
-                if s is not None and g.target_rid is not None:
-                    vals[g.target_rid] = f"{s:.3g}"
-        else:
-            for r in self._rois:
-                vals[r.rid] = f"{roi_metric(self._image, r, self._show_metric):.3g}"
-        self.image_view.set_roi_values(vals)
+        self.image_view.set_roi_values(
+            {rid: f"{v:.3g}" for rid, v in self._values.items()})
+
+    def _update_summary(self) -> None:
+        """Headline numbers in the status bar — counts, then the shown metric."""
+        if self._image is None:
+            self.summary_lbl.setText("")
+            return
+        parts = [f"{len(self._groups)} groups · {len(self._rois)} ROIs"]
+        vals = np.asarray([v for v in self._values.values() if np.isfinite(v)],
+                          dtype=np.float64)
+        if vals.size:
+            u = uniformity(vals)
+            parts.append(f"{metric_label(self._show_metric)}: "
+                         f"mean {u['mean']:.4g} · range {u['range']:.3g} "
+                         f"· CV {u['cv_pct']:.2f}%")
+        self.summary_lbl.setText("   ".join(parts))
+
+    def _ordered_rois(self, rois):
+        """The active group's ROIs in list order — as placed, or by value."""
+        if self._roi_order == "placed" or not self._values:
+            return rois
+        rev = self._roi_order == "desc"
+
+        def key(r):
+            v = self._values.get(r.rid)
+            if v is None or not np.isfinite(v):
+                return (1, 0.0)      # unmeasurable — keep it last
+            return (0, -v if rev else v)
+
+        return sorted(rois, key=key)
 
     def on_cmp_mode(self, mode: str) -> None:
         self._cmp_mode = mode
@@ -532,23 +680,27 @@ class MainWindow(QMainWindow):
         self._renumber()
         has_img = self._image is not None
         self.rail.set_ready(has_img)
+        self.stage_bar.setEnabled(has_img)   # nothing to overlay without one
         self.analysis_btn_top.setEnabled(has_img)
         self._save_action.setEnabled(has_img)
         self._outlier_rids = (
             group_outliers(self._image, self._rois, self._show_metric)
             if (self._flag_outliers and has_img and self._is_glv_show())
             else set())
+        self._compute_values()
         counts = {g.gid: len(group_rois(self._rois, g.gid)) for g in self._groups}
         self.rail.set_groups(self._groups, self._active_gid, counts)
-        self.rail.set_rois(group_rois(self._rois, self._active_gid),
-                           self._active_rid, self._target_of_active(),
-                           self._selected_rids, self._outlier_rids)
+        self.rail.set_rois(
+            self._ordered_rois(group_rois(self._rois, self._active_gid)),
+            self._active_rid, self._selected_rids, self._outlier_rids,
+            self._values)
         self.image_view.set_groups(self._groups, self._active_gid)
         self.image_view.set_rois(self._rois, self._active_rid)
         self.image_view.set_selection(self._selected_rids)
         self.image_view.set_outliers(self._outlier_rids)
         self._update_roi_values()
         self._update_heatmap()
+        self._update_summary()
         self._update_inspector()
         if self._within_gid is None and self._groups:
             self._within_gid = self._groups[0].gid
@@ -632,13 +784,20 @@ class MainWindow(QMainWindow):
             "next_rid": self._next_rid,
             "metrics": list(self._metrics),
             "show_metric": self._show_metric,
+            "show_values": self._show_values,
             "heatmap": self._heatmap,
+            "heat_field": self._heat_field,
             "flag_outliers": self._flag_outliers,
+            "heat_alpha": self._heat_alpha,
+            "heat_range": list(self._heat_range) if self._heat_range else None,
+            "chart_style": self.analysis.chart_style(),
+            "roi_order": self._roi_order,
             "cmp_mode": self._cmp_mode,
             "within_gid": self._within_gid,
             "active_gid": self._active_gid,
             "chart_type": self.analysis.chart_state()[0],
             "pos_axis": self.analysis.chart_state()[1],
+            "chart_opts": self.analysis.chart_options(),
         }
 
     def save_project(self, path: str) -> str:
@@ -672,23 +831,208 @@ class MainWindow(QMainWindow):
                              or (max((r.rid for r in self._rois), default=0) + 1))
         self._metrics = list(data.get("metrics") or ["glv_mean", "glv_median"])
         self._show_metric = data.get("show_metric") or ""
+        self._show_values = bool(data.get("show_values", True))
         self._heatmap = bool(data.get("heatmap", False))
+        self._heat_field = bool(data.get("heat_field", False))
         self._flag_outliers = bool(data.get("flag_outliers", False))
+        self._heat_alpha = int(data.get("heat_alpha", 70))
+        rng = data.get("heat_range")
+        self._heat_range = (tuple(rng) if rng and len(rng) == 2 else None)
+        order = data.get("roi_order", "placed")
+        self._roi_order = order if order in ("placed", "asc", "desc") else "placed"
         self._cmp_mode = data.get("cmp_mode", "between")
         self._within_gid = data.get("within_gid")
         self._active_gid = (data.get("active_gid")
                             or (self._groups[0].gid if self._groups else None))
         self._active_rid = None
         self._selected_rids = set()
-        self.rail.set_metric_state(self._metrics, self._show_metric,
-                                   self._heatmap, self._flag_outliers)
+        self.rail.set_metric_state(self._metrics, [self._show_metric])
+        self.rail.set_roi_order(self._roi_order)
+        self.stage_bar.set_metrics(self.rail.metrics.ids())
+        self.stage_bar.set_state(self._show_metric, self._show_values,
+                                 self._heatmap, self._heat_field,
+                                 self._flag_outliers, self._heat_alpha)
         self.analysis.set_chart_state(data.get("chart_type", "box"),
                                       data.get("pos_axis", "x"))
+        self.analysis.set_chart_options(data.get("chart_opts") or {})
+        self.analysis.set_chart_style(data.get("chart_style") or {})
+        self.stage_bar.set_heat_range(self._heat_range)
         self._refresh()
 
     # ------------------------------------------------------------------ #
     # export
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # ROI interchange
+    # ------------------------------------------------------------------ #
+    _ROI_FILTER = "ROI list (*.json)"
+
+    def import_rois(self, path: Optional[str] = None, mode: str = "",
+                    size=None, ask_size: bool = True) -> Optional[int]:
+        """Read a flat ROI list. Returns how many ROIs landed, or None.
+
+        The file says where the boxes go and what colour they are; PEAR turns
+        each colour into a group. Sizes come from the file when it carries
+        them and from the size fields when it does not.
+        """
+        if self._image is None:
+            return None
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Import ROIs", "", self._ROI_FILTER)
+            if not path:
+                return None
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                items = json.load(fh)
+            w, h = size or self.rail.roi_size()
+            if size is None and ask_size:
+                dlg = RoiSizeDialog(self, "import", w, h,
+                                    len(items) if isinstance(items, list) else 0)
+                if dlg.exec() != QDialog.Accepted:
+                    return None
+                size = dlg.options()["size"]
+                if size:
+                    w, h = size
+            shape = self._image.shape[:2]
+            groups, rois, clamped = rois_from_points(
+                items, w, h, bounds=(shape[1], shape[0]),
+                start_rid=self._next_rid, force_size=bool(size))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Import ROIs",
+                                f"Could not read that file:\n{exc}")
+            return None
+        if not rois:
+            QMessageBox.warning(self, "Import ROIs", "That file has no ROIs.")
+            return None
+        if not mode:
+            mode = "replace"
+            if self._rois:
+                box = QMessageBox(self)
+                box.setWindowTitle("Import ROIs")
+                box.setText(f"{len(rois)} ROIs in {os.path.basename(path)}.")
+                box.setInformativeText("Replace the ROIs already placed, or "
+                                       "add these to them?")
+                replace = box.addButton("Replace", QMessageBox.AcceptRole)
+                add = box.addButton("Add", QMessageBox.ActionRole)
+                box.addButton(QMessageBox.Cancel)
+                box.exec()
+                if box.clickedButton() is None or box.clickedButton() not in (
+                        replace, add):
+                    return None
+                mode = "replace" if box.clickedButton() is replace else "add"
+        if mode == "replace":
+            self._groups, self._rois = [], []
+            self._selected_rids = set()
+        # a colour already on the board keeps its group; the rest come in new
+        by_color = {g.color: g.gid for g in self._groups}
+        used = {g.gid for g in self._groups}
+        remap = {}
+        for g in groups:
+            gid = by_color.get(g.color)
+            if gid is None:
+                gid = next((c for c in (chr(ord("A") + i) for i in range(26))
+                            if c not in used), f"G{len(used)}")
+                used.add(gid)
+                by_color[g.color] = gid
+                self._groups.append(Group(gid=gid, name=f"Group {gid}",
+                                          color=g.color))
+            remap[g.gid] = gid
+        for r in rois:
+            r.gid = remap[r.gid]
+        self._rois.extend(rois)
+        self._next_rid = max((r.rid for r in self._rois), default=0) + 1
+        self._active_gid = self._groups[0].gid if self._groups else None
+        self._active_rid = None
+        note = f"Imported {len(rois)} ROIs from {os.path.basename(path)}"
+        if clamped:
+            note += f" · {clamped} moved to fit the image"
+        self.statusBar().showMessage(note, 5000)
+        self._refresh()
+        return len(rois)
+
+    def export_rois(self, path: Optional[str] = None, size=None,
+                    include_size: bool = True,
+                    ask_size: bool = True) -> Optional[str]:
+        """Write every ROI as that same flat list."""
+        if not self._rois:
+            return None
+        if ask_size and size is None:
+            w, h = self.rail.roi_size()
+            dlg = RoiSizeDialog(self, "export", w, h, len(self._rois))
+            if dlg.exec() != QDialog.Accepted:
+                return None
+            opts = dlg.options()
+            size, include_size = opts["size"], opts["include_size"]
+        if not path:
+            base = os.path.splitext(os.path.basename(self._image_path or
+                                                     "rois"))[0]
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export ROIs", f"{base}_rois.json", self._ROI_FILTER)
+            if not path:
+                return None
+        items = rois_to_points(self._groups, self._rois, size,
+                               include_size)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(items, fh, indent=2, ensure_ascii=False)
+        self.statusBar().showMessage(
+            f"{len(items)} ROIs written to {path}", 4000)
+        return path
+
+    _IMAGE_FILTER = "PNG image (*.png);;SVG vector (*.svg)"
+
+    def _ask_image_path(self, parent, title: str, default: str) -> Optional[str]:
+        path, _ = QFileDialog.getSaveFileName(parent, title, default,
+                                              self._IMAGE_FILTER)
+        return path or None
+
+    def _report_image(self, out, title: str) -> Optional[str]:
+        if out is None:
+            QMessageBox.warning(
+                self, title,
+                "Nothing to export — SVG also needs PySide6's QtSvg module.")
+            return None
+        self.statusBar().showMessage(f"Image written to {out}", 4000)
+        return out
+
+    def export_chart_image(self, scope: str = "charts",
+                           path: Optional[str] = None) -> Optional[str]:
+        """Save a section of the results for a report — PNG at 3×, or SVG."""
+        scope = scope or "charts"
+        if not path:
+            path = self._ask_image_path(self.analysis_window,
+                                        "Export results image",
+                                        f"pear_{scope}.png")
+            if not path:
+                return None
+        return self._report_image(self.analysis.save_image(path, scope),
+                                  "Export results image")
+
+    def export_stage_image(self, path: Optional[str] = None,
+                           scale: float = 2.0) -> Optional[str]:
+        """Save the annotated field — the image itself, overlays on top."""
+        if self._image is None:
+            return None
+        if not path:
+            base = os.path.splitext(os.path.basename(self._image_path or
+                                                     "field"))[0]
+            path = self._ask_image_path(self, "Export field image",
+                                        f"{base}_pear.png")
+            if not path:
+                return None
+        return self._report_image(self.image_view.export_image(path, scale),
+                                  "Export field image")
+
+    def export_inspector_image(self, path: Optional[str] = None) -> Optional[str]:
+        """Save the ROI pixel view."""
+        if not path:
+            path = self._ask_image_path(self.inspector_window,
+                                        "Export ROI image", "pear_roi.png")
+            if not path:
+                return None
+        return self._report_image(save_widget_image(self.inspector, path),
+                                  "Export ROI image")
+
     def export_csv(self, path: Optional[str] = None) -> Optional[str]:
         if self._image is None or not self._rois:
             return None
@@ -705,27 +1049,18 @@ class MainWindow(QMainWindow):
             w = csv.writer(fh)
             w.writerow(["PEAR group & ROI analysis"])
             w.writerow([])
-            header = ["group", "roi", "role", "x", "y", "w", "h",
+            header = ["group", "roi", "x", "y", "w", "h",
                       "center_x", "center_y"] + \
                      [metric_label(m) for m in self._metrics]
             w.writerow(header)
             for g in self._groups:
-                grois = group_rois(self._rois, g.gid)
-                gsnr = group_snr(self._image, grois, g.target_rid)
-                for roi in grois:
+                for roi in group_rois(self._rois, g.gid):
                     x, y, wid, hei = roi.rect
-                    role = ("T" if roi.rid == g.target_rid
-                            else ("R" if g.target_rid is not None else ""))
                     cx, cy = roi_center(roi.rect)
-                    row = [g.name, roi.label, role, x, y, wid, hei,
+                    row = [g.name, roi.label, x, y, wid, hei,
                            f"{cx:g}", f"{cy:g}"]
                     for mid in self._metrics:
-                        if mid == SNR_ID:
-                            # SNR is per group; report it on the target row only
-                            row.append(f"{gsnr:.6g}" if (roi.rid == g.target_rid
-                                       and gsnr is not None) else "")
-                        else:
-                            row.append(f"{roi_metric(self._image, roi, mid):.6g}")
+                        row.append(f"{roi_metric(self._image, roi, mid):.6g}")
                     w.writerow(row)
             w.writerow([])
             w.writerow(["summary"])
@@ -736,11 +1071,7 @@ class MainWindow(QMainWindow):
                     continue
                 line = [g.name, len(grois)]
                 for mid in self._metrics:
-                    if mid == SNR_ID:
-                        s = group_snr(self._image, grois, g.target_rid)
-                        line.append(f"{s:.6g}" if s is not None else "")
-                    else:
-                        vals = np.array([roi_metric(self._image, r, mid)
-                                         for r in grois])
-                        line.append(f"{summarize(vals)['mean']:.6g}")
+                    vals = np.array([roi_metric(self._image, r, mid)
+                                     for r in grois])
+                    line.append(f"{summarize(vals)['mean']:.6g}")
                 w.writerow(line)

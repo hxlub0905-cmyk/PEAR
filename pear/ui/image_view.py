@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QImage, QKeyEvent, QLinearGradient,
                            QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent)
 from PySide6.QtWidgets import QWidget
@@ -25,6 +25,26 @@ Rect = Tuple[int, int, int, int]
 _HANDLE = 8
 _MIN_ROI = 4
 _DEFAULT = 28          # default single-ROI size (px) for a plain click
+_LEGEND_H = 58         # colour-key strip added under an exported field
+
+
+def label_rect(r: QRectF, bw: float, bh: float,
+               hovered: bool) -> Optional[QRectF]:
+    """Where a ``bw × bh`` value label goes on ROI ``r``, or None: don't draw.
+
+    Zoomed out, a label is wider than its box: printed anyway they collide
+    with each other and bury the boxes they belong to. One that does not fit
+    is dropped and comes back on zoom — except on the ROI under the cursor,
+    which floats its label above the box (below it, at the top edge of the
+    image) so a value is always one hover away.
+    """
+    cx, cy = r.center().x(), r.center().y()
+    if bw <= r.width() and bh <= r.height():
+        return QRectF(cx - bw / 2, cy - bh / 2, bw, bh)
+    if not hovered:
+        return None
+    top = r.top() - bh - 2
+    return QRectF(cx - bw / 2, top if top >= 0 else r.bottom() + 2, bw, bh)
 
 
 class ImageView(QWidget):
@@ -45,7 +65,7 @@ class ImageView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(420, 320)
+        self.setMinimumSize(320, 240)   # the rail's width wins
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -53,6 +73,7 @@ class ImageView(QWidget):
         self._pixmap: Optional[QPixmap] = None
         self._scale = 1.0
         self._offset = QPointF(0, 0)
+        self._fitted = True     # still showing the fit; a zoom or pan ends it
 
         self._groups: List[Group] = []
         self._active_gid: Optional[str] = None
@@ -62,8 +83,11 @@ class ImageView(QWidget):
         self._marquee: Optional[QRectF] = None  # selection rect (image coords)
         self._heat: dict = {}                  # rid -> hex colour (heatmap)
         self._heat_legend: Optional[tuple] = None  # (vmin, vmax, label)
+        self._heat_alpha = 178                 # heat fill opacity (0-255)
+        self._heat_cells: dict = {}            # rid -> (x0,y0,x1,y1) image px
         self._outliers: set = set()            # rids flagged as outliers
         self._hover_rid: int = -1              # rid under the cursor
+        self._exporting = False                # drop the in-progress marks
 
         self._grid_mode = False
         self._grid_stage = 0               # 0 none · 1 have TL · 2 have TL+BR
@@ -111,10 +135,83 @@ class ImageView(QWidget):
         self._selection = set(rids or [])
         self.update()
 
-    def set_heatmap(self, colors: dict, legend=None) -> None:
-        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label)."""
+    def set_heatmap(self, colors: dict, legend=None, alpha: int = 178) -> None:
+        """Colour ROI fills by value: rid -> hex. legend = (vmin, vmax, label).
+
+        ``alpha`` (0-255) is how opaque the fill is — turn it down to read the
+        image under the box.
+        """
         self._heat = colors or {}
         self._heat_legend = legend
+        self._heat_alpha = int(np.clip(int(alpha), 0, 255))
+        self.update()
+
+    def export_image(self, path: str, scale: float = 2.0) -> Optional[str]:
+        """Save the annotated field: the image at its own resolution × ``scale``.
+
+        Not a screenshot of the stage — the view's zoom, pan and black
+        surround have nothing to do with the figure someone wants in a
+        report. The pixels are drawn at their own size and the overlays (heat,
+        cells, ROI boxes, values, flags, the colour key) on top of them, so
+        the export is as sharp as the data allows whatever the window shows.
+        """
+        if self._pixmap is None:
+            return None
+        scale = float(np.clip(scale, 0.25, 8.0))
+        w = max(1, int(round(self._pixmap.width() * scale)))
+        h = max(1, int(round(self._pixmap.height() * scale)))
+        # the colour key gets a strip of its own rather than sitting on top of
+        # the ROIs it is the key for
+        legend_h = _LEGEND_H if (self._heat_legend and self._heat) else 0
+        keep = (self._scale, self._offset)
+        self._scale, self._offset = scale, QPointF(0.0, 0.0)
+        self._exporting = True
+        try:
+            if str(path).lower().endswith(".svg"):
+                try:
+                    from PySide6.QtSvg import QSvgGenerator
+                except ImportError:
+                    return None
+                gen = QSvgGenerator()
+                gen.setFileName(path)
+                gen.setSize(QSize(w, h + legend_h))
+                gen.setViewBox(QRect(0, 0, w, h + legend_h))
+                painter = QPainter()
+                if not painter.begin(gen):
+                    return None
+                painter.fillRect(QRectF(0, 0, w, h + legend_h),
+                                 QColor(theme.STAGE))
+                self._paint_export(painter, w, h, legend_h)
+                painter.end()
+                return path
+            pm = QPixmap(w, h + legend_h)
+            pm.fill(QColor(theme.STAGE))
+            painter = QPainter(pm)
+            self._paint_export(painter, w, h, legend_h)
+            painter.end()
+            return path if pm.save(path) else None
+        finally:
+            self._scale, self._offset = keep
+            self._exporting = False
+
+    def _paint_export(self, p: QPainter, w: int, h: int,
+                      legend_h: int = 0) -> None:
+        """The field and its overlays — no cursor HUD, no marquee, no grid
+        preview: those are things you are doing, not things you measured."""
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.drawPixmap(QRectF(0, 0, w, h), self._pixmap,
+                     QRectF(self._pixmap.rect()))
+        self._paint_heat_cells(p)
+        self._paint_rois(p)
+        if legend_h:
+            self._paint_colorbar(p, QRectF(0, h, w, legend_h))
+
+    def set_heat_cells(self, cells: dict) -> None:
+        """Tile the heat across the field: rid -> (x0, y0, x1, y1) in image px.
+
+        Empty = paint the heat inside the ROI boxes only.
+        """
+        self._heat_cells = cells or {}
         self.update()
 
     def set_outliers(self, rids) -> None:
@@ -167,6 +264,7 @@ class ImageView(QWidget):
         self._scale = min(vw / iw, vh / ih) * 0.96
         self._offset = QPointF((vw - iw * self._scale) / 2.0,
                                (vh - ih * self._scale) / 2.0)
+        self._fitted = True
         self.update()
         self.zoom_changed.emit(self._scale)
 
@@ -176,6 +274,7 @@ class ImageView(QWidget):
         if anchor is None:
             anchor = QPointF(self.width() / 2.0, self.height() / 2.0)
         ia = self._to_image(anchor)
+        self._fitted = False
         self._scale = float(np.clip(self._scale * factor, 0.05, 40.0))
         self._offset = QPointF(anchor.x() - ia.x() * self._scale,
                                anchor.y() - ia.y() * self._scale)
@@ -230,6 +329,7 @@ class ImageView(QWidget):
                         self._pixmap.width() * self._scale,
                         self._pixmap.height() * self._scale)
         p.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+        self._paint_heat_cells(p)
         self._paint_rois(p)
         self._paint_rubberband(p)
         self._paint_marquee(p)
@@ -238,8 +338,29 @@ class ImageView(QWidget):
         self._paint_hud(p)
         p.end()
 
+    def _paint_heat_cells(self, p: QPainter) -> None:
+        """Heat spread over each ROI's cell, under the ROI outlines.
+
+        The ROI keeps its own box on top, so it stays visible which rectangle
+        was actually measured and which area merely carries its colour.
+        """
+        if not self._heat_cells or not self._heat:
+            return
+        p.setPen(Qt.NoPen)
+        for roi in self._rois:
+            cell = self._heat_cells.get(roi.rid)
+            heat = self._heat.get(roi.rid)
+            if cell is None or heat is None:
+                continue
+            x0, y0, x1, y1 = cell
+            tl = self._to_widget(x0, y0)
+            br = self._to_widget(x1, y1)
+            fill = QColor(heat)
+            fill.setAlpha(self._heat_alpha)
+            p.setBrush(fill)
+            p.drawRect(QRectF(tl, br))
+
     def _paint_rois(self, p: QPainter) -> None:
-        targets = {g.gid: g.target_rid for g in self._groups}
         for roi in self._rois:
             active_grp = roi.gid == self._active_gid
             selected = roi.rid == self._active_rid
@@ -247,32 +368,50 @@ class ImageView(QWidget):
             color = self._gcolor(roi.gid)
             r = self._rect_to_widget(roi.rect)
             heat = self._heat.get(roi.rid)
-            if heat is not None:                     # value heatmap fill
+            if heat is not None and roi.rid in self._heat_cells:
+                fill = Qt.NoBrush                    # the cell under it is the fill
+            elif heat is not None:                   # value heatmap fill
                 fill = QColor(heat)
-                fill.setAlpha(175)
+                fill.setAlpha(self._heat_alpha)
             else:
                 fill = QColor(color)
-                fill.setAlpha(64 if active_grp else 26)
-            stroke = QColor(color)
-            stroke.setAlpha(255 if active_grp else 130)
-            pen = QPen(stroke, 2.4 if selected else (1.8 if active_grp else 1.2))
-            pen.setCosmetic(True)
-            p.setPen(pen)
+                fill.setAlpha(90 if active_grp else 45)   # the group's tag
+            # The outline is always neutral ink over a white halo. Colour on
+            # this stage means a value — the heat ramp — so a box wearing its
+            # group's colour reads as a reading off the scale; and a neutral
+            # rule is legible on a black stage, on a bright feature and on any
+            # colour of the ramp alike. The group shows in the fill tint.
+            width = 2.4 if selected else (1.8 if active_grp else 1.2)
             p.setBrush(fill)
+            p.setPen(Qt.NoPen)
             p.drawRect(r)
-            if roi.rid == self._hover_rid:
+            self._stroke_neutral(p, r, width, dashed=False, strong=active_grp)
+            if roi.rid == self._hover_rid and not self._exporting:
                 self._paint_hover_ring(p, r)
-            if in_sel:
+            if in_sel and not self._exporting:
                 self._paint_selection_ring(p, r)
             if roi.rid in self._outliers:
                 self._paint_outlier(p, r)
-            if targets.get(roi.gid) == roi.rid:
-                self._paint_badge(p, r, "T", color)
             val = self._roi_values.get(roi.rid)
             if val is not None:
-                self._paint_value(p, r, val)
-            if selected and not self._grid_mode:
+                self._paint_value(p, r, val, roi.rid == self._hover_rid)
+            if selected and not self._grid_mode and not self._exporting:
                 self._paint_handles(p, r, color)
+
+    def _stroke_neutral(self, p: QPainter, r: QRectF, width: float,
+                        dashed: bool = False, strong: bool = True) -> None:
+        """Outline that stays legible on any fill: white halo, dark ink on top."""
+        p.setBrush(Qt.NoBrush)
+        halo = QPen(QColor(255, 255, 255, 190), width + 2.0)
+        halo.setCosmetic(True)
+        p.setPen(halo)
+        p.drawRect(r)
+        ink = QPen(QColor(17, 24, 39, 255 if strong else 150), width)
+        ink.setCosmetic(True)
+        if dashed:
+            ink.setStyle(Qt.DashLine)
+        p.setPen(ink)
+        p.drawRect(r)
 
     def _paint_hover_ring(self, p: QPainter, r: QRectF) -> None:
         pen = QPen(QColor(255, 255, 255, 210), 1.4)
@@ -289,11 +428,12 @@ class ImageView(QWidget):
         p.drawRect(r.adjusted(-1, -1, 1, 1))
         self._paint_badge(p, r, "!", QColor(theme.WARNING), corner="tr")
 
-    def _paint_colorbar(self, p: QPainter) -> None:
+    def _paint_colorbar(self, p: QPainter, frame: Optional[QRectF] = None) -> None:
         if not self._heat_legend or not self._heat:
             return
         vmin, vmax, label = self._heat_legend
-        x, y, w, h = 14, self.height() - 42, 150, 12
+        frame = frame if frame is not None else QRectF(self.rect())
+        x, y, w, h = frame.left() + 14, frame.bottom() - 42, 150, 12
         grad = QLinearGradient(float(x), 0.0, float(x + w), 0.0)
         for t in (0.0, 0.25, 0.5, 0.75, 1.0):
             grad.setColorAt(t, QColor(heat_color(t)))
@@ -333,21 +473,34 @@ class ImageView(QWidget):
         p.setPen(QColor("#FFFFFF"))
         p.drawText(bg, Qt.AlignCenter, text)
 
-    def _paint_value(self, p: QPainter, r: QRectF, text: str) -> None:
+    def _paint_value(self, p: QPainter, r: QRectF, text: str,
+                     hovered: bool = False) -> None:
+        """The metric, centred on the ROI — but only where it fits.
+
+        Zoomed out, a label is wider than its box: printed anyway they collide
+        with each other and bury the boxes they belong to. A label that does
+        not fit is dropped and comes back on zoom; the ROI under the cursor
+        keeps its label whatever the zoom, floated above the box, so a value
+        is always one hover away.
+        """
         p.setFont(theme.mono_font(9, weight=700))
         fm = p.fontMetrics()
-        tw = fm.horizontalAdvance(text)
-        cx, cy = r.center().x(), r.center().y()
-        bg = QRectF(cx - tw / 2 - 3, cy - fm.height() / 2, tw + 6, fm.height())
+        # the *text* has to fit the box; its pill may overhang a little, which
+        # keeps a 4-digit label from vanishing on a box a 3-digit one fits
+        bg = label_rect(r, float(fm.horizontalAdvance(text)), float(fm.height()),
+                        hovered)
+        if bg is None:
+            return
+        pill = bg.adjusted(-3, 0, 3, 0)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(17, 24, 39, 200))
-        p.drawRoundedRect(bg, 3, 3)
+        p.drawRoundedRect(pill, 3, 3)
         p.setPen(QColor("#FFFFFF"))
-        p.drawText(bg, Qt.AlignCenter, text)
+        p.drawText(pill, Qt.AlignCenter, text)
 
     def _paint_handles(self, p: QPainter, rect: QRectF, color: QColor) -> None:
         p.setPen(QPen(QColor("#FFFFFF"), 1.4))
-        p.setBrush(color)
+        p.setBrush(QColor(17, 24, 39))          # neutral, like the outline
         for c in self._handle_centers(rect):
             p.drawRect(QRectF(c.x() - _HANDLE / 2, c.y() - _HANDLE / 2,
                               _HANDLE, _HANDLE))
@@ -355,15 +508,11 @@ class ImageView(QWidget):
     def _paint_rubberband(self, p: QPainter) -> None:
         if self._draw_rect is None:
             return
-        pen = QPen(QColor(theme.AMBER), 2)
-        pen.setCosmetic(True)
-        pen.setStyle(Qt.DashLine)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
         rn = self._draw_rect.normalized()
         tl = self._to_widget(rn.left(), rn.top())
-        p.drawRect(QRectF(tl.x(), tl.y(), rn.width() * self._scale,
-                          rn.height() * self._scale))
+        self._stroke_neutral(p, QRectF(tl.x(), tl.y(), rn.width() * self._scale,
+                                       rn.height() * self._scale),
+                             2.0, dashed=True)
 
     def _paint_marquee(self, p: QPainter) -> None:
         if self._marquee is None:
@@ -395,16 +544,13 @@ class ImageView(QWidget):
         rects = self._grid_rects()
         if not rects:
             return
-        color = self._gcolor(self._active_gid)
-        prev = QColor(color)
-        prev.setAlpha(70)
-        pen = QPen(color, 1.4)
-        pen.setCosmetic(True)
-        for i, rect in enumerate(rects):
+        prev = QColor(255, 255, 255, 60)
+        for rect in rects:
             r = self._rect_to_widget(rect)
-            p.setPen(pen)
+            p.setPen(Qt.NoPen)
             p.setBrush(prev)
             p.drawRect(r)
+            self._stroke_neutral(p, r, 1.4, dashed=True, strong=False)
         # emphasise the two corner anchors
         apen = QPen(QColor(theme.INFO), 2.2)
         apen.setCosmetic(True)
@@ -555,13 +701,17 @@ class ImageView(QWidget):
         pos = QPointF(e.position())
         self._cursor_img = self._to_image(pos)
         self._emit_cursor(pos)
+        # Panning outranks the mode: the right button drags the picture around
+        # whether or not a grid is being placed, and grid placement is exactly
+        # when you need to reach the far corner.
+        if self._interact == "pan":
+            self._offset = self._pan_at_press + (pos - self._drag_start)
+            self._fitted = False        # panned away from the fit
+            self.update()
+            return
         if self._grid_mode:
             if self._grid_stage == 1:
                 self.update()
-            return
-        if self._interact == "pan":
-            self._offset = self._pan_at_press + (pos - self._drag_start)
-            self.update()
             return
         if self._interact == "marquee" and self._marquee is not None:
             self._marquee.setBottomRight(self._to_image(pos))
@@ -775,5 +925,12 @@ class ImageView(QWidget):
             self.setCursor(Qt.CrossCursor)
 
     def resizeEvent(self, _e) -> None:
-        if self._pixmap is not None and self._interact is None:
+        if self._pixmap is None or self._interact is not None:
+            return
+        # set_image() fits against whatever size the widget has at load time,
+        # which is the layout's first guess, not the final one — without this
+        # the image stays pinned wherever that guess put it
+        if self._fitted:
+            self.fit()
+        else:
             self.update()

@@ -130,3 +130,52 @@ def test_data_lines_stay_valid_python():
     """Every data line is commented out, so the bundle still compiles."""
     body = mtb._data_lines([("x.py", b"def f(:\n  \xe3\x80\x8c oops")])
     compile("\n".join(body), "<bundle>", "exec")     # would raise if bare
+
+
+# --------------------------------------------------------------------------- #
+# The Windows one-click install travels in the same bundle
+# --------------------------------------------------------------------------- #
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@pytest.mark.parametrize("name", ["install.bat", "PEAR.bat"])
+def test_batch_files_survive_lf_line_endings(name):
+    """The bundle only carries LF, and cmd.exe is unreliable with LF blocks.
+
+    So both batch files have to stay flat: no parenthesised blocks, no goto,
+    no labels — the constructs that actually misbehave when a .bat has Unix
+    line endings. Everything else lives in tools/install_windows.py.
+    """
+    raw = open(os.path.join(ROOT, name), "rb").read()
+    assert b"\r\n" not in raw               # the bundle would refuse it
+    text = raw.decode("utf-8")
+    assert text.startswith("@echo off")
+    for line in text.splitlines():
+        bare = line.strip().lower()
+        if bare.startswith("rem "):
+            continue
+        assert "goto" not in bare, line
+        assert not bare.endswith("("), line   # a block start
+        assert not bare.startswith(":"), line  # a label
+
+
+def test_install_bat_delegates_to_the_python_installer():
+    text = open(os.path.join(ROOT, "install.bat"), encoding="utf-8").read()
+    assert "tools\\install_windows.py" in text
+    assert "%~dp0" in text                    # works from any working directory
+    assert "pause" in text                    # the window must not vanish
+    launcher = open(os.path.join(ROOT, "PEAR.bat"), encoding="utf-8").read()
+    assert "pythonw" in launcher              # no console window behind the app
+    assert ".venv" in launcher and "-m pear" in launcher
+
+
+def test_installer_and_icon_are_importable_off_windows():
+    """They are plain modules — a syntax error must not wait for a fab PC."""
+    sys.path.insert(0, ROOT)
+    import tools.install_windows as inst
+    import tools.make_icon as icon
+
+    assert inst.MODULES and os.path.basename(inst.VENV) == ".venv"
+    assert inst.venv_python("/x").endswith("python") or \
+        inst.venv_python("/x").endswith("python.exe")
+    assert icon.SIZES[0] == 16 and icon.SIZES[-1] == 256

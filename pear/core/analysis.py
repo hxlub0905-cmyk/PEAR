@@ -13,9 +13,7 @@ either *between* groups or *within* a single group.
 
 Metrics
 -------
-GLV statistics come from each ROI patch. SNR is a *within-group* measurement:
-one ROI in the group is tagged the *target* (T) and the remaining ROIs are the
-*reference* (R); SNR = ``(mean_target - mean_reference) / std_reference``.
+GLV statistics come from each ROI patch.
 """
 
 from __future__ import annotations
@@ -26,14 +24,16 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from pear.core.attributes import SNR_ID, glv_value
+from pear.core.attributes import glv_value
 
 Rect = Tuple[int, int, int, int]      # (x, y, w, h) in image pixels
 
 # Categorical palette for groups (cycles).
+# No amber in here: amber is the brand accent (trend lines) and the midpoint
+# of the heat ramp, so a group wearing it reads as a value off the scale.
 GROUP_PALETTE: List[str] = [
-    "#F59E0B", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
-    "#0891B2", "#EA580C", "#4B5563",
+    "#0D9488", "#2563EB", "#16A34A", "#DB2777", "#7C3AED",
+    "#0891B2", "#B45309", "#4B5563",
 ]
 
 # Sequential ramp for the metric heatmap: cool → amber → warm.
@@ -67,13 +67,11 @@ class ROI:
 
 @dataclass
 class Group:
-    """A category of ROIs. One ROI may be tagged the SNR *target*; the rest
-    of the group's ROIs are the SNR *reference*."""
+    """A category of ROIs — "round holes", "square holes"."""
 
     gid: str
     name: str
     color: str
-    target_rid: Optional[int] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -112,36 +110,9 @@ def roi_patch(image: np.ndarray, rect: Rect) -> Optional[np.ndarray]:
 
 
 def roi_metric(image: np.ndarray, roi: ROI, mid: str) -> float:
-    """A per-ROI GLV statistic (SNR is a per-group metric, not per ROI)."""
+    """One GLV statistic of one ROI."""
     p = roi_patch(image, roi.rect)
     return glv_value(p, mid) if p is not None else 0.0
-
-
-def group_snr(image: np.ndarray, rois: List[ROI],
-              target_rid: Optional[int]) -> Optional[float]:
-    """Within-group SNR = (mean_target - mean_reference) / std_reference.
-
-    ``target_rid`` selects the target ROI; every other ROI in the group is
-    the reference (their pixels are pooled). Returns None when there is no
-    target, no reference, or the reference has no spread.
-    """
-    tgt = next((r for r in rois if r.rid == target_rid), None)
-    refs = [r for r in rois if r.rid != target_rid]
-    if tgt is None or not refs:
-        return None
-    tp = roi_patch(image, tgt.rect)
-    if tp is None or tp.size == 0:
-        return None
-    ref_pix = [roi_patch(image, r.rect).astype(np.float64).ravel()
-               for r in refs if roi_patch(image, r.rect) is not None]
-    ref_pix = [a for a in ref_pix if a.size]
-    if not ref_pix:
-        return None
-    ref = np.concatenate(ref_pix)
-    sd = float(ref.std())
-    if sd < 1e-9:
-        return None
-    return (float(tp.astype(np.float64).mean()) - float(ref.mean())) / sd
 
 
 def group_rois(rois: List[ROI], gid: str) -> List[ROI]:
@@ -296,12 +267,146 @@ def uniformity(values) -> Dict[str, float]:
             "cv_pct": (sd / den * 100.0) if den > 1e-12 else 0.0}
 
 
-def profile_by_position(positions, values, decimals: int = 0):
+def jitter_tolerance(sorted_unique) -> float:
+    """How far apart two centres can be and still be the same row or column.
+
+    Hand-placed ROIs land a few pixels off each other, so a row of eight is
+    really eight tight knots of positions, not eight positions. Sort the gaps
+    between neighbouring centres and there is a step change between the
+    within-knot gaps (a few px) and the pitch between knots (tens of px); the
+    tolerance sits in that step. Returns 0 when the gaps have no such split —
+    a genuine scatter is not jitter and must not be merged.
+    """
+    a = np.asarray(sorted_unique, dtype=np.float64)
+    if a.size < 3:
+        return 0.0
+    gaps = np.sort(np.diff(a))
+    gaps = gaps[gaps > 0]
+    if gaps.size < 2:
+        return 0.0
+    ratios = gaps[1:] / np.maximum(gaps[:-1], 1e-9)
+    i = int(np.argmax(ratios))
+    # Evidence for jitter, not a sparse layout: the step has to be a real
+    # step (4x), and there has to be a population of small gaps below it —
+    # one small gap among large ones is a missing ROI, not a wobble.
+    if i < 1 or ratios[i] < 4.0:
+        return 0.0
+    # the log-middle of the step: comfortably above every jitter gap, and
+    # never far enough to swallow a whole pitch
+    return float(np.sqrt(gaps[i] * gaps[i + 1]))
+
+
+def cluster_positions(positions, tol: float):
+    """Collapse centres within ``tol`` of their neighbour into one position.
+
+    The representative is the cluster's mean, so a row that wobbles by a pixel
+    or two lands on the row it was meant to be.
+    """
+    a = np.sort(np.asarray(positions, dtype=np.float64))
+    if a.size == 0:
+        return np.empty(0)
+    if tol <= 0:
+        return np.unique(a)
+    out, start = [], 0
+    for i in range(1, a.size + 1):
+        if i == a.size or a[i] - a[i - 1] > tol:
+            out.append(float(a[start:i].mean()))
+            start = i
+    return np.asarray(out, dtype=np.float64)
+
+
+def cell_edges(positions, decimals: int = 3, tol: Optional[float] = None):
+    """Tiling boundaries for ROI centres along one axis.
+
+    Returns ``(centres, edges)``: the distinct centres, sorted, and the
+    ``len(centres) + 1`` boundaries midway between neighbours, the outermost
+    pair mirrored outward by half of the adjacent gap. Drawing each ROI from
+    its lower to its upper edge tiles the axis exactly — no hairline gaps
+    where centres landed on rounded pixels, no overlap where the spacing is
+    uneven; a lone gap in the layout simply gives that ROI a wider cell.
+
+    Centres within ``tol`` of each other count as one row or column, so a grid
+    placed by hand tiles as the grid it is rather than shattering into a
+    sliver per stray pixel. ``tol=None`` measures it from the data
+    (:func:`jitter_tolerance`); pass 0 to keep every distinct centre.
+
+    A single distinct centre has no neighbour to measure against and gets a
+    one-pixel cell; the caller substitutes a size of its own.
+    """
+    a = np.asarray(positions, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return np.empty(0), np.empty(0)
+    a = np.round(a, decimals)
+    if tol is None:
+        tol = jitter_tolerance(np.unique(a))
+    c = cluster_positions(a, tol)
+    if c.size == 1:
+        return c, np.asarray([c[0] - 0.5, c[0] + 0.5])
+    mid = (c[:-1] + c[1:]) / 2.0
+    return c, np.concatenate(([2.0 * c[0] - mid[0]], mid,
+                              [2.0 * c[-1] - mid[-1]]))
+
+
+def heat_cells(rois: List[ROI], bounds=None) -> Dict[int, Tuple[float, float,
+                                                             float, float]]:
+    """``rid -> (x0, y0, x1, y1)``: the patch of image each ROI speaks for.
+
+    The ROI boxes are the measurements; between them the field is unmeasured.
+    Painting each ROI's value across the rectangle bounded by the midlines to
+    its neighbours (:func:`cell_edges` on each axis) fills that gap with the
+    nearest actual measurement, so a gradient across the field shows up as a
+    gradient instead of a row of small tinted boxes. ``bounds = (w, h)`` clips
+    the tiling to the image.
+    """
+    if not rois:
+        return {}
+    cx = np.asarray([roi_center(r.rect)[0] for r in rois], dtype=np.float64)
+    cy = np.asarray([roi_center(r.rect)[1] for r in rois], dtype=np.float64)
+    xc, xe = cell_edges(cx)
+    yc, ye = cell_edges(cy)
+    # a single row (or column) has no pitch of its own — it borrows the other
+    # axis's, and with neither the ROI's own box is all the extent there is
+    def step(e, fallback):
+        return float(np.median(np.diff(e))) if e.size > 2 else fallback
+
+    sx = step(xe, 0.0)
+    sy = step(ye, 0.0)
+    out: Dict[int, Tuple[float, float, float, float]] = {}
+    for r, x, y in zip(rois, cx, cy):
+        w, h = float(r.rect[2]), float(r.rect[3])
+        if xe.size > 2:
+            i = int(np.abs(xc - x).argmin())
+            x0, x1 = float(xe[i]), float(xe[i + 1])
+        else:
+            half = (sy if sy > 0 else w) / 2.0
+            x0, x1 = float(x - half), float(x + half)
+        if ye.size > 2:
+            j = int(np.abs(yc - y).argmin())
+            y0, y1 = float(ye[j]), float(ye[j + 1])
+        else:
+            half = (sx if sx > 0 else h) / 2.0
+            y0, y1 = float(y - half), float(y + half)
+        if bounds:
+            bw, bh = float(bounds[0]), float(bounds[1])
+            x0, x1 = max(0.0, x0), min(bw, x1)
+            y0, y1 = max(0.0, y0), min(bh, y1)
+        out[r.rid] = (x0, y0, x1, y1)
+    return out
+
+
+def profile_by_position(positions, values, decimals: int = 0,
+                        tol: Optional[float] = None):
     """Collapse ROIs that share a position into one mean value.
 
     A grid of ROIs puts several boxes at the same X; averaging them gives the
-    single profile line you read flatness off. Returns ``(pos, mean)`` sorted
-    by position.
+    single profile line you read flatness off. Boxes placed by hand miss that
+    shared X by a pixel or two, which splits one column into several and puts
+    a kink in the line for every one of them — so centres within ``tol`` count
+    as the same position. ``tol=None`` measures it from the data
+    (:func:`jitter_tolerance`); pass 0 to group only exact matches.
+
+    Returns ``(pos, mean)`` sorted by position.
     """
     px = np.asarray(positions, dtype=np.float64)
     v = np.asarray(values, dtype=np.float64)
@@ -310,12 +415,87 @@ def profile_by_position(positions, values, decimals: int = 0):
     if px.size == 0:
         return np.empty(0), np.empty(0)
     keys = np.round(px, decimals)
-    uniq = np.unique(keys)
-    means = np.asarray([float(v[keys == k].mean()) for k in uniq],
-                       dtype=np.float64)
-    centers = np.asarray([float(px[keys == k].mean()) for k in uniq],
-                         dtype=np.float64)
-    return centers, means
+    if tol is None:
+        tol = jitter_tolerance(np.unique(keys))
+    slots = cluster_positions(keys, tol)
+    if slots.size == 0:
+        return np.empty(0), np.empty(0)
+    # each ROI joins the slot it is nearest to
+    idx = np.abs(keys[:, None] - slots[None, :]).argmin(axis=1)
+    centers, means = [], []
+    for k in range(slots.size):
+        sel = idx == k
+        if not sel.any():
+            continue
+        centers.append(float(px[sel].mean()))
+        means.append(float(v[sel].mean()))
+    return (np.asarray(centers, dtype=np.float64),
+            np.asarray(means, dtype=np.float64))
+
+
+# --------------------------------------------------------------------------- #
+# Tidying a selection — alignment and spacing
+# --------------------------------------------------------------------------- #
+ALIGN_MODES = ("left", "hcenter", "right", "top", "vcenter", "bottom")
+
+
+def align_rects(rects: List[Rect], mode: str) -> List[Rect]:
+    """Pull rectangles onto one edge (or one centre line) of their bounding box.
+
+    ROIs dropped by hand sit a few pixels off each other, which is invisible
+    until the field heat map tiles them: the cell boundaries fall midway
+    between centres, so a stray pixel of offset turns a clean grid into a
+    staircase. Order is preserved and anything under two rects is returned
+    unchanged.
+    """
+    if len(rects) < 2 or mode not in ALIGN_MODES:
+        return list(rects)
+    xs = [r[0] for r in rects]
+    ys = [r[1] for r in rects]
+    rights = [r[0] + r[2] for r in rects]
+    bottoms = [r[1] + r[3] for r in rects]
+    out: List[Rect] = []
+    for x, y, w, h in rects:
+        if mode == "left":
+            x = min(xs)
+        elif mode == "right":
+            x = max(rights) - w
+        elif mode == "hcenter":
+            x = int(round((min(xs) + max(rights)) / 2.0 - w / 2.0))
+        elif mode == "top":
+            y = min(ys)
+        elif mode == "bottom":
+            y = max(bottoms) - h
+        elif mode == "vcenter":
+            y = int(round((min(ys) + max(bottoms)) / 2.0 - h / 2.0))
+        out.append((int(x), int(y), int(w), int(h)))
+    return out
+
+
+def distribute_rects(rects: List[Rect], axis: str = "x") -> List[Rect]:
+    """Even the spacing of rect centres between the two outermost ones.
+
+    The heat map's cells are as wide as the gap to the next ROI, so uneven
+    spacing reads as cells of uneven size — a pattern in the picture that is
+    not in the measurement. Fewer than three rects have no gap to even out.
+    """
+    if len(rects) < 3:
+        return list(rects)
+    i = 1 if str(axis).lower() == "y" else 0
+    centers = [roi_center(r)[i] for r in rects]
+    order = sorted(range(len(rects)), key=lambda k: centers[k])
+    lo, hi = centers[order[0]], centers[order[-1]]
+    step = (hi - lo) / (len(rects) - 1)
+    out = list(rects)
+    for slot, k in enumerate(order):
+        x, y, w, h = rects[k]
+        want = lo + step * slot
+        if i == 0:
+            x = int(round(want - w / 2.0))
+        else:
+            y = int(round(want - h / 2.0))
+        out[k] = (int(x), int(y), int(w), int(h))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -353,8 +533,7 @@ class Series:
     label: str
     color: str
     values: np.ndarray
-    # Centre of each ROI, index-aligned with ``values``. None for metrics that
-    # are not per-ROI (SNR is one value for the whole group).
+    # Centre of each ROI, index-aligned with ``values``.
     pos_x: Optional[np.ndarray] = None
     pos_y: Optional[np.ndarray] = None
 
@@ -379,17 +558,107 @@ class AnalysisResult:
 
 def snapshot(groups: List[Group], rois: List[ROI]):
     """Copy the mutable model for safe use on a worker thread."""
-    gs = [Group(g.gid, g.name, g.color, g.target_rid) for g in groups]
+    gs = [Group(g.gid, g.name, g.color) for g in groups]
     rs = [ROI(r.rid, r.gid, tuple(r.rect), r.label) for r in rois]
     return gs, rs
+
+
+# --------------------------------------------------------------------------- #
+# ROI interchange — the flat list other tools speak
+# --------------------------------------------------------------------------- #
+def rois_to_points(groups: List[Group], rois: List[ROI], size=None,
+                   include_size: bool = True) -> List[dict]:
+    """The ROI set as a flat list of ``{color, x, y, w, h, target}``.
+
+    One dict per ROI, positioned by its **top-left corner**, carrying the
+    colour of the group it belongs to — that colour is what a receiving tool
+    has instead of PEAR's groups, and what :func:`rois_from_points` groups by
+    on the way back.
+
+    ``w``/``h`` are PEAR's addition to the format: without them a round trip
+    silently resizes every box to whatever the size fields happen to say. Pass
+    ``include_size=False`` for a tool that carries its own box size and does
+    not expect them, or ``size=(w, h)`` to write one size for the whole set.
+    ``target`` is written as ``false`` and ignored on the way in — PEAR has no
+    target role — but it is kept so a file passes through unchanged in shape.
+    """
+    color = {g.gid: g.color for g in groups}
+    out = []
+    for r in rois:
+        x, y, w, h = r.rect
+        item = {"color": color.get(r.gid, GROUP_PALETTE[0]),
+                "x": int(x), "y": int(y)}
+        if include_size:
+            item["w"], item["h"] = ((int(size[0]), int(size[1])) if size
+                                    else (int(w), int(h)))
+        item["target"] = False
+        out.append(item)
+    return out
+
+
+def rois_from_points(items, default_w: int, default_h: int, bounds=None,
+                     start_rid: int = 1, force_size: bool = False):
+    """``(groups, rois, clamped)`` from the flat list.
+
+    Each distinct colour becomes a group, in the order the colours first
+    appear. Entries carry ``w``/``h`` when they came from PEAR and take the
+    given defaults when they did not — a list that only says where the boxes
+    go needs to be told how big they are. ``force_size`` ignores the file's
+    sizes and gives every box the defaults, for a file whose boxes are the
+    right places at the wrong size.
+
+    ``bounds = (width, height)`` keeps every box inside the image; the count
+    of boxes that had to move is returned rather than hidden, because a file
+    written against a different image is a thing worth being told about.
+    """
+    if not isinstance(items, list):
+        raise ValueError("expected a list of ROI objects")
+    groups: List[Group] = []
+    by_color: Dict[str, str] = {}
+    rois: List[ROI] = []
+    rid = int(start_rid)
+    clamped = 0
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            raise ValueError(f"entry {i} is not an object")
+        try:
+            x = int(round(float(it["x"])))
+            y = int(round(float(it["y"])))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"entry {i} has no numeric x / y") from None
+        if force_size:
+            w, h = int(default_w), int(default_h)
+        else:
+            w = int(round(float(it.get("w") or default_w)))
+            h = int(round(float(it.get("h") or default_h)))
+        w, h = max(1, w), max(1, h)
+        color = str(it.get("color") or GROUP_PALETTE[0])
+        gid = by_color.get(color)
+        if gid is None:
+            letter = (chr(ord("A") + len(groups)) if len(groups) < 26
+                      else f"G{len(groups)}")
+            gid = letter
+            by_color[color] = gid
+            groups.append(Group(gid=gid, name=f"Group {letter}", color=color))
+        if bounds:
+            bw, bh = int(bounds[0]), int(bounds[1])
+            w, h = min(w, bw), min(h, bh)
+            nx = int(np.clip(x, 0, max(0, bw - w)))
+            ny = int(np.clip(y, 0, max(0, bh - h)))
+            if (nx, ny) != (x, y):
+                clamped += 1
+            x, y = nx, ny
+        rois.append(ROI(rid=rid, gid=gid, rect=(x, y, w, h), label=""))
+        rid += 1
+    return groups, rois, clamped
 
 
 # --------------------------------------------------------------------------- #
 # Project (de)serialization — plain JSON-friendly dicts
 # --------------------------------------------------------------------------- #
 def groups_to_json(groups: List[Group]) -> List[dict]:
-    return [{"gid": g.gid, "name": g.name, "color": g.color,
-             "target_rid": g.target_rid} for g in groups]
+    return [{"gid": g.gid, "name": g.name, "color": g.color}
+            for g in groups]
 
 
 def rois_to_json(rois: List[ROI]) -> List[dict]:
@@ -398,8 +667,8 @@ def rois_to_json(rois: List[ROI]) -> List[dict]:
 
 
 def groups_from_json(items) -> List[Group]:
-    return [Group(g["gid"], g["name"], g["color"], g.get("target_rid"))
-            for g in (items or [])]
+    # ``target_rid`` may still be in an older project file; it is ignored.
+    return [Group(g["gid"], g["name"], g["color"]) for g in (items or [])]
 
 
 def rois_from_json(items) -> List[ROI]:
@@ -430,22 +699,13 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
         return pcache[g.gid]
 
     def series_of(g: Group, mid: str) -> Series:
-        v = vals(g, mid)
-        if mid == SNR_ID:                 # one value per group, no position
-            return Series(g.name, g.color, v)
         px, py = positions(g)
-        return Series(g.name, g.color, v, px, py)
+        return Series(g.name, g.color, vals(g, mid), px, py)
 
     def vals(g: Group, mid: str) -> np.ndarray:
         key = (g.gid, mid)
         if key not in cache:
-            grois = group_rois(rois, g.gid)
-            if mid == SNR_ID:
-                s = group_snr(image, grois, g.target_rid)
-                cache[key] = np.asarray(
-                    [] if s is None else [s], dtype=np.float64)
-            else:
-                cache[key] = group_values(image, grois, mid)
+            cache[key] = group_values(image, group_rois(rois, g.gid), mid)
         return cache[key]
 
     if mode == "between":
@@ -462,7 +722,7 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
             n = len(group_rois(rois, g.gid))
             cells = [_summ(vals(g, m)) for m in metrics]
             res.table_rows.append((g.name, g.color, [str(n)] + cells))
-        # group × metric heatmap + attribute ranking (GLV metrics only)
+        # group × metric heatmap + attribute ranking
         res.heat = {
             "groups": [g.name for g in used],
             "colors": [g.color for g in used],
@@ -471,8 +731,6 @@ def compute_analysis(image, groups: List[Group], rois: List[ROI],
         }
         ranking = []
         for mid in metrics:
-            if mid == SNR_ID:
-                continue
             eta = attribute_separability([vals(g, mid) for g in used])
             d = (cohens_d(vals(used[0], mid), vals(used[1], mid))
                  if len(used) == 2 else None)

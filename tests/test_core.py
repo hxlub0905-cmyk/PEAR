@@ -11,21 +11,23 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from examples.make_sample import CELL_H, CELL_W, make_field
-from pear.core.analysis import (ROI, Group, attribute_separability, cohens_d,
+from pear.core.analysis import (ROI, Group, align_rects, attribute_separability,
+                                cell_edges, cohens_d, distribute_rects,
+                                heat_cells, jitter_tolerance,
+                                rois_from_points, rois_to_points,
                                 compute_analysis, grid_between, group_outliers,
-                                group_rois, group_snr, group_values,
+                                group_rois, group_values,
                                 groups_from_json, groups_to_json, heat_color,
                                 group_positions, linear_trend, pixel_hist,
                                 profile_by_position, roi_center, roi_metric,
                                 roi_patch, rois_from_json, rois_to_json,
                                 snapshot, summarize, uniformity)
-from pear.core.attributes import SNR_ID, glv_value, metric_label, quantile_of
+from pear.core.attributes import glv_value, metric_label, quantile_of
 
 
 def _bright_dark(img):
     """Group 'bright' on feature centers, 'dark' on background corners.
 
-    Each group's first ROI is tagged the SNR target (rids 1 and 5).
     """
     rid = 1
     rois = []
@@ -35,8 +37,8 @@ def _bright_dark(img):
     for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)]:
         rois.append(ROI(rid, "dark", (c * CELL_W + 3, r * CELL_H + 3, 10, 8)))
         rid += 1
-    groups = [Group("bright", "Bright", "#F59E0B", target_rid=1),
-              Group("dark", "Dark", "#2563EB", target_rid=5)]
+    groups = [Group("bright", "Bright", "#0D9488"),
+              Group("dark", "Dark", "#2563EB")]
     return groups, rois
 
 
@@ -50,27 +52,28 @@ def test_roi_patch_and_metrics():
     assert quantile_of("glv_q90") == 90 and metric_label("glv_q90") == "GLV Q90"
 
 
-def test_group_snr_within_target_vs_reference():
-    img = make_field()
-    # target on a bright feature, references on dark background
-    tgt = ROI(1, "g", (22, 18, 20, 16))
-    refs = [ROI(2, "g", (3, 3, 10, 8)), ROI(3, "g", (CELL_W + 3, 3, 10, 8))]
-    rois = [tgt] + refs
-    snr = group_snr(img, rois, target_rid=1)
-    assert snr is not None and snr > 0                    # bright over dark
-    assert group_snr(img, rois, target_rid=None) is None  # no target
-    assert group_snr(img, [tgt], target_rid=1) is None     # no reference
-    flat = np.full((60, 60), 100, np.uint8)                # reference has no spread
-    assert group_snr(flat, [ROI(1, "g", (20, 20, 10, 10)),
-                            ROI(2, "g", (0, 0, 10, 10))], 1) is None
-
-
 def test_group_values_distributions_separate():
     img = make_field()
     groups, rois = _bright_dark(img)
     b = summarize(group_values(img, group_rois(rois, "bright"), "glv_mean"))
     d = summarize(group_values(img, group_rois(rois, "dark"), "glv_mean"))
     assert b["mean"] - d["mean"] > 50 and b["n"] == 4 and d["n"] == 4
+
+
+def test_profile_by_position_groups_hand_jitter_into_one_point():
+    """A column of ROIs a few pixels apart is one position, not five."""
+    rng = np.random.default_rng(5)
+    px = np.array([40 + c * 90 + int(rng.integers(-3, 4))
+                   for _r in range(5) for c in range(6)], dtype=float)
+    vals = np.array([100.0 + c * 4 for _r in range(5) for c in range(6)])
+    pos, mean = profile_by_position(px, vals)
+    assert pos.size == 6                      # one point per column…
+    assert list(np.diff(pos) > 0) == [True] * 5          # …sorted
+    assert list(mean) == pytest.approx([100, 104, 108, 112, 116, 120])
+    # every ROI still counts: the slot means average their own members
+    assert float(mean.mean()) == pytest.approx(float(vals.mean()))
+    # exact-match grouping is still available, and still sees 23 positions
+    assert profile_by_position(px, vals, tol=0)[0].size == np.unique(px).size
 
 
 def test_grid_between_interpolates_anchor_centers():
@@ -87,13 +90,13 @@ def test_grid_between_interpolates_anchor_centers():
 def test_compute_analysis_between_and_within():
     img = make_field()
     groups, rois = _bright_dark(img)
-    res = compute_analysis(img, groups, rois, ["glv_mean", SNR_ID], "between", None)
+    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std"],
+                           "between", None)
     assert res.empty is None
     assert len(res.charts) == 2 and len(res.charts[0].series) == 2
     assert len(res.table_rows) == 2
-    # SNR is one value per group (targets are set in _bright_dark)
-    snr_chart = res.charts[1]
-    assert all(s.values.size == 1 for s in snr_chart.series)
+    second = res.charts[1]
+    assert all(s.values.size == 4 for s in second.series)
     within = compute_analysis(img, groups, rois, ["glv_mean"], "within", "bright")
     assert within.empty is None and len(within.charts[0].series) == 1
 
@@ -152,24 +155,71 @@ def test_pixel_hist_shape_and_counts():
 def test_compute_analysis_ranking_and_heat():
     img = make_field()
     groups, rois = _bright_dark(img)
-    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std", SNR_ID],
+    res = compute_analysis(img, groups, rois, ["glv_mean", "glv_std"],
                            "between", None)
-    # heatmap: 2 groups × 3 metrics
+    # heatmap: 2 groups × 2 metrics
     assert res.heat is not None
-    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 3
-    # ranking excludes SNR and is sorted by η² desc
+    assert len(res.heat["values"]) == 2 and len(res.heat["values"][0]) == 2
+    # ranking is sorted by η² desc
     labels = [r[0] for r in res.ranking]
-    assert "SNR" not in labels and len(res.ranking) == 2
+    assert len(res.ranking) == 2
     etas = [r[1] for r in res.ranking if r[1] is not None]
     assert etas == sorted(etas, reverse=True)
+
+
+def test_roi_points_import_groups_by_colour():
+    """The flat list other tools speak: a colour per box, no groups."""
+    items = [{"color": "#00ffff", "x": 32, "y": 68, "target": True},
+             {"color": "#00ffff", "x": 66, "y": 271, "target": False},
+             {"color": "#ff8800", "x": 100, "y": 68, "target": False}]
+    groups, rois, clamped = rois_from_points(items, 28, 24)
+    assert [(g.gid, g.color) for g in groups] == [("A", "#00ffff"),
+                                                  ("B", "#ff8800")]
+    assert [r.gid for r in rois] == ["A", "A", "B"]
+    assert rois[0].rect == (32, 68, 28, 24)      # x/y is the top-left corner
+    assert [r.rid for r in rois] == [1, 2, 3] and clamped == 0
+    # a file with its own sizes keeps them; ids continue from where asked
+    sized = rois_from_points([{"color": "#00ffff", "x": 5, "y": 6,
+                               "w": 40, "h": 12}], 28, 24, start_rid=7)[1]
+    assert sized[0].rect == (5, 6, 40, 12) and sized[0].rid == 7
+
+
+def test_roi_points_clamp_to_the_image_and_report_it():
+    """A list written against a different image must say so, not drift off."""
+    items = [{"color": "#00ffff", "x": 10, "y": 10},
+             {"color": "#00ffff", "x": 900, "y": 900}]
+    _g, rois, clamped = rois_from_points(items, 28, 24, bounds=(768, 468))
+    assert clamped == 1
+    for x, y, w, h in (r.rect for r in rois):
+        assert 0 <= x and x + w <= 768 and 0 <= y and y + h <= 468
+
+
+def test_roi_points_round_trip_and_reject_rubbish():
+    groups, rois, _c = rois_from_points(
+        [{"color": "#00ffff", "x": 1, "y": 2, "w": 9, "h": 8},
+         {"color": "#ff8800", "x": 3, "y": 4, "w": 5, "h": 6}], 28, 24)
+    out = rois_to_points(groups, rois)
+    assert out == [{"color": "#00ffff", "x": 1, "y": 2, "w": 9, "h": 8,
+                    "target": False},
+                   {"color": "#ff8800", "x": 3, "y": 4, "w": 5, "h": 6,
+                    "target": False}]
+    again = rois_from_points(out, 1, 1)[1]
+    assert [r.rect for r in again] == [r.rect for r in rois]
+
+    with pytest.raises(ValueError):
+        rois_from_points({"x": 1}, 10, 10)               # not a list
+    with pytest.raises(ValueError):
+        rois_from_points([{"color": "#fff"}], 10, 10)    # no position
+    with pytest.raises(ValueError):
+        rois_from_points([{"x": "left", "y": 3}], 10, 10)
 
 
 def test_project_model_roundtrip():
     groups, rois = _bright_dark(make_field())
     g2 = groups_from_json(groups_to_json(groups))
     r2 = rois_from_json(rois_to_json(rois))
-    assert [ (g.gid, g.name, g.color, g.target_rid) for g in g2 ] == \
-           [ (g.gid, g.name, g.color, g.target_rid) for g in groups ]
+    assert [(g.gid, g.name, g.color) for g in g2] == \
+           [(g.gid, g.name, g.color) for g in groups]
     assert r2[0].rect == rois[0].rect and r2[0].rid == rois[0].rid
     assert isinstance(r2[0].rect, tuple)
 
@@ -179,9 +229,7 @@ def test_snapshot_isolates_from_mutation():
     gs, rs = snapshot(groups, rois)
     rois[0].rect = (0, 0, 1, 1)
     groups[0].name = "changed"
-    groups[0].target_rid = 999
     assert rs[0].rect != (0, 0, 1, 1) and gs[0].name == "Bright"
-    assert gs[0].target_rid == 1              # snapshot copies the SNR target
 
 
 def test_roi_center_and_group_positions():
@@ -191,6 +239,98 @@ def test_roi_center_and_group_positions():
     assert list(group_positions(rois, "y")) == [25.0, 25.0]
     # anything but "y" means the X axis
     assert list(group_positions(rois, "X")) == [15.0, 35.0]
+
+
+def test_align_rects_pulls_onto_one_edge():
+    r = [(10, 10, 10, 10), (13, 40, 10, 10), (9, 70, 12, 12)]
+    assert [x for x, _y, _w, _h in align_rects(r, "left")] == [9, 9, 9]
+    # right aligns the far edges, so a wider box starts further left
+    assert [x + w for x, _y, w, _h in align_rects(r, "right")] == [23, 23, 23]
+    assert [y for _x, y, _w, _h in align_rects(r, "top")] == [10, 10, 10]
+    assert [y + h for _x, y, _w, h in align_rects(r, "bottom")] == [82, 82, 82]
+    centres = [x + w / 2 for x, _y, w, _h in align_rects(r, "hcenter")]
+    assert centres == pytest.approx([16.0, 16.0, 16.0], abs=0.5)
+    assert align_rects(r, "sideways") == r      # unknown mode changes nothing
+    assert align_rects(r[:1], "left") == r[:1]  # one rect has nothing to align
+
+
+def test_distribute_rects_evens_the_gaps():
+    r = [(0, 0, 10, 10), (0, 30, 10, 10), (0, 100, 10, 10)]
+    out = distribute_rects(r, "y")
+    assert [y for _x, y, _w, _h in out] == [0, 50, 100]
+    # order is preserved even when the input is not sorted along the axis
+    r = [(100, 0, 10, 10), (0, 0, 10, 10), (30, 0, 10, 10)]
+    out = distribute_rects(r, "x")
+    assert [x for x, _y, _w, _h in out] == [100, 0, 50]
+    assert distribute_rects(r[:2], "x") == r[:2]      # two rects: no gap to even
+
+
+def test_cell_edges_tile_the_axis_without_gaps():
+    c, e = cell_edges([10.0, 40.0, 70.0, 10.0])   # duplicates are one centre
+    assert list(c) == [10.0, 40.0, 70.0]
+    assert list(e) == pytest.approx([-5.0, 25.0, 55.0, 85.0])
+    # every centre sits inside its own cell and the cells share their edges
+    assert all(e[i] < c[i] < e[i + 1] for i in range(c.size))
+
+
+def test_cell_edges_absorb_rounded_centres_and_uneven_gaps():
+    """Integer ROI rects round the centres — cells must still meet."""
+    c, e = cell_edges([12.0, 31.0, 51.0, 70.0])
+    assert list(np.diff(e)) == pytest.approx([19.0, 19.5, 19.5, 19.0])
+    assert float(e[-1] - e[0]) == pytest.approx(77.0)   # one unbroken span
+    # a missing ROI widens that cell instead of opening a hole
+    c, e = cell_edges([0.0, 10.0, 40.0])
+    assert list(e) == pytest.approx([-5.0, 5.0, 25.0, 55.0])
+
+
+def test_cell_edges_on_degenerate_input():
+    c, e = cell_edges([7.0, 7.0])          # one distinct centre, no neighbour
+    assert list(c) == [7.0] and list(e) == [6.5, 7.5]
+    c, e = cell_edges([])
+    assert c.size == 0 and e.size == 0
+
+
+def test_cell_edges_treat_hand_jitter_as_one_row():
+    """A grid placed by hand wobbles; it must still tile as the grid it is."""
+    rng = np.random.default_rng(3)
+    xs = np.array([40 + c * 90 + int(rng.integers(-3, 4)) + 15
+                   for _r in range(5) for c in range(8)], dtype=float)
+    c, e = cell_edges(xs)
+    assert c.size == 8                       # eight columns, not thirty-four
+    widths = np.diff(e)
+    assert widths.min() > 60                 # no slivers between the knots
+    assert jitter_tolerance(np.unique(xs)) > 3
+    # …but a genuinely uneven layout is left alone
+    assert cell_edges([0.0, 10.0, 40.0])[0].size == 3
+    assert cell_edges(np.array([0.0, 11, 23, 37, 55, 70, 88]))[0].size == 7
+    assert jitter_tolerance(np.array([0.0, 11, 23, 37, 55, 70, 88])) == 0.0
+
+
+def test_heat_cells_tile_the_field_and_clip_to_the_image():
+    rois = [ROI(1, "A", (10, 10, 10, 10)), ROI(2, "A", (50, 10, 10, 10)),
+            ROI(3, "A", (10, 50, 10, 10)), ROI(4, "A", (50, 50, 10, 10))]
+    cells = heat_cells(rois)
+    assert set(cells) == {1, 2, 3, 4}
+    # neighbours share an edge: no gap, no overlap
+    assert cells[1][2] == cells[2][0] == pytest.approx(35.0)
+    assert cells[1][3] == cells[3][1] == pytest.approx(35.0)
+    for r in rois:
+        x0, y0, x1, y1 = cells[r.rid]
+        cx, cy = roi_center(r.rect)
+        assert x0 < cx < x1 and y0 < cy < y1     # the ROI is inside its cell
+    clipped = heat_cells(rois, (60, 60))
+    assert clipped[1][:2] == (0.0, 0.0)          # nothing spills off the image
+    assert clipped[4][2:] == (60.0, 60.0)
+
+
+def test_heat_cells_on_a_single_roi_and_a_single_row():
+    only = heat_cells([ROI(9, "A", (10, 10, 20, 20))])
+    assert only[9] == (10.0, 10.0, 30.0, 30.0)   # no neighbour: its own box
+    row = heat_cells([ROI(1, "A", (0, 0, 10, 10)), ROI(2, "A", (40, 0, 10, 10))])
+    # one row has no Y pitch — the cells borrow the X one and still tile
+    assert row[1][2] == row[2][0] == pytest.approx(25.0)
+    assert row[1][3] - row[1][1] == pytest.approx(40.0)
+    assert heat_cells([]) == {}
 
 
 def test_linear_trend_recovers_a_known_slope():
@@ -241,8 +381,4 @@ def test_compute_analysis_carries_roi_positions():
     assert s.pos_x is not None and s.pos_y is not None
     assert s.pos_x.size == s.values.size == 2
     assert list(s.pos_x) == [6.0, 34.0]
-    # SNR is one value for the whole group, so it carries no ROI positions
-    for g in groups:
-        g.target_rid = group_rois(rois, g.gid)[0].rid
-    snr_res = compute_analysis(img, groups, rois, ["snr"], "between", None)
-    assert snr_res.charts[0].series[0].pos_x is None
+
